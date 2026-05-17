@@ -592,12 +592,26 @@ class SchedulerService:
                 ctx.log("✅ 没有需要检查的用户")
                 return
 
+            tg_ids = []
             for u in users:
                 try:
-                    ok, missing = await TelegramMembershipService.check_user_in_groups(
-                        u.TELEGRAM_ID, strict=False
-                    )
-                    if ok:
+                    tg_ids.append(int(u.TELEGRAM_ID))
+                except (TypeError, ValueError):
+                    ctx.summary['failed'] += 1
+                    ctx.log(f"  ⚠️ 跳过非法 Telegram ID: {u.USERNAME} (UID: {u.UID})")
+
+            # 以系统内绑定用户为基准做批量对照，不扫描群全量成员列表。
+            missing_map = await TelegramMembershipService.check_users_in_groups(tg_ids, strict=False)
+
+            for u in users:
+                try:
+                    try:
+                        user_tg_id = int(u.TELEGRAM_ID)
+                    except (TypeError, ValueError):
+                        continue
+
+                    missing = missing_map.get(user_tg_id, [])
+                    if not missing:
                         ctx.summary['in_group'] += 1
                         continue
 

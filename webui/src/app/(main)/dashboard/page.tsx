@@ -503,8 +503,8 @@ export default function DashboardPage() {
               </p>
             )}
             {user?.emby_id ? (
-              <p className="text-xs text-muted-foreground break-all" title={user.emby_username}>
-                我的 Emby：<span className="font-mono">{user.emby_username}</span>
+              <p className="text-xs text-muted-foreground break-all" title={user.emby_id}>
+                我的 Emby：<span className="font-mono">{user.emby_id}</span>
               </p>
             ) : (
               <p className="text-xs text-amber-500">尚未绑定 Emby 账号</p>
