@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { flushSync } from "react-dom";
 import type { ComponentType } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -82,7 +83,9 @@ export const adminNavItems: SidebarNavItem[] = [
 export function Sidebar() {
   const pathname = usePathname();
   const { user, logout } = useAuthStore();
-  const { setTheme, theme: currentTheme } = useTheme();
+  const { setTheme, theme: rawTheme, resolvedTheme } = useTheme();
+  // resolvedTheme 反映真实生效主题（含 SSR -> CSR 后的 hydration），用于图标显示
+  const currentTheme = resolvedTheme || rawTheme || "light";
   const isAdmin = user?.role === 0;
   const [profileAvatar, setProfileAvatar] = useState<string | null>(user?.avatar || null);
   const { info: systemInfo, fetchInfo: fetchSystemInfo } = useSystemStore();
@@ -125,45 +128,60 @@ export function Sidebar() {
   const safeSystemIcon = useMemo(() => sanitizeImageUrl(systemInfo?.icon), [systemInfo?.icon]);
   const safeProfileAvatar = useMemo(() => sanitizeImageUrl(profileAvatar), [profileAvatar]);
 
-  const toggleTheme = (event: React.MouseEvent) => {
-    const x = event.clientX;
-    const y = event.clientY;
-
-    const themeOrder = ["light", "dark"];
-    const currentIndex = themeOrder.indexOf(currentTheme || "light");
-    const nextTheme = themeOrder[(currentIndex + 1) % themeOrder.length];
+  const toggleTheme = (event: React.MouseEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    // 把 light <-> dark 翻转。currentTheme 在 enableSystem={false} 下只会是 "light" / "dark"。
+    const nextTheme = currentTheme === "dark" ? "light" : "dark";
 
     const startViewTransition = (document as unknown as MaybeStartViewTransition).startViewTransition;
 
+    // 没有 View Transition API（Firefox / Safari / 旧 Chrome）：直接切换
     if (!startViewTransition) {
       setTheme(nextTheme);
       return;
     }
 
-    const transition = startViewTransition(() => {
-      setTheme(nextTheme);
-    });
+    // 关键：必须在 startViewTransition 回调里用 ``flushSync`` 同步提交 React 状态，
+    // 否则 React 18 的批处理会让 DOM 更新晚于浏览器拍快照，结果「主题没变」或者
+    // 「拍了两张相同快照、没有动画且看似失效」。
+    let didCommit = false;
+    try {
+      const x = event.clientX;
+      const y = event.clientY;
+      const transition = startViewTransition(() => {
+        flushSync(() => {
+          setTheme(nextTheme);
+        });
+        didCommit = true;
+      });
 
-    void transition.ready.then(() => {
-      const radius = Math.hypot(
-        Math.max(x, window.innerWidth - x),
-        Math.max(y, window.innerHeight - y)
-      );
-
-      document.documentElement.animate(
-        {
-          clipPath: [
-            `circle(0px at ${x}px ${y}px)`,
-            `circle(${radius}px at ${x}px ${y}px)`,
-          ],
-        },
-        {
-          duration: 500,
-          easing: "ease-in-out",
-          pseudoElement: "::view-transition-new(root)",
-        } as KeyframeAnimationOptions
-      );
-    }).catch(() => undefined);
+      void transition.ready
+        .then(() => {
+          const radius = Math.hypot(
+            Math.max(x, window.innerWidth - x),
+            Math.max(y, window.innerHeight - y),
+          );
+          document.documentElement.animate(
+            {
+              clipPath: [
+                `circle(0px at ${x}px ${y}px)`,
+                `circle(${radius}px at ${x}px ${y}px)`,
+              ],
+            },
+            {
+              duration: 500,
+              easing: "ease-in-out",
+              pseudoElement: "::view-transition-new(root)",
+            } as KeyframeAnimationOptions,
+          );
+        })
+        .catch(() => undefined);
+    } catch {
+      // View Transition 内部抛错时（例如旧版 Chrome 的边界情况）回落到直接切换。
+      if (!didCommit) {
+        setTheme(nextTheme);
+      }
+    }
   };
 
   return (
@@ -240,14 +258,16 @@ export function Sidebar() {
 
           <div className="grid grid-cols-2 gap-2">
             <Button
+              type="button"
               variant="outline"
               className="h-10"
               onClick={toggleTheme}
-              title={`当前主题: ${currentTheme || "light"}`}
+              title={`当前主题：${currentTheme === "dark" ? "暗色" : "浅色"} · 点击切换`}
+              aria-label="切换暗色 / 浅色主题"
             >
               {currentTheme === "dark" ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
             </Button>
-              <Button variant="outline" className="h-10" onClick={() => void logout()}>
+            <Button type="button" variant="outline" className="h-10" onClick={() => void logout()}>
               <LogOut className="h-4 w-4" />
             </Button>
           </div>
