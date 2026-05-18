@@ -245,7 +245,9 @@ currency_name = "星币"
 # 每日签到获得积分的随机范围
 daily_min = 5
 daily_max = 20
-# 连签加成：到达指定连签天数额外奖励对应积分
+# 连签加成总开关：关闭后只发放每日奖励，连签天数仍记录但不再额外赠送积分
+streak_bonus_enabled = true
+# 连签加成：到达指定连签天数额外奖励对应积分（仅在 streak_bonus_enabled=true 时生效）
 # 两个列表一一对应，长度需一致
 streak_bonus_days = [3, 7, 14, 30]
 streak_bonus_points = [10, 50, 100, 300]

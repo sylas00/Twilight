@@ -14,6 +14,8 @@ import {
   Hash,
   Fingerprint,
   Trash2,
+  ExternalLink,
+  Copy,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -42,6 +44,38 @@ import { useAsyncResource } from "@/hooks/use-async-resource";
 import { PageError, PageLoading } from "@/components/layout/page-state";
 import { api, type MediaRequest } from "@/lib/api";
 import { formatDate } from "@/lib/utils";
+
+/**
+ * 返回该求片对应的外部站点链接。
+ * - source=tmdb: https://www.themoviedb.org/{movie|tv}/{id}
+ * - source=bangumi: https://bgm.tv/subject/{id}
+ * 数据格式不可靠时返回 null。
+ */
+function buildExternalUrl(req: MediaRequest): string | null {
+  const source = (req.source || "").toLowerCase();
+  const rawId = req.media_id;
+  if (rawId === undefined || rawId === null || rawId === "") return null;
+
+  if (source === "bangumi") {
+    const id = String(rawId).replace(/[^0-9]/g, "");
+    if (!id) return null;
+    return `https://bgm.tv/subject/${id}`;
+  }
+
+  if (source === "tmdb") {
+    // tmdb_id 可能是 "12345" 或 "tv:12345" 这种形式，先剥前缀
+    const text = String(rawId);
+    const m = text.match(/^(?:(movie|tv):)?(\d+)$/i);
+    const id = m ? m[2] : text.replace(/[^0-9]/g, "");
+    if (!id) return null;
+    const declaredType = (req.media_info?.media_type || req.media_type || "").toLowerCase();
+    const prefixType = m && m[1] ? m[1].toLowerCase() : null;
+    const tmdbType = prefixType || (declaredType === "tv" || declaredType === "anime" ? "tv" : "movie");
+    return `https://www.themoviedb.org/${tmdbType}/${id}`;
+  }
+
+  return null;
+}
 
 export default function AdminRequestsPage() {
   const { toast } = useToast();
@@ -94,10 +128,14 @@ export default function AdminRequestsPage() {
 
   const handleAction = async () => {
     if (!selectedRequest) return;
+    if (!selectedRequest.require_key) {
+      toast({ title: "该请求缺少 require_key，无法操作", variant: "destructive" });
+      return;
+    }
 
     setIsActioning(true);
     try {
-      const res = await api.updateMediaRequest(selectedRequest.id, selectedStatus, adminNote);
+      const res = await api.updateMediaRequest(selectedRequest.require_key, selectedStatus, adminNote);
 
       if (res.success) {
         toast({
@@ -119,7 +157,11 @@ export default function AdminRequestsPage() {
     }
   };
 
-  const handleDelete = async (id: number) => {
+  const handleDelete = async (requireKey: string) => {
+    if (!requireKey) {
+      toast({ title: "缺少 require_key，无法删除", variant: "destructive" });
+      return;
+    }
     const ok = await confirm({
       title: "删除求片请求？",
       description: "该操作不可恢复。",
@@ -129,7 +171,7 @@ export default function AdminRequestsPage() {
     if (!ok) return;
 
     try {
-      const res = await api.deleteMediaRequest(id);
+      const res = await api.deleteMediaRequest(requireKey);
       if (res.success) {
         toast({ title: "删除成功", variant: "success" });
         invalidateRequestsCache();
@@ -214,8 +256,10 @@ export default function AdminRequestsPage() {
         <TabsList className="flex w-full overflow-x-auto sm:inline-flex sm:w-auto">
           <TabsTrigger value="pending">待处理</TabsTrigger>
           <TabsTrigger value="accepted">已接受</TabsTrigger>
+          <TabsTrigger value="downloading">下载中</TabsTrigger>
           <TabsTrigger value="rejected">已拒绝</TabsTrigger>
           <TabsTrigger value="completed">已完成</TabsTrigger>
+          <TabsTrigger value="all">全部</TabsTrigger>
         </TabsList>
       </Tabs>
 
@@ -234,7 +278,7 @@ export default function AdminRequestsPage() {
             <div className="divide-y">
               {requests.map((request) => (
                 <div
-                  key={request.id}
+                  key={request.require_key || `${request.source}-${request.id}`}
                   className="flex flex-col gap-3 p-4 hover:bg-muted/30 sm:flex-row sm:items-center sm:justify-between"
                 >
                   <div className="flex min-w-0 flex-1 items-start gap-4">
@@ -254,7 +298,23 @@ export default function AdminRequestsPage() {
                     </div>
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
-                        <p className="break-words font-medium">{request.media_info?.title || request.title}</p>
+                        {(() => {
+                          const url = buildExternalUrl(request);
+                          const title = request.media_info?.title || request.title;
+                          if (!url) return <p className="break-words font-medium">{title}</p>;
+                          return (
+                            <a
+                              href={url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="break-words font-medium underline decoration-dotted underline-offset-2 hover:text-primary inline-flex items-center gap-1"
+                              title={`在 ${request.source.toUpperCase()} 上查看`}
+                            >
+                              {title}
+                              <ExternalLink className="h-3 w-3 shrink-0 opacity-70" />
+                            </a>
+                          );
+                        })()}
                         {request.media_info?.season && (
                           <Badge variant="outline" className="text-xs">
                             第 {request.media_info.season} 季
@@ -273,41 +333,80 @@ export default function AdminRequestsPage() {
                       </div>
                       <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
                         <div className="flex items-center gap-1">
-                          {request.source.toLowerCase() === "tmdb" ? (
-                            <Image
-                              src="https://www.themoviedb.org/assets/2/v4/logos/v2/blue_short-8e7b30f73a4020692ccca9c88bafe5dcb6f8a62a4c6bc55cd9ba82bb2cd95f6c.svg"
-                              alt="TMDB"
-                              width={42}
-                              height={12}
-                              unoptimized
-                              className="h-3 w-auto"
-                            />
-                          ) : request.source.toLowerCase() === "bangumi" ? (
-                            <div className="flex items-center gap-1 bg-[#f09199]/10 dark:bg-[#f09199]/20 px-1.5 py-0.5 rounded text-[10px] font-bold text-[#d95b67] dark:text-[#ffb3bc] border border-[#f09199]/20 dark:border-[#f09199]/40">
+                          {(() => {
+                            const url = buildExternalUrl(request);
+                            const inner = request.source.toLowerCase() === "tmdb" ? (
                               <Image
-                                src="https://bangumi.tv/img/favicon.ico"
-                                alt="Bangumi"
-                                width={12}
+                                src="https://www.themoviedb.org/assets/2/v4/logos/v2/blue_short-8e7b30f73a4020692ccca9c88bafe5dcb6f8a62a4c6bc55cd9ba82bb2cd95f6c.svg"
+                                alt="TMDB"
+                                width={42}
                                 height={12}
                                 unoptimized
-                                className="h-3 w-3"
+                                className="h-3 w-auto"
                               />
-                              Bangumi
-                            </div>
-                          ) : (
-                            <Badge variant="secondary" className="text-[10px] h-4">
-                              {request.source.toUpperCase()}
-                            </Badge>
-                          )}
+                            ) : request.source.toLowerCase() === "bangumi" ? (
+                              <div className="flex items-center gap-1 bg-[#f09199]/10 dark:bg-[#f09199]/20 px-1.5 py-0.5 rounded text-[10px] font-bold text-[#d95b67] dark:text-[#ffb3bc] border border-[#f09199]/20 dark:border-[#f09199]/40">
+                                <Image
+                                  src="https://bangumi.tv/img/favicon.ico"
+                                  alt="Bangumi"
+                                  width={12}
+                                  height={12}
+                                  unoptimized
+                                  className="h-3 w-3"
+                                />
+                                Bangumi
+                              </div>
+                            ) : (
+                              <Badge variant="secondary" className="text-[10px] h-4">
+                                {request.source.toUpperCase()}
+                              </Badge>
+                            );
+                            return url ? (
+                              <a
+                                href={url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 hover:opacity-80"
+                                title={`在 ${request.source.toUpperCase()} 上查看`}
+                              >
+                                {inner}
+                              </a>
+                            ) : inner;
+                          })()}
                         </div>
                         <span className="hidden sm:inline">•</span>
-                        <span className="flex items-center gap-0.5"><Hash className="h-3 w-3" />{request.id}</span>
+                        <span className="flex items-center gap-0.5" title={`内部 ID（${request.source}）`}>
+                          <Hash className="h-3 w-3" />{request.id}
+                        </span>
+                        {request.media_id !== undefined && request.media_id !== null && request.media_id !== "" && (
+                          <>
+                            <span className="hidden sm:inline">•</span>
+                            <span className="flex items-center gap-0.5" title={`${request.source.toUpperCase()} ID`}>
+                              {request.source.toUpperCase()}#{String(request.media_id)}
+                            </span>
+                          </>
+                        )}
                         <span className="hidden sm:inline">•</span>
-                        <span className="flex min-w-0 items-center gap-0.5" title="External Update Key">
+                        <span className="flex min-w-0 items-center gap-0.5" title="External Update Key（点击复制）">
                           <Fingerprint className="h-3 w-3 shrink-0" />
                           <code className="max-w-[10rem] truncate rounded bg-muted px-1 text-foreground sm:max-w-[16rem]">
                             {request.require_key}
                           </code>
+                          <Button
+                            type="button"
+                            size="icon"
+                            variant="ghost"
+                            className="h-5 w-5 text-muted-foreground hover:text-foreground"
+                            title="复制 Key"
+                            onClick={() => {
+                              navigator.clipboard.writeText(request.require_key).then(
+                                () => toast({ title: "已复制 Key 到剪贴板", variant: "success" }),
+                                () => toast({ title: "复制失败", variant: "destructive" }),
+                              );
+                            }}
+                          >
+                            <Copy className="h-3 w-3" />
+                          </Button>
                         </span>
                         <span className="hidden sm:inline">•</span>
                         <span>{request.media_info?.media_type === "movie" ? "电影" : "剧集"}</span>
@@ -351,7 +450,7 @@ export default function AdminRequestsPage() {
                       size="icon"
                       variant="ghost"
                       className="h-8 w-8 text-muted-foreground hover:text-destructive dark:hover:bg-destructive/15"
-                      onClick={() => handleDelete(request.id)}
+                      onClick={() => handleDelete(request.require_key)}
                       title="删除请求"
                     >
                       <Trash2 className="h-4 w-4" />

@@ -181,7 +181,9 @@ export default function ScorePage() {
             <div>
               <p className="text-xs text-muted-foreground">当前连签</p>
               <p className="text-2xl font-semibold">{summary?.current_streak ?? 0} 天</p>
-              {summary?.next_bonus_in_days && summary.next_bonus_points ? (
+              {config?.streak_bonus_enabled === false ? (
+                <p className="mt-1 text-xs text-muted-foreground">连签奖励已关闭</p>
+              ) : summary?.next_bonus_in_days && summary.next_bonus_points ? (
                 <p className="mt-1 text-xs text-muted-foreground">
                   再签 {summary.next_bonus_in_days} 天可获 +{summary.next_bonus_points} {currencyName}
                 </p>
@@ -228,8 +230,15 @@ export default function ScorePage() {
             <div className="mb-4 flex items-center gap-2">
               <Flame className="h-4 w-4 text-orange-500" />
               <h3 className="text-base font-semibold">连签加成</h3>
+              {config && config.streak_bonus_enabled === false && (
+                <Badge variant="outline" className="ml-1 text-[10px]">已关闭</Badge>
+              )}
             </div>
-            {bonusTable.length === 0 ? (
+            {config && config.streak_bonus_enabled === false ? (
+              <p className="text-sm text-muted-foreground">
+                管理员已关闭连签奖励，连签天数仍会记录但不会额外赠送 {currencyName}。
+              </p>
+            ) : bonusTable.length === 0 ? (
               <p className="text-sm text-muted-foreground">未配置连签加成。</p>
             ) : (
               <div className="space-y-2">

@@ -688,27 +688,123 @@ async def update_request_status(request_id: int):
 @media_bp.route('/request/external/update', methods=['POST'])
 async def external_update_request():
     """
-    外部更新求片状态 (无需登录，凭 require_key 访问)
-    
+    外部（Sonarr/Radarr 等）更新求片状态。
+
+    认证：必须在请求头中提供 `Authorization: Bearer <BOT_INTERNAL_SECRET>` 或
+    `X-Internal-Secret: <BOT_INTERNAL_SECRET>`，与 `SecurityConfig.BOT_INTERNAL_SECRET`
+    做常量时间比较。未配置 secret 时端点直接拒绝（避免悄悄打开未保护接口）。
+
+    额外按 IP 做速率限制（30 次 / 分钟），防止暴力枚举 require_key。
+
     Request:
         {
             "key": "...",            // 必填，求片请求的 require_key
             "status": "COMPLETED",   // 必填，新状态 (UNHANDLED, ACCEPTED, REJECTED, COMPLETED, DOWNLOADING)
-            "note": "备注信息"        // 可选，管理员/系统备注
+            "note": "备注信息"        // 可选，备注
         }
     """
+    import hmac
+    from src.config import SecurityConfig
+    from src.core.utils import rate_limit_check
+
+    client_ip = request.remote_addr or 'unknown'
+
+    # IP 限流：不论是否带 secret，先挡一道
+    allowed, retry_after = rate_limit_check(
+        'external_request_update', client_ip, max_requests=30, window_seconds=60,
+    )
+    if not allowed:
+        return api_response(
+            False, f"操作过于频繁，请在 {retry_after} 秒后重试", code=429,
+        )
+
+    expected_secret = (SecurityConfig.BOT_INTERNAL_SECRET or '').strip()
+    if not expected_secret:
+        # 未配置 secret 时一律拒绝，避免接口默认开放。
+        return api_response(
+            False,
+            "外部更新接口需要配置 SecurityConfig.BOT_INTERNAL_SECRET 后才可用",
+            code=403,
+        )
+
+    presented = ''
+    auth_header = request.headers.get('Authorization', '') or ''
+    if auth_header.startswith('Bearer '):
+        presented = auth_header[7:].strip()
+    if not presented:
+        presented = (request.headers.get('X-Internal-Secret') or '').strip()
+    if not presented or not hmac.compare_digest(presented, expected_secret):
+        return api_response(False, "未授权：缺少或无效的 internal secret", code=401)
+
     data = request.get_json() or {}
-    require_key = data.get('key')
-    status_name = data.get('status')
-    note = data.get('note', '')
-    
+    require_key = (data.get('key') or '').strip()
+    status_name = (data.get('status') or '').strip()
+    note = (data.get('note') or '').strip()
+
     if not require_key or not status_name:
         return api_response(False, "缺少必要参数 (key, status)", code=400)
-    
+    if len(require_key) > 64:
+        return api_response(False, "require_key 格式不合法", code=400)
+    if len(note) > 1000:
+        return api_response(False, "note 过长，最多 1000 字符", code=400)
+
     success, message = await MediaRequestService.update_request_by_key(require_key, status_name, note)
     if success:
         return api_response(True, message)
     return api_response(False, message, code=400)
+
+
+@media_bp.route('/request/by-key/<string:require_key>', methods=['GET', 'DELETE'])
+@require_auth
+async def handle_request_item_by_key(require_key: str):
+    """按 require_key 获取或删除求片（推荐用这条；按数值 id 的路由在两表撞 id 时会指向错误的求片）。"""
+    from src.db.bangumi import BangumiRequireOperate
+    from src.db.user import Role
+    from flask import request as flask_request
+
+    if not require_key or len(require_key) > 64:
+        return api_response(False, "require_key 缺失或格式不合法", code=400)
+
+    req = await BangumiRequireOperate.get_require_by_key(require_key)
+    if not req:
+        return api_response(False, "请求不存在", code=404)
+
+    if flask_request.method == 'DELETE':
+        if req.telegram_id != g.current_user.TELEGRAM_ID and g.current_user.ROLE != Role.ADMIN.value:
+            return api_response(False, "无权删除他人的请求", code=403)
+
+        success = await BangumiRequireOperate.delete_require_by_key(require_key)
+        if success:
+            return api_response(True, "请求已删除")
+        return api_response(False, "删除失败")
+
+    media_info = None
+    if req.other_info:
+        try:
+            import json
+            media_info = json.loads(req.other_info)
+        except Exception:
+            pass
+
+    user = await UserOperate.get_user_by_telegram_id(req.telegram_id)
+    res = {
+        'id': req.id,
+        'media_id': getattr(req, 'bangumi_id', getattr(req, 'tmdb_id', None)),
+        'source': 'bangumi' if hasattr(req, 'bangumi_id') else 'tmdb',
+        'status': ReqStatus(req.status).name,
+        'timestamp': req.timestamp,
+        'title': req.title,
+        'season': req.season,
+        'media_type': req.media_type,
+        'require_key': req.require_key,
+        'admin_note': req.admin_note,
+        'media_info': media_info,
+        'user': {
+            'telegram_id': req.telegram_id,
+            'username': user.USERNAME if user else None,
+        } if user else None,
+    }
+    return api_response(True, "获取成功", res)
 
 
 @media_bp.route('/request/<int:request_id>', methods=['GET', 'DELETE'])
@@ -718,7 +814,7 @@ async def handle_request_item(request_id: int):
     from src.db.bangumi import BangumiRequireOperate
     from src.db.user import Role
     from flask import request as flask_request
-    
+
     # 尝试寻找请求
     req = await BangumiRequireOperate.get_require(request_id)
     if not req:

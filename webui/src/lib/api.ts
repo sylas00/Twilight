@@ -963,17 +963,29 @@ class ApiClient {
     return res;
   }
 
-  async updateMediaRequest(id: number, status: string, note?: string) {
+  /**
+   * 管理员更新求片状态。第一个参数现在是 require_key（全局唯一），避免
+   * Bangumi/TMDB 两表数值 id 撞车把操作打到错的求片。
+   */
+  async updateMediaRequest(requireKey: string, status: string, note?: string) {
     const normalizedStatus = this.normalizeRequestStatus(status, "admin");
     const normalizedNote = (note || "").trim().slice(0, 1000);
-    return this.request(`/admin/media-requests/${id}`, {
+    return this.request(`/admin/media-requests/by-key/${encodeURIComponent(requireKey)}`, {
       method: "PUT",
       body: JSON.stringify({ status: normalizedStatus, note: normalizedNote }),
     });
   }
 
-  async deleteMediaRequest(id: number) {
-    return this.request(`/media/request/${id}`, {
+  /** 管理员删除任意求片，按 require_key。 */
+  async deleteMediaRequest(requireKey: string) {
+    return this.request(`/admin/media-requests/by-key/${encodeURIComponent(requireKey)}`, {
+      method: "DELETE",
+    });
+  }
+
+  /** 用户删除自己的求片（也允许管理员），按 require_key。 */
+  async deleteMyMediaRequest(requireKey: string) {
+    return this.request(`/media/request/by-key/${encodeURIComponent(requireKey)}`, {
       method: "DELETE",
     });
   }
@@ -1346,13 +1358,15 @@ export interface MediaRequestData {
 export interface MediaRequest {
   id: number;
   source: string;
-  media_id: number;
+  // Bangumi 端是 int，TMDB 端是 str（"12345" 或 "tv:12345"），所以这里宽放一些类型
+  media_id: number | string;
   status: string; // UNHANDLED, ACCEPTED, REJECTED, COMPLETED
   timestamp: number;
   title: string;
   media_type: string;
   season?: number;
-  require_key?: string;
+  // 后端始终下发；用作前端 React key 与 PUT/DELETE 的路由参数。
+  require_key: string;
   media_info?: {
     title: string;
     media_type: string;
@@ -1675,6 +1689,7 @@ export interface SigninPublicConfig {
   currency_name: string;
   daily_min: number;
   daily_max: number;
+  streak_bonus_enabled: boolean;
   bonus_table: SigninBonusRule[];
   reset_after_miss: boolean;
 }

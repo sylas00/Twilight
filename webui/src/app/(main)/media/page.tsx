@@ -19,6 +19,8 @@ import {
   ListTodo,
   ExternalLink,
   Trash2,
+  Fingerprint,
+  Copy,
 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -38,6 +40,28 @@ import { useToast } from "@/hooks/use-toast";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { api, type MediaItem, type MediaDetail, type InventoryCheckResult, type MediaRequest } from "@/lib/api";
 import { formatRelativeTime, cn } from "@/lib/utils";
+
+function buildRequestExternalUrl(req: MediaRequest): string | null {
+  const source = (req.source || "").toLowerCase();
+  const rawId = req.media_id;
+  if (rawId === undefined || rawId === null || rawId === "") return null;
+
+  if (source === "bangumi") {
+    const id = String(rawId).replace(/[^0-9]/g, "");
+    return id ? `https://bgm.tv/subject/${id}` : null;
+  }
+  if (source === "tmdb") {
+    const text = String(rawId);
+    const m = text.match(/^(?:(movie|tv):)?(\d+)$/i);
+    const id = m ? m[2] : text.replace(/[^0-9]/g, "");
+    if (!id) return null;
+    const declared = (req.media_info?.media_type || req.media_type || "").toLowerCase();
+    const prefix = m && m[1] ? m[1].toLowerCase() : null;
+    const tmdbType = prefix || (declared === "tv" || declared === "anime" ? "tv" : "movie");
+    return `https://www.themoviedb.org/${tmdbType}/${id}`;
+  }
+  return null;
+}
 
 export default function MediaPage() {
   const { toast } = useToast();
@@ -331,7 +355,11 @@ export default function MediaPage() {
     }
   };
 
-  const handleDelete = async (id: number) => {
+  const handleDelete = async (requireKey: string) => {
+    if (!requireKey) {
+      toast({ title: "缺少 require_key，无法删除", variant: "destructive" });
+      return;
+    }
     const ok = await confirm({
       title: "删除求片请求？",
       description: "该操作不可恢复。",
@@ -341,7 +369,7 @@ export default function MediaPage() {
     if (!ok) return;
 
     try {
-      const res = await api.deleteMediaRequest(id);
+      const res = await api.deleteMyMediaRequest(requireKey);
       if (res.success) {
         toast({ title: "删除成功", variant: "success" });
         myRequestsCacheRef.current = null;
@@ -629,7 +657,7 @@ export default function MediaPage() {
                 <div className="grid gap-4">
                   {myRequests.map((req) => (
                     <motion.div
-                      key={req.id}
+                      key={req.require_key || `${req.source}-${req.id}`}
                       initial={{ opacity: 0, x: -10 }}
                       animate={{ opacity: 1, x: 0 }}
                       className="group flex flex-col md:flex-row md:items-center justify-between gap-4 p-4 rounded-3xl bg-secondary/30 border border-white/40 hover:bg-white/60 transition-all duration-300 dark:bg-slate-950/40 dark:border-slate-700/70 dark:hover:bg-slate-900/80"
@@ -651,23 +679,68 @@ export default function MediaPage() {
                         </div>
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2 flex-wrap">
-                            <p className="font-black text-foreground truncate">{req.media_info?.title || "未知媒体"}</p>
+                            {(() => {
+                              const url = buildRequestExternalUrl(req);
+                              const title = req.media_info?.title || "未知媒体";
+                              if (!url) {
+                                return <p className="font-black text-foreground truncate">{title}</p>;
+                              }
+                              return (
+                                <a
+                                  href={url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="font-black text-foreground truncate underline decoration-dotted underline-offset-2 hover:text-primary inline-flex items-center gap-1"
+                                  title={`在 ${req.source.toUpperCase()} 上查看`}
+                                >
+                                  {title}
+                                  <ExternalLink className="h-3 w-3 shrink-0 opacity-70" />
+                                </a>
+                              );
+                            })()}
                             {req.media_info?.season && (
                               <span className="px-2 py-0.5 bg-primary/10 text-primary rounded-full text-[10px] font-black uppercase tracking-tighter">
                                 Sea {req.media_info.season}
                               </span>
                             )}
                           </div>
-                          <div className="flex items-center gap-2 mt-1">
+                          <div className="flex items-center gap-2 mt-1 flex-wrap">
                              <span className="text-[10px] font-black text-muted-foreground uppercase tracking-widest">
                                {formatRelativeTime(req.timestamp * 1000)}
                              </span>
                              <span className="w-1 h-1 bg-muted-foreground/30 rounded-full" />
                              <span className="text-[10px] font-black text-primary/70 uppercase">
-                               {req.source.toUpperCase()}
+                               {req.source.toUpperCase()}#{String(req.media_id ?? "")}
                              </span>
+                             {req.require_key && (
+                               <>
+                                 <span className="w-1 h-1 bg-muted-foreground/30 rounded-full" />
+                                 <span
+                                   className="inline-flex items-center gap-1 text-[10px] text-muted-foreground"
+                                   title="External Update Key（点击复制）"
+                                 >
+                                   <Fingerprint className="h-3 w-3" />
+                                   <code className="max-w-[8rem] truncate rounded bg-muted px-1 text-foreground sm:max-w-[14rem]">
+                                     {req.require_key}
+                                   </code>
+                                   <button
+                                     type="button"
+                                     onClick={() => {
+                                       navigator.clipboard.writeText(req.require_key).then(
+                                         () => toast({ title: "已复制 Key", variant: "success" }),
+                                         () => toast({ title: "复制失败", variant: "destructive" }),
+                                       );
+                                     }}
+                                     className="text-muted-foreground hover:text-foreground"
+                                     title="复制 Key"
+                                   >
+                                     <Copy className="h-3 w-3" />
+                                   </button>
+                                 </span>
+                               </>
+                             )}
                           </div>
-                          
+
                           {req.admin_note && (
                             <div className="mt-2 text-[11px] font-bold text-primary bg-primary/5 px-3 py-1.5 rounded-xl border border-primary/10 dark:bg-primary/10 dark:text-primary dark:border-primary/20">
                               💌 管理回复: {req.admin_note}
@@ -683,7 +756,7 @@ export default function MediaPage() {
                              size="icon" 
                              variant="ghost" 
                              className="h-10 w-10 rounded-xl hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-500/20 dark:hover:text-red-300 transition-colors"
-                             onClick={() => handleDelete(req.id)}
+                             onClick={() => handleDelete(req.require_key)}
                            >
                              <Trash2 className="h-4 w-4" />
                            </Button>

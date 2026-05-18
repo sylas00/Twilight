@@ -94,7 +94,15 @@ def verify_password(password: str, hashed: str) -> bool:
 
 
 def is_valid_email(email: str) -> bool:
-    """验证邮箱格式"""
+    """验证邮箱格式（同时受 RFC 5321 长度上限保护，避免被超长字符串撑爆存储）。"""
+    if not email or not isinstance(email, str):
+        return False
+    # RFC 5321: 本地部分 ≤ 64，完整地址 ≤ 254
+    if len(email) > 254:
+        return False
+    local, _, _domain = email.partition('@')
+    if len(local) > 64:
+        return False
     pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
     return bool(re.match(pattern, email))
 

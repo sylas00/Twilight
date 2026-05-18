@@ -49,7 +49,9 @@ class SigninSummary:
 
 
 def _bonus_table() -> list[tuple[int, int]]:
-    """返回 [(streak_day, bonus_points), ...]，按天数升序。"""
+    """返回 [(streak_day, bonus_points), ...]，按天数升序；总开关关闭时返回空表。"""
+    if not bool(SigninConfig.STREAK_BONUS_ENABLED):
+        return []
     days = list(SigninConfig.STREAK_BONUS_DAYS or [])
     points = list(SigninConfig.STREAK_BONUS_POINTS or [])
     table: list[tuple[int, int]] = []
@@ -110,6 +112,7 @@ class SigninService:
             'currency_name': SigninService.currency_name(),
             'daily_min': int(SigninConfig.DAILY_MIN or 0),
             'daily_max': int(SigninConfig.DAILY_MAX or 0),
+            'streak_bonus_enabled': bool(SigninConfig.STREAK_BONUS_ENABLED),
             'bonus_table': table,
             'reset_after_miss': bool(SigninConfig.RESET_AFTER_MISS),
         }

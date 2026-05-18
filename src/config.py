@@ -406,6 +406,8 @@ class SigninConfig(BaseConfig):
     CURRENCY_NAME: str = '星币'  # 货币展示名
     DAILY_MIN: int = 5  # 每日签到最少奖励
     DAILY_MAX: int = 20  # 每日签到最多奖励
+    # 连签加成总开关：关闭后即使 STREAK_BONUS_DAYS / STREAK_BONUS_POINTS 有值也不发放
+    STREAK_BONUS_ENABLED: bool = True
     # 连签加成：达到列表中的连签天数（含当日），额外奖励对应位置的积分
     STREAK_BONUS_DAYS: List[int] = [3, 7, 14, 30]
     STREAK_BONUS_POINTS: List[int] = [10, 50, 100, 300]

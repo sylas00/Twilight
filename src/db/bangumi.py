@@ -307,3 +307,31 @@ class BangumiRequireOperate:
                     return True
                 return False
 
+    @staticmethod
+    async def delete_require_by_key(require_key: str) -> bool:
+        """根据 require_key 删除求片（跨两个 source 表查找）。"""
+        async with BangumiSessionFactory() as session:
+            async with session.begin():
+                for model in [BangumiRequireModel, TMDBRequireModel]:
+                    result = await session.execute(
+                        select(model).filter_by(require_key=require_key).limit(1)
+                    )
+                    req = result.scalar_one_or_none()
+                    if req:
+                        await session.delete(req)
+                        return True
+                return False
+
+    @staticmethod
+    async def get_all_requires() -> List[BangumiDatabaseModel]:
+        """获取所有求片（不区分状态），按时间倒序。"""
+        async with BangumiSessionFactory() as session:
+            results = []
+            for model in [BangumiRequireModel, TMDBRequireModel]:
+                result = await session.execute(
+                    select(model).order_by(model.timestamp.desc(), model.id.desc())
+                )
+                results.extend(list(result.scalars().all()))
+            results.sort(key=lambda r: (r.timestamp or 0, r.id or 0), reverse=True)
+            return results
+

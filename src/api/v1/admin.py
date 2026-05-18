@@ -976,20 +976,26 @@ async def list_media_requests():
     # 转换状态
     status_map = {
         'pending': ReqStatus.UNHANDLED,
+        'unhandled': ReqStatus.UNHANDLED,
         'accepted': ReqStatus.ACCEPTED,
         'rejected': ReqStatus.REJECTED,
         'completed': ReqStatus.COMPLETED,
+        'downloading': ReqStatus.DOWNLOADING,
     }
-    
-    target_status = status_map.get(status_filter, ReqStatus.UNHANDLED)
-    
+
     # 获取请求列表
-    if status_filter == 'pending':
+    if status_filter == 'all':
+        # 全部状态
+        requests = await BangumiRequireOperate.get_all_requires()
+    elif status_filter == 'pending':
         # 待处理：获取所有未处理/已接受/下载中的
         requests = await BangumiRequireOperate.get_all_pending_list()
+    elif status_filter in status_map:
+        # 其他单一状态
+        requests = await BangumiRequireOperate.get_all_requires_by_status(status_map[status_filter])
     else:
-        # 其他状态：按状态筛选
-        requests = await BangumiRequireOperate.get_all_requires_by_status(target_status)
+        # 未识别状态默认 pending
+        requests = await BangumiRequireOperate.get_all_pending_list()
     
     telegram_ids = [req.telegram_id for req in requests if req.telegram_id is not None]
     users_map = await UserOperate.get_users_by_telegram_ids(telegram_ids)
@@ -1056,9 +1062,9 @@ async def list_media_requests():
 @require_auth
 @require_admin
 async def update_or_delete_media_request(request_id: int):
-    """更新或删除求片请求（管理员）"""
+    """更新或删除求片请求（管理员，按数值 id；同 id 存在于两个 source 表时建议改用 by-key 接口）"""
     from src.db.bangumi import BangumiRequireOperate
-    
+
     if request.method == 'DELETE':
         req = await BangumiRequireOperate.get_require(request_id)
         if not req:
@@ -1069,14 +1075,14 @@ async def update_or_delete_media_request(request_id: int):
 
     from src.services import MediaRequestService
     from src.db.bangumi import ReqStatus
-    
+
     data = request.get_json() or {}
     status_str = data.get('status', '').lower()
     note = (data.get('note') or '').strip()
 
     if len(note) > 1000:
         return api_response(False, "管理员备注过长，最多 1000 字符", code=400)
-    
+
     # 转换状态
     status_map = {
         'pending': ReqStatus.UNHANDLED,
@@ -1085,22 +1091,72 @@ async def update_or_delete_media_request(request_id: int):
         'completed': ReqStatus.COMPLETED,
         'downloading': ReqStatus.DOWNLOADING,
     }
-    
+
     if status_str not in status_map:
         return api_response(False, f"无效状态，支持: {', '.join(status_map.keys())}", code=400)
-    
+
     target_status = status_map[status_str]
-    
+
     # 尝试从 body 获取 source 或通过 ID 自动寻找
     source = data.get('source')
-    
+
     # 更新状态
     success, message = await MediaRequestService.update_request_status(request_id, target_status, note, source)
-    
+
     if success:
         return api_response(True, message or f"状态已更新为 {status_str}")
     else:
         return api_response(False, message or "请求不存在", code=404)
+
+
+@admin_bp.route('/media-requests/by-key/<string:require_key>', methods=['PUT', 'DELETE'])
+@require_auth
+@require_admin
+async def update_or_delete_media_request_by_key(require_key: str):
+    """按 require_key（全局唯一）更新或删除求片请求。
+
+    推荐用这条而非按 id 的版本：Bangumi 与 TMDB 两张 require 表各自自增 id，
+    数值 id 可能撞车，会让操作落到错误的求片上。
+    """
+    from src.db.bangumi import BangumiRequireOperate
+    from src.services import MediaRequestService
+    from src.db.bangumi import ReqStatus
+
+    if not require_key or len(require_key) > 64:
+        return api_response(False, "require_key 缺失或格式不合法", code=400)
+
+    if request.method == 'DELETE':
+        success = await BangumiRequireOperate.delete_require_by_key(require_key)
+        if success:
+            return api_response(True, "请求已删除")
+        return api_response(False, "请求不存在", code=404)
+
+    data = request.get_json() or {}
+    status_str = data.get('status', '').lower()
+    note = (data.get('note') or '').strip()
+
+    if len(note) > 1000:
+        return api_response(False, "管理员备注过长，最多 1000 字符", code=400)
+
+    status_map = {
+        'pending': ReqStatus.UNHANDLED,
+        'accepted': ReqStatus.ACCEPTED,
+        'rejected': ReqStatus.REJECTED,
+        'completed': ReqStatus.COMPLETED,
+        'downloading': ReqStatus.DOWNLOADING,
+    }
+    if status_str not in status_map:
+        return api_response(False, f"无效状态，支持: {', '.join(status_map.keys())}", code=400)
+
+    # update_status_by_key 接收 ReqStatus + 可选 note
+    success = await BangumiRequireOperate.update_status_by_key(
+        require_key,
+        status_map[status_str],
+        note=note or None,
+    )
+    if success:
+        return api_response(True, f"状态已更新为 {status_str}")
+    return api_response(False, "请求不存在", code=404)
 
 
 @admin_bp.route('/regcodes', methods=['POST'])
