@@ -281,6 +281,10 @@ async def use_invite_code():
 
     user.EMBYID = emby_user.id
     user.ACTIVE_STATUS = True
+    if not user.CREATE_AT:
+        user.CREATE_AT = user.REGISTER_TIME or timestamp()
+    if not user.REGISTER_TIME:
+        user.REGISTER_TIME = user.CREATE_AT
     if user.ROLE in (Role.ADMIN.value, Role.WHITE_LIST.value):
         user.EXPIRED_AT = 253402214400
     else:

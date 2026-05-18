@@ -3,7 +3,9 @@
 
 提供系统配置、状态等信息
 """
-from typing import Optional
+from typing import Optional, Any
+from pathlib import Path
+import shutil
 
 from flask import Blueprint, request, g
 from sqlalchemy import text
@@ -13,7 +15,8 @@ from src.config import (
     Config, EmbyConfig, RegisterConfig,
     DeviceLimitConfig, APIConfig, SecurityConfig,
     SchedulerConfig, NotificationConfig, TelegramConfig,
-    BangumiSyncConfig, SigninConfig
+    BangumiSyncConfig, SigninConfig,
+    backup_config_file, fill_missing_config_items, get_primary_config_path,
 )
 from src import __version__
 from src.db.user import UsersSessionFactory
@@ -23,6 +26,14 @@ import logging
 import threading
 
 _reload_logger = logging.getLogger(__name__)
+
+
+_CONFIG_CLASSES = [
+    Config, EmbyConfig, TelegramConfig, RegisterConfig,
+    DeviceLimitConfig, APIConfig, SecurityConfig,
+    SchedulerConfig, NotificationConfig, BangumiSyncConfig,
+    SigninConfig,
+]
 
 
 def _schedule_process_restart(delay: float = 1.5) -> None:
@@ -62,6 +73,84 @@ def _schedule_process_restart(delay: float = 1.5) -> None:
 
     threading.Thread(target=_do_exit, daemon=True, name="twilight-restart").start()
     _reload_logger.info("🛑 已请求重启整个程序，将在 %.1fs 后退出，请确保由进程管理器拉起", delay)
+
+
+def _reload_runtime_config() -> None:
+    """重新加载运行时配置类。"""
+    Config.update_from_toml("Global")
+    EmbyConfig.update_from_toml('Emby')
+    TelegramConfig.update_from_toml('Telegram')
+    RegisterConfig.update_from_toml('SAR')
+    DeviceLimitConfig.update_from_toml('DeviceLimit')
+    APIConfig.update_from_toml('API')
+    SecurityConfig.update_from_toml('Security')
+    SchedulerConfig.update_from_toml('Scheduler')
+    NotificationConfig.update_from_toml('Notification')
+    BangumiSyncConfig.update_from_toml('BangumiSync')
+    SigninConfig.update_from_toml('Signin')
+
+
+def _infer_schema_field_type(key: str, value: Any) -> str:
+    """根据键名和值推断可视化配置字段类型。"""
+    key_lower = (key or '').lower()
+    if any(token in key_lower for token in ('token', 'password', 'secret', 'api_key', 'apikey')):
+        return 'secret'
+    if isinstance(value, bool):
+        return 'bool'
+    if isinstance(value, int):
+        return 'int'
+    if isinstance(value, float):
+        return 'float'
+    if isinstance(value, list):
+        return 'list'
+    return 'string'
+
+
+def _augment_schema_with_missing_fields(schema: dict) -> None:
+    """将配置类中存在但 schema 未声明的字段自动补进可视化配置。"""
+    section_class_map = {
+        'Global': Config,
+        'Emby': EmbyConfig,
+        'Telegram': TelegramConfig,
+        'SAR': RegisterConfig,
+        'DeviceLimit': DeviceLimitConfig,
+        'API': APIConfig,
+        'Security': SecurityConfig,
+        'Scheduler': SchedulerConfig,
+        'Notification': NotificationConfig,
+        'BangumiSync': BangumiSyncConfig,
+        'Signin': SigninConfig,
+    }
+    sections = schema.get('sections', [])
+    section_map = {section.get('key'): section for section in sections}
+
+    for section_key, conf_cls in section_class_map.items():
+        section = section_map.get(section_key)
+        if not section:
+            continue
+
+        fields = section.get('fields', [])
+        existing = {field.get('key') for field in fields}
+        defaults = conf_cls._get_default_values()
+
+        for field_key, default_value in defaults.items():
+            if field_key in existing:
+                continue
+
+            value = getattr(conf_cls, field_key.upper(), default_value)
+            fields.append({
+                'key': field_key,
+                'label': field_key,
+                'type': _infer_schema_field_type(field_key, value),
+                'description': '自动识别的配置项（尚未补充专用说明）',
+                'value': value,
+            })
+
+
+def _backup_config_before_update(reason: str) -> Optional[Path]:
+    """更新前备份当前配置文件。"""
+    config_file = get_primary_config_path()
+    return backup_config_file(config_file, reason=reason)
 
 
 def _parse_csv_ids(value: str) -> set:
@@ -444,11 +533,7 @@ async def get_system_stats():
 @require_admin
 async def get_config_toml():
     """获取 config.toml 文件内容（管理员）"""
-    import os
-    from pathlib import Path
-    from src.config import ROOT_PATH
-    
-    config_file = ROOT_PATH / 'config.toml'
+    config_file = get_primary_config_path()
     
     if not config_file.exists():
         return api_response(False, "配置文件不存在", code=404)
@@ -472,9 +557,6 @@ async def get_config_toml():
 @require_admin
 async def update_config_toml():
     """更新 config.toml 文件内容（管理员）"""
-    import os
-    from pathlib import Path
-    from src.config import ROOT_PATH
     import toml
     
     data = request.get_json() or {}
@@ -483,7 +565,7 @@ async def update_config_toml():
     if content is None:
         return api_response(False, "缺少 content 参数", code=400)
     
-    config_file = ROOT_PATH / 'config.toml'
+    config_file = get_primary_config_path()
     
     # 验证 TOML 格式
     try:
@@ -491,46 +573,27 @@ async def update_config_toml():
     except Exception as e:
         return api_response(False, f"TOML 格式错误: {e}", code=400)
     
-    # 备份原文件
-    backup_file = ROOT_PATH / 'config.toml.backup'
+    backup_file: Optional[Path] = None
     try:
-        if config_file.exists():
-            import shutil
-            shutil.copy2(config_file, backup_file)
+        backup_file = _backup_config_before_update('admin-toml')
     except Exception as e:
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.warning(f"备份配置文件失败: {e}")
+        _reload_logger.warning(f"备份配置文件失败: {e}")
     
     # 写入新内容
     try:
         with open(config_file, 'w', encoding='utf-8') as f:
             f.write(content)
-        
-        # 重新加载配置
-        from src.config import (
-            Config, EmbyConfig, RegisterConfig,
-            DeviceLimitConfig, APIConfig, SecurityConfig,
-            SchedulerConfig, NotificationConfig, TelegramConfig,
-            BangumiSyncConfig, SigninConfig,
-        )
-        Config.update_from_toml("Global")
-        EmbyConfig.update_from_toml('Emby')
-        TelegramConfig.update_from_toml('Telegram')
-        RegisterConfig.update_from_toml('SAR')
-        DeviceLimitConfig.update_from_toml('DeviceLimit')
-        APIConfig.update_from_toml('API')
-        SecurityConfig.update_from_toml('Security')
-        SchedulerConfig.update_from_toml('Scheduler')
-        NotificationConfig.update_from_toml('Notification')
-        BangumiSyncConfig.update_from_toml('BangumiSync')
-        SigninConfig.update_from_toml('Signin')
+
+        fill_result = fill_missing_config_items(config_classes=_CONFIG_CLASSES, auto_backup=False)
+        _reload_runtime_config()
 
         # 改为重启整个程序（由进程管理器/启动脚本拉起）
         _schedule_process_restart()
 
         return api_response(True, "配置已保存，程序将自动重启", {
             'path': str(config_file),
+            'backup_path': str(backup_file) if backup_file else None,
+            'filled_items': int(fill_result.get('filled_items', 0) or 0),
             'restart': True,
         })
     except Exception as e:
@@ -539,9 +602,8 @@ async def update_config_toml():
         logger.error(f"更新配置文件失败: {e}", exc_info=True)
         
         # 尝试恢复备份
-        if backup_file.exists():
+        if backup_file and backup_file.exists():
             try:
-                import shutil
                 shutil.copy2(backup_file, config_file)
             except Exception:
                 pass
@@ -554,8 +616,6 @@ async def update_config_toml():
 @require_admin
 async def get_config_schema():
     """获取配置项的结构化描述信息（管理员）"""
-    from src.config import BangumiSyncConfig
-    
     schema = {
         'sections': [
             {
@@ -729,6 +789,7 @@ async def get_config_schema():
         ],
     }
     
+    _augment_schema_with_missing_fields(schema)
     return api_response(True, "获取成功", schema)
 
 
@@ -738,7 +799,6 @@ async def get_config_schema():
 async def update_config_by_schema():
     """通过结构化数据更新配置（管理员）"""
     import toml
-    from src.config import ROOT_PATH, BangumiSyncConfig
     
     data = request.get_json() or {}
     sections = data.get('sections', {})
@@ -746,7 +806,7 @@ async def update_config_by_schema():
     if not sections:
         return api_response(False, "缺少配置数据", code=400)
     
-    config_file = ROOT_PATH / 'config.toml'
+    config_file = get_primary_config_path()
     
     # 读取当前配置
     try:
@@ -754,15 +814,11 @@ async def update_config_by_schema():
     except Exception as e:
         return api_response(False, f"读取配置文件失败: {e}", code=500)
     
-    # 备份原文件
-    backup_file = ROOT_PATH / 'config.toml.backup'
+    backup_file: Optional[Path] = None
     try:
-        if config_file.exists():
-            import shutil
-            shutil.copy2(config_file, backup_file)
+        backup_file = _backup_config_before_update('admin-schema')
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning(f"备份配置文件失败: {e}")
+        _reload_logger.warning(f"备份配置文件失败: {e}")
     
     # 更新配置
     for section_key, fields in sections.items():
@@ -776,31 +832,26 @@ async def update_config_by_schema():
         with open(config_file, 'w', encoding='utf-8') as f:
             toml.dump(config, f)
 
+        fill_result = fill_missing_config_items(config_classes=_CONFIG_CLASSES, auto_backup=False)
+
         # 重新加载所有配置（仅供短暂回应使用，实际仍以重启后为准）
-        Config.update_from_toml("Global")
-        EmbyConfig.update_from_toml('Emby')
-        TelegramConfig.update_from_toml('Telegram')
-        RegisterConfig.update_from_toml('SAR')
-        DeviceLimitConfig.update_from_toml('DeviceLimit')
-        APIConfig.update_from_toml('API')
-        SecurityConfig.update_from_toml('Security')
-        SchedulerConfig.update_from_toml('Scheduler')
-        NotificationConfig.update_from_toml('Notification')
-        BangumiSyncConfig.update_from_toml('BangumiSync')
-        SigninConfig.update_from_toml('Signin')
+        _reload_runtime_config()
 
         # 改为重启整个程序（由进程管理器/启动脚本拉起）
         _schedule_process_restart()
 
-        return api_response(True, "配置已保存，程序将自动重启", {'restart': True})
+        return api_response(True, "配置已保存，程序将自动重启", {
+            'backup_path': str(backup_file) if backup_file else None,
+            'filled_items': int(fill_result.get('filled_items', 0) or 0),
+            'restart': True,
+        })
     except Exception as e:
         import logging
         logging.getLogger(__name__).error(f"更新配置文件失败: {e}", exc_info=True)
         
         # 尝试恢复备份
-        if backup_file.exists():
+        if backup_file and backup_file.exists():
             try:
-                import shutil
                 shutil.copy2(backup_file, config_file)
             except Exception:
                 pass

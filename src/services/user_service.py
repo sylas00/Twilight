@@ -372,6 +372,7 @@ class UserService:
             
             # 9999-12-31 的时间戳（管理员和白名单使用）
             permanent_expire = 253402214400
+            created_at = timestamp()
 
             # 管理员默认激活，到期时间为 9999 年
             if is_admin:
@@ -385,7 +386,8 @@ class UserService:
                     ROLE=Role.ADMIN.value,
                     ACTIVE_STATUS=True,  # 管理员默认激活
                     EXPIRED_AT=permanent_expire,
-                    REGISTER_TIME=timestamp(),
+                    CREATE_AT=created_at,
+                    REGISTER_TIME=created_at,
                     PENDING_EMBY=True,
                     PENDING_EMBY_DAYS=pending_emby_days,
                 )
@@ -401,7 +403,8 @@ class UserService:
                     ROLE=Role.WHITE_LIST.value,
                     ACTIVE_STATUS=True,
                     EXPIRED_AT=permanent_expire,
-                    REGISTER_TIME=timestamp(),
+                    CREATE_AT=created_at,
+                    REGISTER_TIME=created_at,
                     PENDING_EMBY=True,
                     PENDING_EMBY_DAYS=pending_emby_days,
                 )
@@ -417,7 +420,8 @@ class UserService:
                     ROLE=Role.NORMAL.value,
                     ACTIVE_STATUS=True,  # 账户激活，可以登录
                     EXPIRED_AT=-1,
-                    REGISTER_TIME=timestamp(),
+                    CREATE_AT=created_at,
+                    REGISTER_TIME=created_at,
                     PENDING_EMBY=True,
                     PENDING_EMBY_DAYS=pending_emby_days,
                 )
@@ -550,6 +554,7 @@ class UserService:
             
             # 计算过期时间
             expire_at = timestamp() + days_to_seconds(days) if days > 0 else -1
+            now_ts = timestamp()
             
             # 创建或更新本地用户记录
             existing_user = None
@@ -568,7 +573,11 @@ class UserService:
                 if existing_user.ROLE == Role.UNRECOGNIZED.value:
                     existing_user.ROLE = Role.NORMAL.value
                 existing_user.EMAIL = email
-                existing_user.REGISTER_TIME = timestamp()
+                # 历史数据修复：仅在缺失时回填，避免补建 Emby 覆盖账号创建时间
+                if not existing_user.CREATE_AT:
+                    existing_user.CREATE_AT = existing_user.REGISTER_TIME or now_ts
+                if not existing_user.REGISTER_TIME:
+                    existing_user.REGISTER_TIME = existing_user.CREATE_AT or now_ts
                 import json
                 other_data = {}
                 if existing_user.OTHER:
@@ -630,7 +639,8 @@ class UserService:
                     PASSWORD=hash_password(user_password),
                     ROLE=user_role,
                     EXPIRED_AT=user_expire,
-                    REGISTER_TIME=timestamp(),
+                    CREATE_AT=now_ts,
+                    REGISTER_TIME=now_ts,
                     OTHER=json.dumps({'emby_username': username}),
                 )
                 await UserOperate.add_user(user)
@@ -1181,7 +1191,7 @@ class UserService:
             "bgm_mode": user.BGM_MODE,
             "avatar": user.AVATAR or None,
             "register_time": user.REGISTER_TIME,
-            "created_at": user.REGISTER_TIME,  # 前端兼容字段
+            "created_at": user.CREATE_AT or user.REGISTER_TIME,  # 前端兼容字段
             "emby_id": user.EMBYID,  # 添加 Emby ID
             "emby_username": embay_username,
             "pending_emby": bool(getattr(user, 'PENDING_EMBY', False)) and not user.EMBYID,
@@ -1289,6 +1299,7 @@ class UserService:
             
             # 创建本地用户（永久有效）
             new_uid = await UserOperate.get_new_uid()
+            now_ts = timestamp()
             user = UserModel(
                 UID=new_uid,
                 TELEGRAM_ID=telegram_id,
@@ -1298,7 +1309,8 @@ class UserService:
                 PASSWORD=hash_password(password),
                 ROLE=Role.WHITE_LIST.value,
                 EXPIRED_AT=-1,  # 永不过期
-                REGISTER_TIME=timestamp(),
+                CREATE_AT=now_ts,
+                REGISTER_TIME=now_ts,
             )
             await UserOperate.add_user(user)
             

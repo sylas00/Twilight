@@ -76,6 +76,80 @@ import {
 } from "@/components/ui/tooltip";
 import type { ConfigSchema, ConfigSection, ConfigField } from "@/lib/api";
 
+const NUMERIC_LIST_FIELD_KEYS = new Set([
+  "streak_bonus_days",
+  "streak_bonus_points",
+]);
+
+const MIXED_ID_LIST_FIELD_KEYS = new Set([
+  "admin_id",
+  "group_id",
+  "channel_id",
+]);
+
+function toEditorList(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.map((v) => String(v ?? ""));
+  }
+  if (value === null || value === undefined || value === "") {
+    return [];
+  }
+  return [String(value)];
+}
+
+function serializeListValue(
+  fieldKey: string,
+  value: unknown,
+  originalValue: unknown
+): unknown[] {
+  const items = toEditorList(value)
+    .map((v) => v.trim())
+    .filter((v) => v.length > 0);
+
+  if (MIXED_ID_LIST_FIELD_KEYS.has(fieldKey)) {
+    return items.map((v) => (/^-?\d+$/.test(v) ? Number.parseInt(v, 10) : v));
+  }
+
+  const originalLooksNumeric =
+    Array.isArray(originalValue) &&
+    originalValue.length > 0 &&
+    originalValue.every((v) => typeof v === "number");
+
+  if (NUMERIC_LIST_FIELD_KEYS.has(fieldKey) || originalLooksNumeric) {
+    return items.map((v) => (/^-?\d+$/.test(v) ? Number.parseInt(v, 10) : v));
+  }
+
+  return items;
+}
+
+function serializeFieldValue(
+  field: ConfigField,
+  editedValue: unknown,
+  originalValue: unknown
+): unknown {
+  if (field.type === "list") {
+    return serializeListValue(field.key, editedValue, originalValue);
+  }
+  if (field.type === "int") {
+    if (typeof editedValue === "number") return editedValue;
+    if (typeof editedValue === "string" && /^-?\d+$/.test(editedValue.trim())) {
+      return Number.parseInt(editedValue.trim(), 10);
+    }
+    return originalValue;
+  }
+  if (field.type === "float") {
+    if (typeof editedValue === "number") return editedValue;
+    if (typeof editedValue === "string" && /^-?\d+(\.\d+)?$/.test(editedValue.trim())) {
+      return Number.parseFloat(editedValue.trim());
+    }
+    return originalValue;
+  }
+  if (field.type === "bool") {
+    return Boolean(editedValue);
+  }
+  return editedValue;
+}
+
 // ==================== 动画 ====================
 
 const container = {
@@ -145,10 +219,10 @@ function ListField({
   value,
   onChange,
 }: {
-  value: unknown[];
+  value: unknown;
   onChange: (v: unknown[]) => void;
 }) {
-  const items = Array.isArray(value) ? value.map(String) : [];
+  const items = toEditorList(value);
 
   const addItem = () => onChange([...items, ""]);
   const removeItem = (idx: number) =>
@@ -680,7 +754,8 @@ export default function AdminConfigPage() {
       for (const section of res.data.sections) {
         initial[section.key] = {};
         for (const field of section.fields) {
-          initial[section.key][field.key] = field.value;
+          initial[section.key][field.key] =
+            field.type === "list" ? toEditorList(field.value) : field.value;
         }
       }
       setEditedValues(JSON.parse(JSON.stringify(initial)));
@@ -765,7 +840,21 @@ export default function AdminConfigPage() {
 
     setIsSavingSchema(true);
     try {
-      const res = await api.updateConfigBySchema(editedValues);
+      const sectionsPayload: Record<string, Record<string, unknown>> = {};
+      for (const section of schema?.sections ?? []) {
+        sectionsPayload[section.key] = {};
+        for (const field of section.fields) {
+          const edited = editedValues[section.key]?.[field.key];
+          const original = originalValues[section.key]?.[field.key];
+          sectionsPayload[section.key][field.key] = serializeFieldValue(
+            field,
+            edited,
+            original
+          );
+        }
+      }
+
+      const res = await api.updateConfigBySchema(sectionsPayload);
       if (res.success) {
         setOriginalValues(JSON.parse(JSON.stringify(editedValues)));
         toast({

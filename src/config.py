@@ -5,6 +5,8 @@
 """
 import logging
 import os
+import shutil
+from datetime import datetime
 from pathlib import Path
 from typing import List, Union, Any, Optional
 
@@ -20,6 +22,39 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 ROOT_PATH: Path = Path(__file__).parent.parent.resolve()
+
+
+def get_primary_config_path() -> Path:
+    """返回主配置文件路径（支持环境变量覆盖）。"""
+    return Path(os.environ.get("TWILIGHT_CONFIG_FILE", str(ROOT_PATH / 'config.toml')))
+
+
+def backup_config_file(config_path: Optional[Path] = None, reason: str = 'manual') -> Optional[Path]:
+    """创建配置备份（时间戳轮转 + 兼容单文件 backup）。"""
+    path = Path(config_path) if config_path else get_primary_config_path()
+    if not path.exists():
+        return None
+
+    safe_reason = ''.join(ch for ch in str(reason) if ch.isalnum() or ch in ('-', '_')) or 'manual'
+    timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+    backup_dir = path.parent / 'config_backups'
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    rotated_backup = backup_dir / f"{path.name}.{timestamp}.{safe_reason}.bak"
+
+    try:
+        shutil.copy2(path, rotated_backup)
+    except Exception as err:
+        logger.warning(f"创建轮转备份失败: {err}")
+        return None
+
+    # 兼容旧逻辑：保留一个固定 backup 文件，便于人工快速恢复
+    legacy_backup = path.parent / f"{path.name}.backup"
+    try:
+        shutil.copy2(path, legacy_backup)
+    except Exception as err:
+        logger.warning(f"更新兼容备份文件失败: {err}")
+
+    return rotated_backup
 
 
 class BaseConfig:
@@ -148,9 +183,10 @@ class BaseConfig:
         :return: 保存是否成功
         """
         try:
+            primary_path = get_primary_config_path()
             # 读取现有配置
             try:
-                config = toml.load(cls.toml_file_path)
+                config = toml.load(primary_path)
             except FileNotFoundError:
                 config = {}
 
@@ -171,7 +207,7 @@ class BaseConfig:
                 config.update(config_data)
 
             # 写入文件
-            with open(cls.toml_file_path, 'w', encoding='utf-8') as f:
+            with open(primary_path, 'w', encoding='utf-8') as f:
                 toml.dump(config, f)
             return True
             
@@ -211,9 +247,11 @@ class BaseConfig:
         """
         if not cls._section:
             return False
+
+        primary_path = get_primary_config_path()
         
         try:
-            config = toml.load(cls.toml_file_path)
+            config = toml.load(primary_path)
         except (FileNotFoundError, toml.TomlDecodeError):
             config = {}
         
@@ -237,7 +275,7 @@ class BaseConfig:
         config[cls._section].update(missing)
         
         try:
-            with open(cls.toml_file_path, 'w', encoding='utf-8') as f:
+            with open(primary_path, 'w', encoding='utf-8') as f:
                 toml.dump(config, f)
             logger.info(f"[{cls._section}] 已补全 {len(missing)} 个缺失配置项: {', '.join(missing.keys())}")
             return True
@@ -434,6 +472,86 @@ _config_classes = [
     SchedulerConfig, NotificationConfig, BangumiSyncConfig,
     SigninConfig,
 ]
-_filled = sum(1 for c in _config_classes if c.fill_missing_to_toml())
-if _filled:
-    logger.info(f"已补全 {_filled} 个配置节的缺失项")
+
+
+def fill_missing_config_items(
+    config_classes: Optional[List[type]] = None,
+    auto_backup: bool = False,
+) -> dict:
+    """补全所有配置节的缺失项，并可选在写回前自动备份。"""
+    classes = config_classes or _config_classes
+    primary_path = get_primary_config_path()
+
+    try:
+        config = toml.load(primary_path)
+    except FileNotFoundError:
+        config = {}
+    except toml.TomlDecodeError as err:
+        logger.error(f"配置文件格式错误，跳过缺项补全 ({primary_path}): {err}")
+        return {'filled_sections': 0, 'filled_items': 0, 'backup_path': None, 'error': str(err)}
+
+    missing_by_section: dict[str, list[str]] = {}
+    filled_items = 0
+
+    for conf_cls in classes:
+        section = getattr(conf_cls, '_section', None)
+        if not section:
+            continue
+
+        raw_section_data = config.get(section, {})
+        section_data = raw_section_data if isinstance(raw_section_data, dict) else {}
+        defaults = conf_cls._get_default_values()
+
+        section_missing: dict[str, Any] = {}
+        for key, default_value in defaults.items():
+            if key in section_data:
+                continue
+            if isinstance(default_value, Path):
+                default_value = conf_cls._serialize_config_value(default_value)
+            section_missing[key] = default_value
+
+        if not section_missing:
+            continue
+
+        if section not in config or not isinstance(config.get(section), dict):
+            config[section] = {}
+        config[section].update(section_missing)
+        missing_by_section[section] = sorted(section_missing.keys())
+        filled_items += len(section_missing)
+
+    if filled_items == 0:
+        return {'filled_sections': 0, 'filled_items': 0, 'backup_path': None}
+
+    backup_path: Optional[Path] = None
+    if auto_backup and primary_path.exists():
+        backup_path = backup_config_file(primary_path, reason='fill-missing')
+
+    try:
+        with open(primary_path, 'w', encoding='utf-8') as f:
+            toml.dump(config, f)
+    except Exception as err:
+        logger.error(f"写回补全后的配置失败: {err}")
+        return {
+            'filled_sections': 0,
+            'filled_items': 0,
+            'backup_path': str(backup_path) if backup_path else None,
+            'error': str(err),
+        }
+
+    for section, keys in missing_by_section.items():
+        logger.info(f"[{section}] 已补全 {len(keys)} 个缺失配置项: {', '.join(keys)}")
+
+    return {
+        'filled_sections': len(missing_by_section),
+        'filled_items': filled_items,
+        'backup_path': str(backup_path) if backup_path else None,
+    }
+
+
+_fill_result = fill_missing_config_items(auto_backup=True)
+if _fill_result.get('filled_sections'):
+    logger.info(
+        "已补全 %s 个配置节，共 %s 项缺失配置",
+        _fill_result['filled_sections'],
+        _fill_result['filled_items'],
+    )

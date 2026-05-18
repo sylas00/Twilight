@@ -111,6 +111,7 @@ async def list_users():
             'emby_id': user.EMBYID,
             'expired_at': user.EXPIRED_AT,
             'register_time': user.REGISTER_TIME,
+            'created_at': user.CREATE_AT or user.REGISTER_TIME,
             'last_login_time': user.LAST_LOGIN_TIME,
             'bgm_mode': user.BGM_MODE,
         })
@@ -1682,7 +1683,7 @@ async def cleanup_invalid_users():
         if has_tg or has_emby:
             continue
         # 注册时间判定
-        reg_time = u.REGISTER_TIME or u.CREATE_AT or 0
+        reg_time = u.CREATE_AT or u.REGISTER_TIME or 0
         if reg_time > threshold:
             continue  # 注册时间不够久
         invalid_users.append(u)
@@ -1695,6 +1696,7 @@ async def cleanup_invalid_users():
             'role': u.ROLE,
             'active': u.ACTIVE_STATUS,
             'register_time': u.REGISTER_TIME,
+            'created_at': u.CREATE_AT or u.REGISTER_TIME,
         })
 
     deleted_count = 0
