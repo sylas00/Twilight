@@ -10,6 +10,7 @@
 - CRON_HOUR / CRON_MINUTE: cron_daily 时使用，0-23 / 0-59
 - INTERVAL_SECONDS: interval 时使用，正整数（前端按分钟/小时换算后下发）
 """
+
 import time
 from typing import Optional
 
@@ -53,12 +54,12 @@ MAX_INTERVAL_SECONDS = 7 * 86400
 
 def serialize_override(record: SchedulerScheduleModel) -> dict:
     return {
-        'job_id': record.JOB_ID,
-        'type': record.TRIGGER_TYPE,
-        'hour': record.CRON_HOUR,
-        'minute': record.CRON_MINUTE,
-        'seconds': record.INTERVAL_SECONDS,
-        'updated_at': record.UPDATED_AT,
+        "job_id": record.JOB_ID,
+        "type": record.TRIGGER_TYPE,
+        "hour": record.CRON_HOUR,
+        "minute": record.CRON_MINUTE,
+        "seconds": record.INTERVAL_SECONDS,
+        "updated_at": record.UPDATED_AT,
     }
 
 
@@ -99,9 +100,7 @@ class SchedulerScheduleOperate:
             if seconds is None:
                 raise ValueError("interval 需要 seconds")
             if not (MIN_INTERVAL_SECONDS <= int(seconds) <= MAX_INTERVAL_SECONDS):
-                raise ValueError(
-                    f"间隔越界：必须在 {MIN_INTERVAL_SECONDS}-{MAX_INTERVAL_SECONDS} 秒之间"
-                )
+                raise ValueError(f"间隔越界：必须在 {MIN_INTERVAL_SECONDS}-{MAX_INTERVAL_SECONDS} 秒之间")
             payload_seconds = int(seconds)
             payload_hour = None
             payload_minute = None

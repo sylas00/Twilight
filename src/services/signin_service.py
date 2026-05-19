@@ -3,6 +3,7 @@
 
 积分仅装饰用途，不影响系统权限；无排行榜。
 """
+
 import logging
 import random
 from dataclasses import dataclass
@@ -31,7 +32,7 @@ class SigninResult:
     current_streak: int = 0
     longest_streak: int = 0
     current_points: int = 0
-    currency_name: str = ''
+    currency_name: str = ""
 
 
 @dataclass
@@ -99,28 +100,25 @@ class SigninService:
 
     @staticmethod
     def currency_name() -> str:
-        return RegisterConfig.CURRENCY_NAME or '积分'
+        return RegisterConfig.CURRENCY_NAME or "积分"
 
     @staticmethod
     def public_config() -> dict:
-        table = [
-            {'streak_days': d, 'bonus_points': p}
-            for d, p in _bonus_table()
-        ]
+        table = [{"streak_days": d, "bonus_points": p} for d, p in _bonus_table()]
         return {
-            'enabled': SigninService.is_enabled(),
-            'currency_name': SigninService.currency_name(),
-            'daily_min': int(RegisterConfig.DAILY_MIN or 0),
-            'daily_max': int(RegisterConfig.DAILY_MAX or 0),
-            'streak_bonus_enabled': bool(RegisterConfig.STREAK_BONUS_ENABLED),
-            'bonus_table': table,
-            'reset_after_miss': bool(RegisterConfig.RESET_AFTER_MISS),
+            "enabled": SigninService.is_enabled(),
+            "currency_name": SigninService.currency_name(),
+            "daily_min": int(RegisterConfig.DAILY_MIN or 0),
+            "daily_max": int(RegisterConfig.DAILY_MAX or 0),
+            "streak_bonus_enabled": bool(RegisterConfig.STREAK_BONUS_ENABLED),
+            "bonus_table": table,
+            "reset_after_miss": bool(RegisterConfig.RESET_AFTER_MISS),
         }
 
     @staticmethod
     async def signin(user: UserModel) -> SigninResult:
         if not SigninService.is_enabled():
-            return SigninResult(success=False, message='签到功能未开启', currency_name=SigninService.currency_name())
+            return SigninResult(success=False, message="签到功能未开启", currency_name=SigninService.currency_name())
 
         today = _today_str()
         already = await SigninOperate.get_today_record(user.UID, today)
@@ -128,7 +126,7 @@ class SigninService:
             points = await SigninOperate.get_user_points(user.UID)
             return SigninResult(
                 success=False,
-                message='今日已签到',
+                message="今日已签到",
                 today_signed=True,
                 daily_points=already.DAILY_POINTS,
                 bonus_points=already.BONUS_POINTS,
@@ -162,7 +160,7 @@ class SigninService:
 
         return SigninResult(
             success=True,
-            message='签到成功',
+            message="签到成功",
             today_signed=True,
             daily_points=daily_points,
             bonus_points=bonus_points,
@@ -227,12 +225,12 @@ class SigninService:
         records = await SigninOperate.list_history(user.UID, limit=limit)
         return [
             {
-                'date': r.SIGNIN_DATE,
-                'daily_points': r.DAILY_POINTS,
-                'bonus_points': r.BONUS_POINTS,
-                'total': (r.DAILY_POINTS or 0) + (r.BONUS_POINTS or 0),
-                'streak': r.STREAK_AT_TIME,
-                'created_at': r.CREATED_AT,
+                "date": r.SIGNIN_DATE,
+                "daily_points": r.DAILY_POINTS,
+                "bonus_points": r.BONUS_POINTS,
+                "total": (r.DAILY_POINTS or 0) + (r.BONUS_POINTS or 0),
+                "streak": r.STREAK_AT_TIME,
+                "created_at": r.CREATED_AT,
             }
             for r in records
         ]

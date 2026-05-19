@@ -9,17 +9,16 @@ Twilight - Emby 用户管理系统
 - 可选的 Telegram Bot 接口
 """
 
-__version__ = '1.0.0'
-__author__ = 'MoYuanCN'
+__version__ = "1.0.0"
+__author__ = "MoYuanCN"
 
 from src.config import Config, EmbyConfig, TelegramConfig, RegisterConfig
 
 __all__ = [
-    '__version__',
-    '__author__',
-    'Config',
-    'EmbyConfig', 
-    'TelegramConfig',
-    'RegisterConfig',
+    "__version__",
+    "__author__",
+    "Config",
+    "EmbyConfig",
+    "TelegramConfig",
+    "RegisterConfig",
 ]
-

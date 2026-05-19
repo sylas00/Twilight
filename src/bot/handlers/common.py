@@ -3,6 +3,7 @@
 
 提供装饰器、公共函数和隐私保护逻辑
 """
+
 import asyncio
 import logging
 from functools import wraps
@@ -23,6 +24,7 @@ PRIVATE_HINT_DELETE_DELAY = 8
 
 
 # ==================== 辅助函数 ====================
+
 
 def get_admin_ids() -> List[int]:
     """获取管理员 ID 列表"""
@@ -85,9 +87,7 @@ async def safe_edit_message(message, text: str, reply_markup=None, parse_mode="M
 async def redirect_to_private(update: Update, context: ContextTypes.DEFAULT_TYPE, hint: str = "请在私聊中使用此功能"):
     """群组中引导用户到私聊"""
     bot_username = get_bot_username(context)
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📨 前往私聊", url=f"https://t.me/{bot_username}")]
-    ])
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("📨 前往私聊", url=f"https://t.me/{bot_username}")]])
     reply = await update.message.reply_text(f"🔒 {hint}", reply_markup=keyboard)
     asyncio.create_task(safe_delete_message(update.message, GROUP_MSG_DELETE_DELAY))
     asyncio.create_task(safe_delete_message(reply, GROUP_MSG_DELETE_DELAY))
@@ -103,8 +103,10 @@ async def answer_callback_safe(query, text: str = None, show_alert: bool = False
 
 # ==================== 装饰器 ====================
 
+
 def require_admin(func: Callable) -> Callable:
     """要求管理员权限（支持 command + callback）"""
+
     @wraps(func)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
         user_id = update.effective_user.id if update.effective_user else 0
@@ -115,11 +117,13 @@ def require_admin(func: Callable) -> Callable:
                 await update.message.reply_text("⚠️ 此命令仅限管理员使用")
             return
         return await func(update, context, *args, **kwargs)
+
     return wrapper
 
 
 def require_private(func: Callable) -> Callable:
     """要求私聊；callback query 跳过检查"""
+
     @wraps(func)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
         if update.callback_query:
@@ -128,49 +132,52 @@ def require_private(func: Callable) -> Callable:
             await redirect_to_private(update, context)
             return
         return await func(update, context, *args, **kwargs)
+
     return wrapper
 
 
 def group_allowed(delete_after: int = 0, brief: bool = False):
     """允许群组使用，自动管理消息生命周期"""
+
     def decorator(func: Callable) -> Callable:
         @wraps(func)
         async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
-            kwargs['_is_group'] = is_group(update)
-            kwargs['_brief'] = brief and is_group(update)
+            kwargs["_is_group"] = is_group(update)
+            kwargs["_brief"] = brief and is_group(update)
             result = await func(update, context, *args, **kwargs)
             if is_group(update) and delete_after > 0 and update.message:
                 asyncio.create_task(safe_delete_message(update.message, delete_after))
             return result
+
         return wrapper
+
     return decorator
 
 
 def require_registered(func: Callable) -> Callable:
     """要求已注册用户，自动注入 user"""
+
     @wraps(func)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
         if not update.effective_user:
             return
         user = await UserOperate.get_user_by_telegram_id(update.effective_user.id)
         if not user:
-            msg = (
-                "⚠️ 您尚未绑定账号\n\n"
-                "请先发送 /bind，再按提示发送绑定码\n"
-                "请先在网页端完成注册后再绑定"
-            )
+            msg = "⚠️ 您尚未绑定账号\n\n" "请先发送 /bind，再按提示发送绑定码\n" "请先在网页端完成注册后再绑定"
             if update.callback_query:
                 await answer_callback_safe(update.callback_query, "请先绑定或注册账号", show_alert=True)
             elif update.message:
                 await update.message.reply_text(msg)
             return
-        kwargs['user'] = user
+        kwargs["user"] = user
         return await func(update, context, *args, **kwargs)
+
     return wrapper
 
 
 def require_panel(func: Callable) -> Callable:
     """要求 TG 面板已开启（enable_tg_panel=true），管理员同样受限"""
+
     @wraps(func)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
         if TelegramConfig.ENABLE_TG_PANEL:
@@ -181,6 +188,7 @@ def require_panel(func: Callable) -> Callable:
         elif update.message:
             await update.message.reply_text(hint)
         return
+
     return wrapper
 
 
@@ -191,6 +199,7 @@ def is_panel_enabled() -> bool:
 
 def require_subscribe(func: Callable) -> Callable:
     """要求订阅频道/加入群组"""
+
     @wraps(func)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
         if not TelegramConfig.FORCE_SUBSCRIBE:
@@ -206,8 +215,8 @@ def require_subscribe(func: Callable) -> Callable:
         for cid in channel_ids:
             try:
                 member = await context.bot.get_chat_member(cid, user_id)
-                if member.status in ['left', 'kicked']:
-                    label = str(cid)[1:] if str(cid).startswith('@') else str(cid)
+                if member.status in ["left", "kicked"]:
+                    label = str(cid)[1:] if str(cid).startswith("@") else str(cid)
                     not_joined.append(("📢 加入频道", f"https://t.me/{label}"))
             except Exception:
                 pass
@@ -218,16 +227,14 @@ def require_subscribe(func: Callable) -> Callable:
         for gid in group_ids:
             try:
                 member = await context.bot.get_chat_member(gid, user_id)
-                if member.status in ['left', 'kicked']:
-                    label = str(gid)[1:] if str(gid).startswith('@') else str(gid)
+                if member.status in ["left", "kicked"]:
+                    label = str(gid)[1:] if str(gid).startswith("@") else str(gid)
                     not_joined.append(("💬 加入群组", f"https://t.me/{label}"))
             except Exception:
                 pass
 
         if not_joined:
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton(t, url=u)] for t, u in not_joined
-            ])
+            keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(t, url=u)] for t, u in not_joined])
             target = update.callback_query.message if update.callback_query else update.message
             if update.callback_query:
                 await answer_callback_safe(update.callback_query, "请先加入频道和群组", show_alert=True)
@@ -236,16 +243,18 @@ def require_subscribe(func: Callable) -> Callable:
             return
 
         return await func(update, context, *args, **kwargs)
+
     return wrapper
 
 
 # ==================== 工具函数 ====================
 
+
 def escape_markdown(text: str) -> str:
     """转义 Markdown 特殊字符"""
-    special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+    special_chars = ["_", "*", "[", "]", "(", ")", "~", "`", ">", "#", "+", "-", "=", "|", "{", "}", ".", "!"]
     for char in special_chars:
-        text = text.replace(char, f'\\{char}')
+        text = text.replace(char, f"\\{char}")
     return text
 
 
@@ -282,6 +291,7 @@ def format_user_info(user, brief: bool = False) -> str:
 
 # ==================== 公用键盘 ====================
 
+
 def back_button(callback_data: str = "back_start", text: str = "♻️ 主菜单") -> InlineKeyboardButton:
     return InlineKeyboardButton(text, callback_data=callback_data)
 
@@ -294,13 +304,14 @@ def main_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
     panel_on = is_panel_enabled()
     buttons = [[InlineKeyboardButton("👤 个人中心", callback_data="panel_user")]]
     if panel_on:
-        buttons.append([
-            InlineKeyboardButton("🎬 Emby", callback_data="panel_emby"),
-            InlineKeyboardButton("📋 帮助", callback_data="panel_help"),
-        ])
+        buttons.append(
+            [
+                InlineKeyboardButton("🎬 Emby", callback_data="panel_emby"),
+                InlineKeyboardButton("📋 帮助", callback_data="panel_help"),
+            ]
+        )
     else:
         buttons.append([InlineKeyboardButton("📋 帮助", callback_data="panel_help")])
     if is_admin(user_id) and panel_on:
         buttons.append([InlineKeyboardButton("🔧 管理面板", callback_data="panel_admin")])
     return InlineKeyboardMarkup(buttons)
-

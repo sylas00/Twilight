@@ -9,17 +9,21 @@ from sqlalchemy.ext.asyncio import AsyncAttrs
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from src.config import Config
+
+
 class UsersDatabaseModel(AsyncAttrs, DeclarativeBase):
     pass
+
+
 class Role(Enum):
-    ADMIN = 0       # 管理员
-    NORMAL = 1      # 普通注册用户
+    ADMIN = 0  # 管理员
+    NORMAL = 1  # 普通注册用户
     WHITE_LIST = 2  # 白名单用户
     UNRECOGNIZED = -1  # 未注册用户
 
 
 class UserModel(UsersDatabaseModel):
-    __tablename__ = 'users'
+    __tablename__ = "users"
     UID: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     TELEGRAM_ID: Mapped[Optional[int]] = mapped_column(Integer, index=True, nullable=True)
     USERNAME: Mapped[Optional[str]] = mapped_column(String, index=True, nullable=True)
@@ -29,31 +33,33 @@ class UserModel(UsersDatabaseModel):
     CREATE_AT: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     REGISTER_TIME: Mapped[Optional[int]] = mapped_column(Integer, default=lambda: int(time.time()), nullable=True)
     EXPIRED_AT: Mapped[Optional[int]] = mapped_column(Integer, default=-1, nullable=True)
-    EMBYID: Mapped[Optional[str]] = mapped_column(String, index=True, default='', nullable=True)
-    PASSWORD: Mapped[Optional[str]] = mapped_column(String, default='', nullable=True)
+    EMBYID: Mapped[Optional[str]] = mapped_column(String, index=True, default="", nullable=True)
+    PASSWORD: Mapped[Optional[str]] = mapped_column(String, default="", nullable=True)
     BGM_MODE: Mapped[Optional[bool]] = mapped_column(Boolean, default=False, nullable=True)
-    BGM_TOKEN: Mapped[Optional[str]] = mapped_column(String, default='', nullable=True)
+    BGM_TOKEN: Mapped[Optional[str]] = mapped_column(String, default="", nullable=True)
     LAST_LOGIN_TIME: Mapped[Optional[int]] = mapped_column(Integer, default=0, nullable=True)
-    LAST_LOGIN_IP: Mapped[Optional[str]] = mapped_column(String, default='', nullable=True)
-    LAST_LOGIN_UA: Mapped[Optional[str]] = mapped_column(String, default='', nullable=True)
-    DEVICE_LIST: Mapped[Optional[str]] = mapped_column(String, default='', nullable=True)
+    LAST_LOGIN_IP: Mapped[Optional[str]] = mapped_column(String, default="", nullable=True)
+    LAST_LOGIN_UA: Mapped[Optional[str]] = mapped_column(String, default="", nullable=True)
+    DEVICE_LIST: Mapped[Optional[str]] = mapped_column(String, default="", nullable=True)
     APIKEY_STATUS: Mapped[Optional[bool]] = mapped_column(Boolean, default=False, nullable=True)
-    APIKEY: Mapped[Optional[str]] = mapped_column(String, default='', nullable=True)
-    APIKEY_PERMISSIONS: Mapped[Optional[str]] = mapped_column(String, default='', nullable=True)  # JSON: API Key 权限范围
-    AVATAR: Mapped[Optional[str]] = mapped_column(String, default='', nullable=True)  # 用户头像 URL
+    APIKEY: Mapped[Optional[str]] = mapped_column(String, default="", nullable=True)
+    APIKEY_PERMISSIONS: Mapped[Optional[str]] = mapped_column(
+        String, default="", nullable=True
+    )  # JSON: API Key 权限范围
+    AVATAR: Mapped[Optional[str]] = mapped_column(String, default="", nullable=True)  # 用户头像 URL
     # 是否处于"待补建 Emby 账号"状态：注册码注册后未绑定 Emby 时为 True；首次登录后由用户补完。
     PENDING_EMBY: Mapped[Optional[bool]] = mapped_column(Boolean, default=False, nullable=True)
     # 待补建时，注册码给定的开通天数（None 时回退到 EMBY_DIRECT_REGISTER_DAYS）
     PENDING_EMBY_DAYS: Mapped[Optional[int]] = mapped_column(Integer, default=None, nullable=True)
-    OTHER: Mapped[Optional[str]] = mapped_column(String, default='', nullable=True)
+    OTHER: Mapped[Optional[str]] = mapped_column(String, default="", nullable=True)
 
 
 class TelegramRebindRequestModel(UsersDatabaseModel):
-    __tablename__ = 'telegram_rebind_requests'
+    __tablename__ = "telegram_rebind_requests"
     ID: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     UID: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
     OLD_TELEGRAM_ID: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    STATUS: Mapped[str] = mapped_column(String, default='pending', nullable=False, index=True)
+    STATUS: Mapped[str] = mapped_column(String, default="pending", nullable=False, index=True)
     REASON: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     ADMIN_NOTE: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     REVIEWER_UID: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
@@ -63,7 +69,7 @@ class TelegramRebindRequestModel(UsersDatabaseModel):
 
 
 class TelegramBindCodeModel(UsersDatabaseModel):
-    __tablename__ = 'telegram_bind_codes'
+    __tablename__ = "telegram_bind_codes"
 
     CODE: Mapped[str] = mapped_column(String(16), primary_key=True)
     SCENE: Mapped[str] = mapped_column(String(16), index=True, nullable=False)  # register | user
@@ -75,7 +81,7 @@ class TelegramBindCodeModel(UsersDatabaseModel):
 
 
 class AuthTokenModel(UsersDatabaseModel):
-    __tablename__ = 'auth_tokens'
+    __tablename__ = "auth_tokens"
 
     TOKEN: Mapped[str] = mapped_column(String(64), primary_key=True)
     UID: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
@@ -142,20 +148,16 @@ class TelegramBindCodeOperate:
     async def delete_code(code: str) -> None:
         async with UsersSessionFactory() as session:
             async with session.begin():
-                await session.execute(
-                    delete(TelegramBindCodeModel)
-                    .where(TelegramBindCodeModel.CODE == code)
-                )
+                await session.execute(delete(TelegramBindCodeModel).where(TelegramBindCodeModel.CODE == code))
 
     @staticmethod
     async def delete_user_codes(uid: int) -> None:
         async with UsersSessionFactory() as session:
             async with session.begin():
                 await session.execute(
-                    delete(TelegramBindCodeModel)
-                    .where(
+                    delete(TelegramBindCodeModel).where(
                         TelegramBindCodeModel.UID == uid,
-                        TelegramBindCodeModel.SCENE == 'user',
+                        TelegramBindCodeModel.SCENE == "user",
                     )
                 )
 
@@ -167,7 +169,7 @@ class TelegramBindCodeOperate:
                 select(TelegramBindCodeModel.CODE)
                 .where(
                     TelegramBindCodeModel.UID == uid,
-                    TelegramBindCodeModel.SCENE == 'user',
+                    TelegramBindCodeModel.SCENE == "user",
                     TelegramBindCodeModel.EXPIRES_AT > now,
                 )
                 .order_by(TelegramBindCodeModel.CREATED_AT.desc())
@@ -180,19 +182,14 @@ class TelegramBindCodeOperate:
         now = int(time.time())
         async with UsersSessionFactory() as session:
             async with session.begin():
-                await session.execute(
-                    delete(TelegramBindCodeModel)
-                    .where(TelegramBindCodeModel.EXPIRES_AT <= now)
-                )
+                await session.execute(delete(TelegramBindCodeModel).where(TelegramBindCodeModel.EXPIRES_AT <= now))
 
     @staticmethod
     async def count_active() -> int:
         now = int(time.time())
         async with UsersSessionFactory() as session:
             scalar = await session.execute(
-                select(func.count())
-                .select_from(TelegramBindCodeModel)
-                .where(TelegramBindCodeModel.EXPIRES_AT > now)
+                select(func.count()).select_from(TelegramBindCodeModel).where(TelegramBindCodeModel.EXPIRES_AT > now)
             )
             return int(scalar.scalar_one() or 0)
 
@@ -224,10 +221,7 @@ class TelegramBindCodeOperate:
                 if not codes:
                     return
 
-                await session.execute(
-                    delete(TelegramBindCodeModel)
-                    .where(TelegramBindCodeModel.CODE.in_(codes))
-                )
+                await session.execute(delete(TelegramBindCodeModel).where(TelegramBindCodeModel.CODE.in_(codes)))
 
 
 class AuthTokenOperate:
@@ -271,38 +265,31 @@ class AuthTokenOperate:
     async def delete_token(token: str) -> None:
         async with UsersSessionFactory() as session:
             async with session.begin():
-                await session.execute(
-                    delete(AuthTokenModel)
-                    .where(AuthTokenModel.TOKEN == token)
-                )
+                await session.execute(delete(AuthTokenModel).where(AuthTokenModel.TOKEN == token))
 
     @staticmethod
     async def delete_user_tokens(uid: int) -> None:
         async with UsersSessionFactory() as session:
             async with session.begin():
-                await session.execute(
-                    delete(AuthTokenModel)
-                    .where(AuthTokenModel.UID == uid)
-                )
+                await session.execute(delete(AuthTokenModel).where(AuthTokenModel.UID == uid))
 
     @staticmethod
     async def cleanup_expired() -> None:
         now = int(time.time())
         async with UsersSessionFactory() as session:
             async with session.begin():
-                await session.execute(
-                    delete(AuthTokenModel)
-                    .where(AuthTokenModel.EXPIRES_AT <= now)
-                )
+                await session.execute(delete(AuthTokenModel).where(AuthTokenModel.EXPIRES_AT <= now))
 
 
 class TelegramRebindRequestOperate:
     @staticmethod
-    async def create_request(uid: int, old_telegram_id: Optional[int], reason: Optional[str] = None) -> TelegramRebindRequestModel:
+    async def create_request(
+        uid: int, old_telegram_id: Optional[int], reason: Optional[str] = None
+    ) -> TelegramRebindRequestModel:
         request = TelegramRebindRequestModel(
             UID=uid,
             OLD_TELEGRAM_ID=old_telegram_id,
-            STATUS='pending',
+            STATUS="pending",
             REASON=reason,
             CREATED_AT=int(time.time()),
             UPDATED_AT=int(time.time()),
@@ -326,13 +313,13 @@ class TelegramRebindRequestOperate:
     @staticmethod
     async def get_request_by_id(request_id: int) -> Optional[TelegramRebindRequestModel]:
         async with UsersSessionFactory() as session:
-            scalar = await session.execute(
-                select(TelegramRebindRequestModel).filter_by(ID=request_id).limit(1)
-            )
+            scalar = await session.execute(select(TelegramRebindRequestModel).filter_by(ID=request_id).limit(1))
             return scalar.scalar_one_or_none()
 
     @staticmethod
-    async def list_requests(status: Optional[str] = None, page: int = 1, per_page: int = 20) -> tuple[list[TelegramRebindRequestModel], int]:
+    async def list_requests(
+        status: Optional[str] = None, page: int = 1, per_page: int = 20
+    ) -> tuple[list[TelegramRebindRequestModel], int]:
         async with UsersSessionFactory() as session:
             query = select(TelegramRebindRequestModel)
             if status:
@@ -359,15 +346,15 @@ class TelegramRebindRequestOperate:
         async with UsersSessionFactory() as session:
             async with session.begin():
                 values = {
-                    'STATUS': status,
-                    'UPDATED_AT': int(time.time()),
+                    "STATUS": status,
+                    "UPDATED_AT": int(time.time()),
                 }
                 if admin_note is not None:
-                    values['ADMIN_NOTE'] = admin_note
+                    values["ADMIN_NOTE"] = admin_note
                 if reviewer_uid is not None:
-                    values['REVIEWER_UID'] = reviewer_uid
-                if status in ('approved', 'rejected'):
-                    values['REVIEWED_AT'] = int(time.time())
+                    values["REVIEWER_UID"] = reviewer_uid
+                if status in ("approved", "rejected"):
+                    values["REVIEWED_AT"] = int(time.time())
 
                 result = await session.execute(
                     update(TelegramRebindRequestModel)
@@ -386,12 +373,12 @@ class UserOperate:
     @staticmethod
     def _hash_apikey(apikey: str) -> str:
         """对 API Key 做单向哈希，避免数据库明文存储。"""
-        return hashlib.sha256(apikey.encode('utf-8')).hexdigest()
+        return hashlib.sha256(apikey.encode("utf-8")).hexdigest()
 
     @staticmethod
     def _escape_like_pattern(value: str) -> str:
         """转义 SQL LIKE 模式字符，避免 %/_ 被当作通配符。"""
-        return value.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+        return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
     @staticmethod
     async def get_new_uid() -> int:
@@ -433,9 +420,7 @@ class UserOperate:
             return {}
 
         async with UsersSessionFactory() as session:
-            result = await session.execute(
-                select(UserModel).where(UserModel.TELEGRAM_ID.in_(unique_ids))
-            )
+            result = await session.execute(select(UserModel).where(UserModel.TELEGRAM_ID.in_(unique_ids)))
             users = list(result.scalars().all())
             return {u.TELEGRAM_ID: u for u in users if u.TELEGRAM_ID is not None}
 
@@ -460,19 +445,17 @@ class UserOperate:
             result = await session.execute(
                 select(UserModel).where(
                     UserModel.EMBYID.isnot(None),
-                    UserModel.EMBYID != '',
+                    UserModel.EMBYID != "",
                 )
             )
             return list(result.scalars().all())
-    
+
     @staticmethod
     async def get_user_by_emby_username(username: str) -> Optional[UserModel]:
         """根据 Emby/Jellyfin 用户名查找用户（不再兼容旧 OTHER 扫描逻辑）。"""
         async with UsersSessionFactory() as session:
             scalar = await session.execute(
-                select(UserModel)
-                .where(func.lower(UserModel.USERNAME) == username.lower())
-                .limit(1)
+                select(UserModel).where(func.lower(UserModel.USERNAME) == username.lower()).limit(1)
             )
             return scalar.scalar_one_or_none()
 
@@ -499,9 +482,7 @@ class UserOperate:
         """将用户的Emby账号与Telegram解绑"""
         async with UsersSessionFactory() as session:
             async with session.begin():
-                await session.execute(
-                    update(UserModel).where(UserModel.UID == user.UID).values(TELEGRAM_ID=None)
-                )
+                await session.execute(update(UserModel).where(UserModel.UID == user.UID).values(TELEGRAM_ID=None))
 
     @staticmethod
     async def renew_user_expire_time(user: UserModel, duration: int) -> None:
@@ -535,10 +516,12 @@ class UserOperate:
         """获取注册用户数量（排除未注册用户、白名单用户、管理员）"""
         async with UsersSessionFactory() as session:
             result = await session.execute(
-                select(func.count()).select_from(UserModel).where(
+                select(func.count())
+                .select_from(UserModel)
+                .where(
                     UserModel.ROLE != Role.UNRECOGNIZED.value,
                     UserModel.ROLE != Role.WHITE_LIST.value,
-                    UserModel.ROLE != Role.ADMIN.value
+                    UserModel.ROLE != Role.ADMIN.value,
                 )
             )
             return result.scalar_one()
@@ -548,12 +531,14 @@ class UserOperate:
         """获取活跃用户数量（排除未注册用户、白名单用户、管理员、过期用户）"""
         async with UsersSessionFactory() as session:
             result = await session.execute(
-                select(func.count()).select_from(UserModel).where(
+                select(func.count())
+                .select_from(UserModel)
+                .where(
                     UserModel.ROLE != Role.UNRECOGNIZED.value,
                     UserModel.ROLE != Role.WHITE_LIST.value,
                     UserModel.ROLE != Role.ADMIN.value,
                     UserModel.ACTIVE_STATUS == True,
-                    UserModel.EXPIRED_AT > int(time.time())
+                    UserModel.EXPIRED_AT > int(time.time()),
                 )
             )
             return result.scalar_one()
@@ -563,10 +548,7 @@ class UserOperate:
         """获取当前已绑定 Emby 的用户数量（EMBYID 非空）。"""
         async with UsersSessionFactory() as session:
             result = await session.execute(
-                select(func.count()).select_from(UserModel).where(
-                    UserModel.EMBYID.is_not(None),
-                    UserModel.EMBYID != ''
-                )
+                select(func.count()).select_from(UserModel).where(UserModel.EMBYID.is_not(None), UserModel.EMBYID != "")
             )
             return result.scalar_one()
 
@@ -576,16 +558,14 @@ class UserOperate:
         重置用户 API Key（数据库仅保存哈希，明文仅返回一次）
         """
         import secrets
+
         new_apikey = f"key-{secrets.token_hex(24)}"
         apikey_hash = UserOperate._hash_apikey(new_apikey)
 
         async with UsersSessionFactory() as session:
             async with session.begin():
                 await session.execute(
-                    update(UserModel).where(UserModel.UID == usr.UID).values(
-                        APIKEY=apikey_hash,
-                        APIKEY_STATUS=True
-                    )
+                    update(UserModel).where(UserModel.UID == usr.UID).values(APIKEY=apikey_hash, APIKEY_STATUS=True)
                 )
         return new_apikey
 
@@ -594,9 +574,7 @@ class UserOperate:
         """根据 API Key 获取用户"""
         apikey_hash = UserOperate._hash_apikey(apikey)
         async with UsersSessionFactory() as session:
-            scalar = await session.execute(
-                select(UserModel).filter_by(APIKEY=apikey_hash, APIKEY_STATUS=True).limit(1)
-            )
+            scalar = await session.execute(select(UserModel).filter_by(APIKEY=apikey_hash, APIKEY_STATUS=True).limit(1))
             return scalar.scalar_one_or_none()
 
     @staticmethod
@@ -604,22 +582,18 @@ class UserOperate:
         """设置 API Key 状态"""
         async with UsersSessionFactory() as session:
             async with session.begin():
-                await session.execute(
-                    update(UserModel).where(UserModel.UID == uid).values(APIKEY_STATUS=enabled)
-                )
+                await session.execute(update(UserModel).where(UserModel.UID == uid).values(APIKEY_STATUS=enabled))
                 return True
 
     @staticmethod
-    async def update_login_info(uid: int, ip: str = '', ua: str = '') -> None:
+    async def update_login_info(uid: int, ip: str = "", ua: str = "") -> None:
         """更新用户登录信息"""
         async with UsersSessionFactory() as session:
             async with session.begin():
                 await session.execute(
-                    update(UserModel).where(UserModel.UID == uid).values(
-                        LAST_LOGIN_TIME=int(time.time()),
-                        LAST_LOGIN_IP=ip,
-                        LAST_LOGIN_UA=ua
-                    )
+                    update(UserModel)
+                    .where(UserModel.UID == uid)
+                    .values(LAST_LOGIN_TIME=int(time.time()), LAST_LOGIN_IP=ip, LAST_LOGIN_UA=ua)
                 )
 
     @staticmethod
@@ -632,11 +606,11 @@ class UserOperate:
         async with UsersSessionFactory() as session:
             result = await session.execute(
                 select(UserModel).where(
-                    UserModel.EXPIRED_AT != -1,   # 排除永不过期
-                    UserModel.EXPIRED_AT > 0,     # 排除待开通 sentinel
+                    UserModel.EXPIRED_AT != -1,  # 排除永不过期
+                    UserModel.EXPIRED_AT > 0,  # 排除待开通 sentinel
                     UserModel.EXPIRED_AT < current_time,  # 已过期
                     UserModel.ACTIVE_STATUS == True,  # 仍然启用
-                    UserModel.EMBYID != '',       # 有 Emby 账户
+                    UserModel.EMBYID != "",  # 有 Emby 账户
                     UserModel.EMBYID.isnot(None),
                 )
             )
@@ -659,7 +633,7 @@ class UserOperate:
                     UserModel.EXPIRED_AT > current_time,  # 还未过期
                     UserModel.EXPIRED_AT <= expire_threshold,  # 但即将过期
                     UserModel.ACTIVE_STATUS == True,
-                    UserModel.EMBYID != '',       # 没绑 Emby 也跳过
+                    UserModel.EMBYID != "",  # 没绑 Emby 也跳过
                     UserModel.EMBYID.isnot(None),
                 )
             )
@@ -687,18 +661,21 @@ class UserOperate:
           注册流程半路出错留下的占位记录，由人工核对，不能让定时任务一刀切。
         """
         from sqlalchemy import or_, func as _func
+
         threshold = int(time.time()) - days * 86400
         reg_time = _func.coalesce(UserModel.REGISTER_TIME, UserModel.CREATE_AT)
 
         conditions = [
-            or_(UserModel.EMBYID.is_(None), UserModel.EMBYID == ''),
+            or_(UserModel.EMBYID.is_(None), UserModel.EMBYID == ""),
             reg_time.isnot(None),
             reg_time <= threshold,
-            UserModel.ROLE.notin_([
-                Role.ADMIN.value,
-                Role.WHITE_LIST.value,
-                Role.UNRECOGNIZED.value,
-            ]),
+            UserModel.ROLE.notin_(
+                [
+                    Role.ADMIN.value,
+                    Role.WHITE_LIST.value,
+                    Role.UNRECOGNIZED.value,
+                ]
+            ),
         ]
         if preserve_tg_bound:
             conditions.append(UserModel.TELEGRAM_ID.is_(None))
@@ -748,17 +725,16 @@ class UserOperate:
             if has_emby is True:
                 # 已绑定 Emby：EMBYID 非空且非空字符串
                 conditions.append(UserModel.EMBYID.isnot(None))
-                conditions.append(UserModel.EMBYID != '')
+                conditions.append(UserModel.EMBYID != "")
             elif has_emby is False:
                 # 未绑定 Emby：EMBYID 为空或空字符串
                 from sqlalchemy import or_ as _or_emby
-                conditions.append(
-                    _or_emby(UserModel.EMBYID.is_(None), UserModel.EMBYID == '')
-                )
+
+                conditions.append(_or_emby(UserModel.EMBYID.is_(None), UserModel.EMBYID == ""))
             if search:
                 escaped = UserOperate._escape_like_pattern(search)
                 like = f"%{escaped}%"
-                or_clauses = [UserModel.USERNAME.ilike(like, escape='\\')]
+                or_clauses = [UserModel.USERNAME.ilike(like, escape="\\")]
                 if search.isdigit():
                     try:
                         as_int = int(search)
@@ -767,6 +743,7 @@ class UserOperate:
                     except ValueError:
                         pass
                 from sqlalchemy import or_ as _or
+
                 conditions.append(_or(*or_clauses))
 
             count_query = select(func.count()).select_from(UserModel)
@@ -777,26 +754,26 @@ class UserOperate:
 
             # 排序：字段名映射
             sort_map = {
-                'uid': UserModel.UID,
-                'username': UserModel.USERNAME,
-                'role': UserModel.ROLE,
-                'active': UserModel.ACTIVE_STATUS,
-                'expired_at': UserModel.EXPIRED_AT,
-                'register_time': UserModel.REGISTER_TIME,
-                'last_login_time': UserModel.LAST_LOGIN_TIME,
+                "uid": UserModel.UID,
+                "username": UserModel.USERNAME,
+                "role": UserModel.ROLE,
+                "active": UserModel.ACTIVE_STATUS,
+                "expired_at": UserModel.EXPIRED_AT,
+                "register_time": UserModel.REGISTER_TIME,
+                "last_login_time": UserModel.LAST_LOGIN_TIME,
             }
             order_field = UserModel.UID
             order_desc = True
             if isinstance(sort_by, str) and sort_by:
                 base = sort_by.strip()
-                direction = 'desc'
-                for suffix in ('_desc', '_asc'):
+                direction = "desc"
+                for suffix in ("_desc", "_asc"):
                     if base.endswith(suffix):
-                        direction = suffix.strip('_')
+                        direction = suffix.strip("_")
                         base = base[: -len(suffix)]
                         break
                 order_field = sort_map.get(base, UserModel.UID)
-                order_desc = direction != 'asc'
+                order_desc = direction != "asc"
 
             order_clause = order_field.desc() if order_desc else order_field.asc()
             tiebreak = UserModel.UID.desc() if order_field is not UserModel.UID else None
@@ -810,7 +787,7 @@ class UserOperate:
 
     @staticmethod
     async def get_active_telegram_bound_users() -> list[UserModel]:
-        """获取所有「ACTIVE_STATUS=True 且绑定了 Telegram」的非管理员/非白名单用户。
+        """获取所有「ACTIVE_STATUS=True 且绑定了 Telegram」的普通用户。
 
         供定时群组成员资格检查使用。
         """
@@ -821,13 +798,14 @@ class UserOperate:
                     UserModel.TELEGRAM_ID.isnot(None),
                     UserModel.ROLE != Role.ADMIN.value,
                     UserModel.ROLE != Role.WHITE_LIST.value,
+                    UserModel.ROLE != Role.UNRECOGNIZED.value,
                 )
             )
             return list(result.scalars().all())
 
     @staticmethod
     async def get_inactive_telegram_bound_users() -> list[UserModel]:
-        """获取所有「ACTIVE_STATUS=False 且绑定了 Telegram」的非管理员/非白名单用户。
+        """获取所有「ACTIVE_STATUS=False 且绑定了 Telegram」的普通用户。
 
         用于群组巡检时识别“已禁用但已重新入群”的候选账号，供管理员人工复核是否恢复。
         """
@@ -838,6 +816,7 @@ class UserOperate:
                     UserModel.TELEGRAM_ID.isnot(None),
                     UserModel.ROLE != Role.ADMIN.value,
                     UserModel.ROLE != Role.WHITE_LIST.value,
+                    UserModel.ROLE != Role.UNRECOGNIZED.value,
                 )
             )
             return list(result.scalars().all())
@@ -881,7 +860,7 @@ class UserOperate:
                 conditions.append(~UserModel.ROLE.in_(roles_to_exclude))
             if only_with_emby:
                 conditions.append(UserModel.EMBYID.isnot(None))
-                conditions.append(UserModel.EMBYID != '')
+                conditions.append(UserModel.EMBYID != "")
             if only_active:
                 conditions.append(UserModel.ACTIVE_STATUS == True)
 
@@ -911,8 +890,6 @@ class UserOperate:
         async with UsersSessionFactory() as session:
             async with session.begin():
                 result = await session.execute(
-                    update(UserModel)
-                    .where(UserModel.UID.in_(uids))
-                    .values(EXPIRED_AT=expired_at)
+                    update(UserModel).where(UserModel.UID.in_(uids)).values(EXPIRED_AT=expired_at)
                 )
                 return int(result.rowcount or 0)

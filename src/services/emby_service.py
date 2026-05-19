@@ -3,6 +3,7 @@ Emby 业务服务层
 
 封装 Emby 相关的高级业务操作
 """
+
 import json
 import logging
 from typing import Optional, List, Tuple, Dict, Any
@@ -27,6 +28,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class EmbyUserStatus:
     """Emby 用户状态"""
+
     user: Optional[UserModel]
     emby_user: Optional[EmbyUser]
     is_synced: bool  # 本地与 Emby 是否同步
@@ -44,21 +46,21 @@ class EmbyService:
     async def sync_user_from_emby(emby_id: str) -> Tuple[bool, str]:
         """
         从 Emby 同步用户信息到本地
-        
+
         :param emby_id: Emby 用户 ID
         """
         emby = get_emby_client()
-        
+
         try:
             emby_user = await emby.get_user(emby_id)
             if not emby_user:
                 return False, "Emby 用户不存在"
-            
+
             # 查找本地用户
             local_user = await UserOperate.get_user_by_embyid(emby_id)
             if not local_user:
                 return False, "本地用户不存在"
-            
+
             # 同步 Emby 用户名到 OTHER，不覆盖本地系统用户名
             other_data = {}
             if local_user.OTHER:
@@ -66,11 +68,11 @@ class EmbyService:
                     other_data = json.loads(local_user.OTHER)
                 except (json.JSONDecodeError, TypeError):
                     other_data = {}
-            if other_data.get('emby_username') != emby_user.name:
-                other_data['emby_username'] = emby_user.name
+            if other_data.get("emby_username") != emby_user.name:
+                other_data["emby_username"] = emby_user.name
                 local_user.OTHER = json.dumps(other_data)
                 await UserOperate.update_user(local_user)
-            
+
             return True, "同步成功"
         except EmbyError as e:
             logger.error(f"同步用户失败: {e}")
@@ -123,44 +125,34 @@ class EmbyService:
                             other_data = json.loads(user.OTHER)
                         except (json.JSONDecodeError, TypeError):
                             other_data = {}
-                    if other_data.get('emby_username') != emby_user.name:
+                    if other_data.get("emby_username") != emby_user.name:
                         logger.info(
                             f"Emby 用户名不一致，更新 OTHER.emby_username: {other_data.get('emby_username')} -> {emby_user.name}"
                         )
-                        other_data['emby_username'] = emby_user.name
+                        other_data["emby_username"] = emby_user.name
                         user.OTHER = json.dumps(other_data)
                         await UserOperate.update_user(user)
 
                     # 同步启用/禁用状态：如果 Emby 已禁用但本地仍启用，则修正本地状态；否则按本地状态同步到 Emby
-                    emby_disabled = bool(emby_user.policy.get('IsDisabled', False))
+                    emby_disabled = bool(emby_user.policy.get("IsDisabled", False))
                     if emby_disabled and user.ACTIVE_STATUS:
-                        logger.info(
-                            f"Emby 账户已被禁用，更新本地状态: {user.USERNAME} (UID: {user.UID})"
-                        )
+                        logger.info(f"Emby 账户已被禁用，更新本地状态: {user.USERNAME} (UID: {user.UID})")
                         user.ACTIVE_STATUS = False
                         await UserOperate.update_user(user)
 
                     # 强制关闭非管理员的下载权限（防止历史遗留账户残留 True）
-                    is_emby_admin = bool(emby_user.policy.get('IsAdministrator', False))
-                    if (
-                        not is_emby_admin
-                        and bool(emby_user.policy.get('EnableContentDownloading', True))
-                    ):
+                    is_emby_admin = bool(emby_user.policy.get("IsAdministrator", False))
+                    if not is_emby_admin and bool(emby_user.policy.get("EnableContentDownloading", True)):
                         try:
-                            ok = await emby.update_user_policy(
-                                user.EMBYID, {'EnableContentDownloading': False}
-                            )
+                            ok = await emby.update_user_policy(user.EMBYID, {"EnableContentDownloading": False})
                             if ok:
                                 download_disabled_count += 1
-                                logger.info(
-                                    f"已关闭下载权限: {user.USERNAME} (UID: {user.UID})"
-                                )
+                                logger.info(f"已关闭下载权限: {user.USERNAME} (UID: {user.UID})")
                         except EmbyError as exc:
-                            logger.warning(
-                                f"关闭下载权限失败 {user.USERNAME} (UID: {user.UID}): {exc}"
-                            )
+                            logger.warning(f"关闭下载权限失败 {user.USERNAME} (UID: {user.UID}): {exc}")
 
                     from src.services.user_service import UserService
+
                     ok, msg = await UserService.sync_user_to_emby(user)
                     if ok:
                         success_count += 1
@@ -174,8 +166,7 @@ class EmbyService:
                     logger.error(f"同步用户 {user.USERNAME} 失败: {e}")
 
             logger.info(
-                f"批量同步完成: 成功 {success_count}, 失败 {fail_count}, "
-                f"关闭下载权限 {download_disabled_count}"
+                f"批量同步完成: 成功 {success_count}, 失败 {fail_count}, " f"关闭下载权限 {download_disabled_count}"
             )
             return success_count, fail_count, errors
         except EmbyError as e:
@@ -188,25 +179,25 @@ class EmbyService:
     async def get_user_status(user: UserModel) -> EmbyUserStatus:
         """获取用户完整状态"""
         emby = get_emby_client()
-        
+
         emby_user = None
         is_synced = True
         active_sessions = 0
         message = "正常"
-        
+
         if user.EMBYID:
             try:
                 emby_user = await emby.get_user(user.EMBYID)
                 if emby_user:
                     # 检查同步状态
-                    emby_disabled = bool(emby_user.policy.get('IsDisabled', False))
+                    emby_disabled = bool(emby_user.policy.get("IsDisabled", False))
                     if emby_user.name != user.USERNAME:
                         is_synced = False
                         message = "用户名不同步"
                     elif emby_disabled != (not user.ACTIVE_STATUS):
                         is_synced = False
                         message = "账户启用状态与 Emby 不一致"
-                    
+
                     # 获取活跃会话
                     sessions = await emby.get_user_sessions(user.EMBYID)
                     active_sessions = len([s for s in sessions if s.is_active])
@@ -217,35 +208,31 @@ class EmbyService:
                 message = f"无法连接 Emby: {e}"
         else:
             message = "未绑定 Emby 账户"
-        
-        is_active = (
-            user.ACTIVE_STATUS and
-            not is_expired(user.EXPIRED_AT) and
-            emby_user is not None
-        )
-        
+
+        is_active = user.ACTIVE_STATUS and not is_expired(user.EXPIRED_AT) and emby_user is not None
+
         return EmbyUserStatus(
             user=user,
             emby_user=emby_user,
             is_synced=is_synced,
             is_active=is_active,
             active_sessions=active_sessions,
-            message=message
+            message=message,
         )
 
     @staticmethod
     async def check_expired_users() -> Tuple[List[UserModel], int]:
         """
         检查并处理过期用户
-        
+
         :return: (过期用户列表, 禁用数量)
         """
         # TODO: 需要添加批量查询过期用户的数据库方法
         expired_users = []
         disabled_count = 0
-        
+
         emby = get_emby_client()
-        
+
         for user in expired_users:
             if user.EMBYID:
                 try:
@@ -255,7 +242,7 @@ class EmbyService:
                     disabled_count += 1
                 except EmbyError as e:
                     logger.error(f"禁用用户 {user.USERNAME} 失败: {e}")
-        
+
         return expired_users, disabled_count
 
     # ==================== 会话管理 ====================
@@ -264,32 +251,38 @@ class EmbyService:
     async def get_all_sessions() -> List[Dict[str, Any]]:
         """获取所有活跃会话及用户信息"""
         emby = get_emby_client()
-        
+
         try:
             sessions = await emby.get_sessions()
             result = []
-            
+
             for session in sessions:
                 # 查找本地用户
                 local_user = None
                 if session.user_id:
                     local_user = await UserOperate.get_user_by_embyid(session.user_id)
-                
-                result.append({
-                    'session_id': session.id,
-                    'user_id': session.user_id,
-                    'user_name': session.user_name,
-                    'client': session.client,
-                    'device_name': session.device_name,
-                    'device_id': session.device_id,
-                    'is_active': session.is_active,
-                    'now_playing': session.now_playing_item.get('Name') if session.now_playing_item else None,
-                    'local_user': {
-                        'uid': local_user.UID,
-                        'telegram_id': local_user.TELEGRAM_ID,
-                    } if local_user else None,
-                })
-            
+
+                result.append(
+                    {
+                        "session_id": session.id,
+                        "user_id": session.user_id,
+                        "user_name": session.user_name,
+                        "client": session.client,
+                        "device_name": session.device_name,
+                        "device_id": session.device_id,
+                        "is_active": session.is_active,
+                        "now_playing": session.now_playing_item.get("Name") if session.now_playing_item else None,
+                        "local_user": (
+                            {
+                                "uid": local_user.UID,
+                                "telegram_id": local_user.TELEGRAM_ID,
+                            }
+                            if local_user
+                            else None
+                        ),
+                    }
+                )
+
             return result
         except EmbyError as e:
             logger.error(f"获取会话失败: {e}")
@@ -299,22 +292,22 @@ class EmbyService:
     async def kick_user_sessions(user: UserModel) -> Tuple[bool, int]:
         """
         踢出用户所有会话
-        
+
         :return: (成功, 踢出数量)
         """
         if not user.EMBYID:
             return False, 0
-        
+
         emby = get_emby_client()
-        
+
         try:
             sessions = await emby.get_user_sessions(user.EMBYID)
             kicked = 0
-            
+
             for session in sessions:
                 if await emby.kill_session(session.id):
                     kicked += 1
-            
+
             return True, kicked
         except EmbyError as e:
             logger.error(f"踢出会话失败: {e}")
@@ -324,25 +317,25 @@ class EmbyService:
     async def broadcast_message(header: str, text: str, user_ids: Optional[List[str]] = None) -> int:
         """
         广播消息到会话
-        
+
         :param header: 消息标题
         :param text: 消息内容
         :param user_ids: 指定用户ID列表，为空则发送给所有人
         :return: 发送成功数量
         """
         emby = get_emby_client()
-        
+
         try:
             sessions = await emby.get_sessions()
             sent = 0
-            
+
             for session in sessions:
                 if user_ids and session.user_id not in user_ids:
                     continue
-                
+
                 if await emby.send_message(session.id, header, text):
                     sent += 1
-            
+
             return sent
         except EmbyError as e:
             logger.error(f"广播消息失败: {e}")
@@ -354,17 +347,19 @@ class EmbyService:
     async def get_libraries_info() -> List[Dict[str, Any]]:
         """获取媒体库详细信息"""
         emby = get_emby_client()
-        
+
         try:
             libraries = await emby.get_libraries()
             result = []
 
             for lib in libraries:
-                result.append({
-                    'id': lib.id,
-                    'name': lib.name,
-                    'type': lib.collection_type,
-                })
+                result.append(
+                    {
+                        "id": lib.id,
+                        "name": lib.name,
+                        "type": lib.collection_type,
+                    }
+                )
 
             return result
         except EmbyError as e:
@@ -375,20 +370,20 @@ class EmbyService:
     async def resolve_library_names_to_ids(library_names: List[str]) -> Tuple[List[str], List[str]]:
         """
         将媒体库名称列表解析为 Emby 内部 ID 列表
-        
+
         :param library_names: 媒体库名称列表
         :return: (解析成功的 ID 列表, 未找到的名称列表)
         """
         if not library_names:
             return [], []
-        
+
         emby = get_emby_client()
-        
+
         try:
             libraries = await emby.get_libraries()
             # 构建名称到ID的映射（不区分大小写）
             name_to_id = {lib.name.strip().lower(): lib.id for lib in libraries}
-            
+
             resolved_ids = []
             not_found = []
             for name in library_names:
@@ -397,7 +392,7 @@ class EmbyService:
                     resolved_ids.append(name_to_id[name_lower])
                 else:
                     not_found.append(name)
-            
+
             return resolved_ids, not_found
         except EmbyError as e:
             logger.error(f"解析媒体库名称失败: {e}")
@@ -405,9 +400,7 @@ class EmbyService:
 
     @staticmethod
     async def set_user_library_access(
-        user: UserModel,
-        library_ids: List[str],
-        enable_all: bool = False
+        user: UserModel, library_ids: List[str], enable_all: bool = False
     ) -> Tuple[bool, str]:
         """设置用户可访问的媒体库（管理员严格白名单场景）。
 
@@ -438,22 +431,22 @@ class EmbyService:
     async def get_user_library_access(user: UserModel) -> Tuple[List[str], bool]:
         """
         获取用户媒体库访问权限
-        
+
         :return: (可访问的媒体库ID列表, 是否全部可访问)
         """
         if not user.EMBYID:
             return [], False
-        
+
         emby = get_emby_client()
-        
+
         try:
             emby_user = await emby.get_user(user.EMBYID)
             if not emby_user:
                 return [], False
-            
-            enable_all = emby_user.policy.get('EnableAllFolders', True)
-            enabled_folders = emby_user.policy.get('EnabledFolders', [])
-            
+
+            enable_all = emby_user.policy.get("EnableAllFolders", True)
+            enabled_folders = emby_user.policy.get("EnabledFolders", [])
+
             return enabled_folders, enable_all
         except EmbyError as e:
             logger.error(f"获取媒体库权限失败: {e}")
@@ -466,21 +459,24 @@ class EmbyService:
         """获取用户的设备列表"""
         if not user.EMBYID:
             return []
-        
+
         emby = get_emby_client()
-        
+
         try:
             all_devices = await emby.get_devices()
-            user_devices = [d for d in all_devices if d.get('UserId') == user.EMBYID]
-            
-            return [{
-                'id': d.get('Id'),
-                'name': d.get('Name'),
-                'app_name': d.get('AppName'),
-                'app_version': d.get('AppVersion'),
-                'last_user_name': d.get('LastUserName'),
-                'date_last_activity': d.get('DateLastActivity'),
-            } for d in user_devices]
+            user_devices = [d for d in all_devices if d.get("UserId") == user.EMBYID]
+
+            return [
+                {
+                    "id": d.get("Id"),
+                    "name": d.get("Name"),
+                    "app_name": d.get("AppName"),
+                    "app_version": d.get("AppVersion"),
+                    "last_user_name": d.get("LastUserName"),
+                    "date_last_activity": d.get("DateLastActivity"),
+                }
+                for d in user_devices
+            ]
         except EmbyError as e:
             logger.error(f"获取设备失败: {e}")
             return []
@@ -490,20 +486,20 @@ class EmbyService:
         """移除用户设备"""
         if not user.EMBYID:
             return False, "用户没有关联的 Emby 账户"
-        
+
         emby = get_emby_client()
-        
+
         try:
             # 验证设备属于该用户
             devices = await emby.get_devices()
-            device = next((d for d in devices if d.get('Id') == device_id), None)
-            
+            device = next((d for d in devices if d.get("Id") == device_id), None)
+
             if not device:
                 return False, "设备不存在"
-            
-            if device.get('UserId') != user.EMBYID:
+
+            if device.get("UserId") != user.EMBYID:
                 return False, "该设备不属于此用户"
-            
+
             success = await emby.delete_device(device_id)
             if success:
                 return True, "设备已移除"
@@ -518,50 +514,53 @@ class EmbyService:
     async def get_server_status() -> Dict[str, Any]:
         """获取服务器状态"""
         emby = get_emby_client()
-        
+
         try:
             is_online = await emby.ping()
             if not is_online:
                 return {
-                    'online': False,
-                    'message': '服务器离线',
+                    "online": False,
+                    "message": "服务器离线",
                 }
-            
+
             info = await emby.get_server_info()
             sessions = await emby.get_sessions()
-            
+
             return {
-                'online': True,
-                'server_name': info.get('ServerName'),
-                'version': info.get('Version'),
-                'operating_system': info.get('OperatingSystemDisplayName'),
-                'active_sessions': len([s for s in sessions if s.is_active]),
-                'total_sessions': len(sessions),
+                "online": True,
+                "server_name": info.get("ServerName"),
+                "version": info.get("Version"),
+                "operating_system": info.get("OperatingSystemDisplayName"),
+                "active_sessions": len([s for s in sessions if s.is_active]),
+                "total_sessions": len(sessions),
             }
         except EmbyError as e:
             return {
-                'online': False,
-                'message': str(e),
+                "online": False,
+                "message": str(e),
             }
 
     @staticmethod
     async def get_activity_log(limit: int = 50) -> List[Dict[str, Any]]:
         """获取活动日志"""
         emby = get_emby_client()
-        
+
         try:
             data = await emby.get_activity_log(limit=limit)
-            items = data.get('Items', []) if data else []
-            
-            return [{
-                'id': item.get('Id'),
-                'name': item.get('Name'),
-                'type': item.get('Type'),
-                'date': item.get('Date'),
-                'user_id': item.get('UserId'),
-                'severity': item.get('Severity'),
-                'short_overview': item.get('ShortOverview'),
-            } for item in items]
+            items = data.get("Items", []) if data else []
+
+            return [
+                {
+                    "id": item.get("Id"),
+                    "name": item.get("Name"),
+                    "type": item.get("Type"),
+                    "date": item.get("Date"),
+                    "user_id": item.get("UserId"),
+                    "severity": item.get("Severity"),
+                    "short_overview": item.get("ShortOverview"),
+                }
+                for item in items
+            ]
         except EmbyError as e:
             logger.error(f"获取活动日志失败: {e}")
             return []
@@ -572,17 +571,20 @@ class EmbyService:
     async def search_media(query: str, limit: int = 20) -> List[Dict[str, Any]]:
         """搜索媒体"""
         emby = get_emby_client()
-        
+
         try:
             items = await emby.search_items(query, limit)
-            
-            return [{
-                'id': item.id,
-                'name': item.name,
-                'type': item.type,
-                'year': item.year,
-                'overview': item.overview[:200] + '...' if len(item.overview) > 200 else item.overview,
-            } for item in items]
+
+            return [
+                {
+                    "id": item.id,
+                    "name": item.name,
+                    "type": item.type,
+                    "year": item.year,
+                    "overview": item.overview[:200] + "..." if len(item.overview) > 200 else item.overview,
+                }
+                for item in items
+            ]
         except EmbyError as e:
             logger.error(f"搜索媒体失败: {e}")
             return []
@@ -591,28 +593,27 @@ class EmbyService:
     async def get_latest_media(item_types: List[str] = None, limit: int = 20) -> List[Dict[str, Any]]:
         """获取最新媒体"""
         emby = get_emby_client()
-        
+
         try:
             if item_types is None:
-                item_types = ['Movie', 'Series']
-            
+                item_types = ["Movie", "Series"]
+
             data = await emby.get_items(
-                item_types=item_types,
-                limit=limit,
-                sort_by='DateCreated',
-                sort_order='Descending'
+                item_types=item_types, limit=limit, sort_by="DateCreated", sort_order="Descending"
             )
-            
-            items = data.get('Items', []) if data else []
-            
-            return [{
-                'id': item.get('Id'),
-                'name': item.get('Name'),
-                'type': item.get('Type'),
-                'year': item.get('ProductionYear'),
-                'date_created': item.get('DateCreated'),
-            } for item in items]
+
+            items = data.get("Items", []) if data else []
+
+            return [
+                {
+                    "id": item.get("Id"),
+                    "name": item.get("Name"),
+                    "type": item.get("Type"),
+                    "year": item.get("ProductionYear"),
+                    "date_created": item.get("DateCreated"),
+                }
+                for item in items
+            ]
         except EmbyError as e:
             logger.error(f"获取最新媒体失败: {e}")
             return []
-

@@ -9,13 +9,20 @@
 - 不在这里维护层级缓存；层级、子树等聚合在服务层通过迭代 BFS 实时计算，
   避免数据漂移（小规模下用户量足够）。
 """
+
 from __future__ import annotations
 
 import time
 from typing import Optional, List
 
 from sqlalchemy import (
-    select, update, delete, func, String, Integer, Boolean,
+    select,
+    update,
+    delete,
+    func,
+    String,
+    Integer,
+    Boolean,
 )
 from sqlalchemy.ext.asyncio import AsyncAttrs
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -30,18 +37,16 @@ class InviteDatabaseModel(AsyncAttrs, DeclarativeBase):
 class InviteRelationModel(InviteDatabaseModel):
     """邀请关系（边）：CHILD_UID 是主键，强制 1 个用户只有 1 个父级。"""
 
-    __tablename__ = 'invite_relations'
+    __tablename__ = "invite_relations"
 
     CHILD_UID: Mapped[int] = mapped_column(Integer, primary_key=True)
     PARENT_UID: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     CODE: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
-    CREATED_AT: Mapped[int] = mapped_column(
-        Integer, default=lambda: int(time.time()), nullable=False
-    )
+    CREATED_AT: Mapped[int] = mapped_column(Integer, default=lambda: int(time.time()), nullable=False)
 
 
 class InviteCodeModel(InviteDatabaseModel):
-    __tablename__ = 'invite_codes'
+    __tablename__ = "invite_codes"
 
     CODE: Mapped[str] = mapped_column(String(64), primary_key=True)
     INVITER_UID: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
@@ -55,9 +60,7 @@ class InviteCodeModel(InviteDatabaseModel):
     USED_BY_UID: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     USED_AT: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     ACTIVE: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    CREATED_AT: Mapped[int] = mapped_column(
-        Integer, default=lambda: int(time.time()), nullable=False
-    )
+    CREATED_AT: Mapped[int] = mapped_column(Integer, default=lambda: int(time.time()), nullable=False)
     # 备注（生成人填写，例如送给谁的）
     NOTE: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
@@ -94,18 +97,14 @@ class InviteRelationOperate:
     async def get_children(parent_uid: int) -> List[int]:
         async with InviteSessionFactory() as session:
             rows = await session.execute(
-                select(InviteRelationModel.CHILD_UID).where(
-                    InviteRelationModel.PARENT_UID == parent_uid
-                )
+                select(InviteRelationModel.CHILD_UID).where(InviteRelationModel.PARENT_UID == parent_uid)
             )
             return [row[0] for row in rows.all()]
 
     @staticmethod
     async def get_all_relations() -> list[tuple[int, int]]:
         async with InviteSessionFactory() as session:
-            rows = await session.execute(
-                select(InviteRelationModel.PARENT_UID, InviteRelationModel.CHILD_UID)
-            )
+            rows = await session.execute(select(InviteRelationModel.PARENT_UID, InviteRelationModel.CHILD_UID))
             return [(r[0], r[1]) for r in rows.all()]
 
     @staticmethod
@@ -125,8 +124,7 @@ class InviteRelationOperate:
             async with session.begin():
                 await session.execute(
                     delete(InviteRelationModel).where(
-                        (InviteRelationModel.CHILD_UID == uid)
-                        | (InviteRelationModel.PARENT_UID == uid)
+                        (InviteRelationModel.CHILD_UID == uid) | (InviteRelationModel.PARENT_UID == uid)
                     )
                 )
 
@@ -138,9 +136,7 @@ class InviteRelationOperate:
             async with session.begin():
                 if new_parent_uid is None:
                     res = await session.execute(
-                        delete(InviteRelationModel).where(
-                            InviteRelationModel.PARENT_UID == old_parent_uid
-                        )
+                        delete(InviteRelationModel).where(InviteRelationModel.PARENT_UID == old_parent_uid)
                     )
                     return int(res.rowcount or 0)
                 # 防止把孩子挂到自己头上造成环
@@ -164,6 +160,7 @@ class InviteCodeOperate:
         note: Optional[str] = None,
     ) -> InviteCodeModel:
         import secrets
+
         # 16 字节随机；和现有 regcode-* 区分前缀
         code = f"inv-{secrets.token_hex(16)}"
         item = InviteCodeModel(
@@ -175,7 +172,7 @@ class InviteCodeOperate:
             EXPIRES_AT=int(expires_at) if expires_at is not None else -1,
             ACTIVE=True,
             CREATED_AT=int(time.time()),
-            NOTE=(note or '').strip()[:255] or None,
+            NOTE=(note or "").strip()[:255] or None,
         )
         async with InviteSessionFactory() as session:
             async with session.begin():
@@ -216,7 +213,9 @@ class InviteCodeOperate:
         """活跃 = ACTIVE 且未达使用上限。"""
         async with InviteSessionFactory() as session:
             rows = await session.execute(
-                select(func.count()).select_from(InviteCodeModel).where(
+                select(func.count())
+                .select_from(InviteCodeModel)
+                .where(
                     InviteCodeModel.INVITER_UID == inviter_uid,
                     InviteCodeModel.ACTIVE == True,  # noqa: E712
                     (InviteCodeModel.USE_COUNT_LIMIT == -1)
@@ -275,7 +274,5 @@ class InviteCodeOperate:
     async def delete_for_inviter(inviter_uid: int) -> int:
         async with InviteSessionFactory() as session:
             async with session.begin():
-                res = await session.execute(
-                    delete(InviteCodeModel).where(InviteCodeModel.INVITER_UID == inviter_uid)
-                )
+                res = await session.execute(delete(InviteCodeModel).where(InviteCodeModel.INVITER_UID == inviter_uid))
                 return int(res.rowcount or 0)

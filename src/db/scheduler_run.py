@@ -4,6 +4,7 @@
 持久化每个 job 每次运行的元数据（起止时间、状态、结构化 summary、文本日志），
 供管理后台展示「上次运行了什么 / 处理了多少人」。
 """
+
 import json
 import time
 from typing import Any, Optional
@@ -22,6 +23,7 @@ class SchedulerRunDatabaseModel(AsyncAttrs, DeclarativeBase):
 
 class SchedulerRunModel(SchedulerRunDatabaseModel):
     """一条定时任务执行记录。"""
+
     __tablename__ = "scheduler_run"
 
     ID: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True, index=True)
@@ -83,15 +85,15 @@ def _parse_summary(raw: Optional[str]) -> Optional[dict]:
 def serialize_run(record: SchedulerRunModel) -> dict:
     """把 ORM 对象转成 JSON-friendly dict，给 API 用。"""
     return {
-        'id': record.ID,
-        'job_id': record.JOB_ID,
-        'trigger': record.TRIGGER,
-        'status': record.STATUS,
-        'started_at': record.STARTED_AT,
-        'finished_at': record.FINISHED_AT,
-        'error': record.ERROR,
-        'summary': _parse_summary(record.SUMMARY),
-        'logs': (record.LOGS.split("\n") if record.LOGS else []),
+        "id": record.ID,
+        "job_id": record.JOB_ID,
+        "trigger": record.TRIGGER,
+        "status": record.STATUS,
+        "started_at": record.STARTED_AT,
+        "finished_at": record.FINISHED_AT,
+        "error": record.ERROR,
+        "summary": _parse_summary(record.SUMMARY),
+        "logs": (record.LOGS.split("\n") if record.LOGS else []),
     }
 
 
@@ -186,7 +188,7 @@ class SchedulerRunOperate:
         full = await SchedulerRunOperate.get_last_run(job_id)
         if not full:
             return None
-        full.pop('logs', None)
+        full.pop("logs", None)
         return full
 
     @staticmethod

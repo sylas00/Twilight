@@ -187,8 +187,25 @@ export default function MediaPage() {
           detailCacheRef.current.set(detailKey, detail);
           
           try {
-            // Bangumi 源不做库存检查
+            let inventoryRes = null;
+            if (mediaItem.source !== "bangumi" && mediaItem.source !== "bgm") {
+              inventoryRes = await api.checkInventory({
+                source: mediaItem.source,
+                media_id: mediaItem.id,
+                media_type: mediaItem.media_type,
+                title: mediaItem.title,
+                original_title: mediaItem.original_title,
+                year: mediaItem.year,
+              }, controller.signal);
+            }
+
+            if (controller.signal.aborted) return;
+
             setMediaDetail(detail);
+            if (inventoryRes?.success && inventoryRes.data) {
+              setInventoryCheck(inventoryRes.data);
+              inventoryCacheRef.current.set(detailKey, inventoryRes.data);
+            }
           } catch (error: any) {
             if (isAbortError(error)) return;
             console.error(error);
@@ -957,4 +974,3 @@ export default function MediaPage() {
     </div>
   );
 }
-

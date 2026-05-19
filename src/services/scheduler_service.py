@@ -1,12 +1,15 @@
 import asyncio
 import logging
+import os
 import time
+from datetime import datetime
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
-from src.config import RegisterConfig, SchedulerConfig, TelegramConfig
+from src.config import RegisterConfig, SchedulerConfig, TelegramConfig, get_primary_config_path
 from src.db.scheduler_run import SchedulerRunOperate
 from src.db.scheduler_schedule import (
     MAX_INTERVAL_SECONDS,
@@ -39,15 +42,15 @@ class RunContext:
 
     # trigger → 日志前缀
     _TRIGGER_TAG_MAP = {
-        'scheduled': 'auto',
-        'manual': 'manual',
-        'startup': 'startup',
+        "scheduled": "auto",
+        "manual": "manual",
+        "startup": "startup",
     }
 
     def __init__(
         self,
         job_id: str,
-        trigger: str = 'scheduled',
+        trigger: str = "scheduled",
         params: Optional[dict] = None,
     ):
         self.job_id = job_id
@@ -61,7 +64,7 @@ class RunContext:
 
     @property
     def _trigger_tag(self) -> str:
-        return self._TRIGGER_TAG_MAP.get(self.trigger, self.trigger or 'auto')
+        return self._TRIGGER_TAG_MAP.get(self.trigger, self.trigger or "auto")
 
     def log(self, message: str) -> None:
         tag = self._trigger_tag
@@ -81,6 +84,9 @@ class SchedulerService:
     _last_runs: dict[str, dict] = {}
     # 当前正在「运行中」的 job ID（用于幂等避免重复触发）
     _running: set[str] = set()
+    _config_watch_task: Optional[asyncio.Task] = None
+    _config_mtime: Optional[float] = None
+    _lock_path: Optional[Path] = None
 
     # ============== Job 元数据注册表（用于前端列表 / 手动触发权限） ==============
     # 每条目: id, name, description, default_trigger(默认触发器规格)
@@ -90,75 +96,85 @@ class SchedulerService:
     # 解析在 `_resolve_default_trigger` 里完成，避免硬编码具体配置字段读法
     JOB_DEFINITIONS = [
         {
-            'id': 'check_expired',
-            'name': '过期用户检查',
-            'description': '查找已过期账号，禁用本地状态并同步禁用 Emby 账户。',
-            'default_trigger': {'type': 'cron_daily', 'config_field': 'EXPIRED_CHECK_TIME'},
+            "id": "check_expired",
+            "name": "过期用户检查",
+            "description": "查找已过期账号，禁用本地状态并同步禁用 Emby 账户。",
+            "default_trigger": {"type": "cron_daily", "config_field": "EXPIRED_CHECK_TIME"},
         },
         {
-            'id': 'check_expiring',
-            'name': '即将过期检查',
-            'description': '记录 3 天内到期的账号，供后续提醒任务使用。',
-            'default_trigger': {'type': 'cron_daily', 'config_field': 'EXPIRING_CHECK_TIME'},
+            "id": "check_expiring",
+            "name": "即将过期检查",
+            "description": "记录 3 天内到期的账号，供后续提醒任务使用。",
+            "default_trigger": {"type": "cron_daily", "config_field": "EXPIRING_CHECK_TIME"},
         },
         {
-            'id': 'expiry_reminders',
-            'name': '到期提醒推送',
-            'description': '向到期前 N 天的用户发送提醒消息。',
-            'default_trigger': {
-                'type': 'cron_daily', 'config_field': 'EXPIRING_CHECK_TIME', 'offset_minutes': 5,
+            "id": "expiry_reminders",
+            "name": "到期提醒推送",
+            "description": "向到期前 N 天的用户发送提醒消息。",
+            "default_trigger": {
+                "type": "cron_daily",
+                "config_field": "EXPIRING_CHECK_TIME",
+                "offset_minutes": 5,
             },
         },
         {
-            'id': 'daily_stats',
-            'name': '每日统计汇总',
-            'description': '汇总注册用户 / 活跃用户 / 注册码 / Emby 状态写入日志。',
-            'default_trigger': {'type': 'cron_daily', 'config_field': 'DAILY_STATS_TIME'},
+            "id": "daily_stats",
+            "name": "每日统计汇总",
+            "description": "汇总注册用户 / 活跃用户 / 注册码 / Emby 状态写入日志。",
+            "default_trigger": {"type": "cron_daily", "config_field": "DAILY_STATS_TIME"},
         },
         {
-            'id': 'cleanup_sessions',
-            'name': '不活跃会话清理',
-            'description': '巡检 Emby 当前会话数。',
-            'default_trigger': {
-                'type': 'interval', 'config_field': 'SESSION_CLEANUP_INTERVAL', 'unit': 'hours',
+            "id": "cleanup_sessions",
+            "name": "不活跃会话清理",
+            "description": "巡检 Emby 当前会话数。",
+            "default_trigger": {
+                "type": "interval",
+                "config_field": "SESSION_CLEANUP_INTERVAL",
+                "unit": "hours",
             },
         },
         {
-            'id': 'emby_sync',
-            'name': 'Emby 用户同步',
-            'description': '校对本地 EMBYID、用户名、启停状态与下载权限。',
-            'default_trigger': {
-                'type': 'interval', 'config_field': 'EMBY_SYNC_INTERVAL', 'unit': 'hours',
+            "id": "emby_sync",
+            "name": "Emby 用户同步",
+            "description": "校对本地 EMBYID、用户名、启停状态与下载权限。",
+            "default_trigger": {
+                "type": "interval",
+                "config_field": "EMBY_SYNC_INTERVAL",
+                "unit": "hours",
             },
         },
         {
-            'id': 'cleanup_no_emby',
-            'name': '无 Emby 账户用户清理',
-            'description': '清理注册超过配置天数仍未创建 Emby 账户的用户。开关：AUTO_CLEANUP_NO_EMBY',
-            'default_trigger': {
-                'type': 'cron_daily', 'config_field': 'EXPIRED_CHECK_TIME', 'offset_minutes': 30,
+            "id": "cleanup_no_emby",
+            "name": "无 Emby 账户用户清理",
+            "description": "清理注册超过配置天数仍未创建 Emby 账户的用户。开关：AUTO_CLEANUP_NO_EMBY",
+            "default_trigger": {
+                "type": "cron_daily",
+                "config_field": "EXPIRED_CHECK_TIME",
+                "offset_minutes": 30,
             },
         },
         {
-            'id': 'enforce_group_membership',
-            'name': 'Telegram 群组成员资格巡检',
-            'description': '检查已绑定 Telegram 的用户是否仍在必需群组内；不在则禁用本地账号 + Emby。开关：REQUIRE_GROUP_MEMBERSHIP',
-            'default_trigger': {
-                'type': 'interval', 'config_field': 'GROUP_CHECK_INTERVAL_MINUTES',
-                'unit': 'minutes', 'source': 'TelegramConfig',
+            "id": "enforce_group_membership",
+            "name": "Telegram 群组成员资格巡检",
+            "description": "检查已绑定 Telegram 的用户是否仍在必需群组内；不在则禁用本地账号 + Emby。开关：REQUIRE_GROUP_MEMBERSHIP",
+            "default_trigger": {
+                "type": "interval",
+                "config_field": "GROUP_CHECK_INTERVAL_MINUTES",
+                "unit": "minutes",
+                "source": "TelegramConfig",
             },
         },
         {
-            'id': 'kick_unknown_group_members',
-            'name': 'Telegram 群组非系统成员清理（手动）',
-            'description': (
-                '⚠️ 仅手动触发：扫描已知 Telegram 用户 ID（来自 users 表与 telegram_bind_codes），'
+            "id": "kick_unknown_group_members",
+            "name": "Telegram 群组非系统成员清理（手动）",
+            "description": (
+                "⚠️ 仅手动触发：扫描已知 Telegram 用户 ID（来自 users 表与 telegram_bind_codes），"
                 '把其中"已经不在系统活跃用户里"且仍在群组中的 TG 账号"临时踢出"（ban + 立刻 unban）。'
-                '排除 Bot/群管理员/群主以及配置中的管理员账号。'
-                '受 Bot API 限制，无法枚举系统从未见过的全量群成员。'
+                "排除 Bot/群管理员/群主以及配置中的管理员账号。"
+                "受 Bot API 限制，无法枚举系统从未见过的全量群成员。"
             ),
-            'default_trigger': None,
-            'manual_only': True,
+            "default_trigger": None,
+            "manual_only": True,
         },
     ]
 
@@ -166,12 +182,12 @@ class SchedulerService:
     def _record_run_start(cls, job_id: str, trigger: str) -> int:
         started = int(time.time())
         cls._last_runs[job_id] = {
-            'status': 'running',
-            'started_at': started,
-            'finished_at': None,
-            'error': None,
-            'summary': None,
-            'trigger': trigger,
+            "status": "running",
+            "started_at": started,
+            "finished_at": None,
+            "error": None,
+            "summary": None,
+            "trigger": trigger,
         }
         cls._running.add(job_id)
         return started
@@ -186,12 +202,12 @@ class SchedulerService:
         summary: Optional[dict],
     ) -> None:
         cls._last_runs[job_id] = {
-            'status': 'failed' if error else 'success',
-            'started_at': started,
-            'finished_at': int(time.time()),
-            'error': (error or None) and str(error)[:500],
-            'summary': summary or None,
-            'trigger': trigger,
+            "status": "failed" if error else "success",
+            "started_at": started,
+            "finished_at": int(time.time()),
+            "error": (error or None) and str(error)[:500],
+            "summary": summary or None,
+            "trigger": trigger,
         }
         cls._running.discard(job_id)
 
@@ -201,7 +217,7 @@ class SchedulerService:
         job_id: str,
         fn: Callable[..., Awaitable[Any]],
         *,
-        trigger: str = 'scheduled',
+        trigger: str = "scheduled",
         params: Optional[dict] = None,
     ) -> dict:
         """执行 job 并把 last-run 落库。供 APScheduler 调度与管理员手动触发共用。
@@ -210,7 +226,7 @@ class SchedulerService:
         ``params`` 仅在手动触发时使用，自动调度路径传 ``None``。
         """
         if job_id in cls._running:
-            return cls._last_runs.get(job_id, {'status': 'running'})
+            return cls._last_runs.get(job_id, {"status": "running"})
 
         started = cls._record_run_start(job_id, trigger)
         logger.info(f"▶️ 任务 {job_id} 开始执行 ({trigger})")
@@ -242,7 +258,7 @@ class SchedulerService:
                 try:
                     await SchedulerRunOperate.finish_run(
                         run_id,
-                        status='failed' if error_text else 'success',
+                        status="failed" if error_text else "success",
                         error=error_text,
                         summary=ctx.summary or None,
                         logs=ctx.logs or None,
@@ -252,7 +268,7 @@ class SchedulerService:
                     logger.warning(f"无法回填 scheduler_run #{run_id}: {exc}")
 
         result = cls._last_runs[job_id]
-        elapsed = (result['finished_at'] or started) - started
+        elapsed = (result["finished_at"] or started) - started
         if error_text:
             logger.info(f"⏹️ 任务 {job_id} 失败结束 (耗时 {elapsed}s)")
         else:
@@ -262,8 +278,10 @@ class SchedulerService:
     @classmethod
     def _make_scheduled(cls, job_id: str, fn: Callable[..., Awaitable[Any]]):
         """生成给 APScheduler 用的 async wrapper（带 last-run 追踪）。"""
+
         async def runner():
-            await cls._run_with_tracking(job_id, fn, trigger='scheduled')
+            await cls._run_with_tracking(job_id, fn, trigger="scheduled")
+
         runner.__name__ = f"_run_{job_id}"
         return runner
 
@@ -272,7 +290,7 @@ class SchedulerService:
     @staticmethod
     def _parse_time_str(time_str: str) -> tuple[int, int]:
         try:
-            hour, minute = map(int, time_str.split(':'))
+            hour, minute = map(int, time_str.split(":"))
             return hour, minute
         except Exception:
             return 0, 0
@@ -286,52 +304,54 @@ class SchedulerService:
             {'type': 'interval', 'seconds': 3600}
         手动专属任务（``default_trigger=None``）返回 ``{'type': 'manual'}``。
         """
-        if definition.get('manual_only'):
-            return {'type': 'manual'}
+        if definition.get("manual_only"):
+            return {"type": "manual"}
 
-        spec = definition.get('default_trigger') or {}
-        field = spec.get('config_field')
-        source = spec.get('source', 'SchedulerConfig')
-        config_obj = SchedulerConfig if source == 'SchedulerConfig' else TelegramConfig
+        spec = definition.get("default_trigger") or {}
+        field = spec.get("config_field")
+        source = spec.get("source", "SchedulerConfig")
+        config_obj = SchedulerConfig if source == "SchedulerConfig" else TelegramConfig
         raw = getattr(config_obj, field, None) if field else None
 
-        if spec.get('type') == 'cron_daily':
-            h, m = cls._parse_time_str(str(raw or '00:00'))
-            offset = int(spec.get('offset_minutes', 0))
+        if spec.get("type") == "cron_daily":
+            h, m = cls._parse_time_str(str(raw or "00:00"))
+            offset = int(spec.get("offset_minutes", 0))
             total = (h * 60 + m + offset) % (24 * 60)
-            return {'type': TRIGGER_CRON_DAILY, 'hour': total // 60, 'minute': total % 60}
+            return {"type": TRIGGER_CRON_DAILY, "hour": total // 60, "minute": total % 60}
 
-        if spec.get('type') == 'interval':
-            unit = spec.get('unit', 'hours')
+        if spec.get("type") == "interval":
+            unit = spec.get("unit", "hours")
             try:
                 value = int(raw or 1)
             except (TypeError, ValueError):
                 value = 1
-            multiplier = {'seconds': 1, 'minutes': 60, 'hours': 3600}.get(unit, 3600)
+            multiplier = {"seconds": 1, "minutes": 60, "hours": 3600}.get(unit, 3600)
             seconds = max(MIN_INTERVAL_SECONDS, min(MAX_INTERVAL_SECONDS, value * multiplier))
-            return {'type': TRIGGER_INTERVAL, 'seconds': seconds}
+            return {"type": TRIGGER_INTERVAL, "seconds": seconds}
 
         # 兜底：每 1 小时
-        return {'type': TRIGGER_INTERVAL, 'seconds': 3600}
+        return {"type": TRIGGER_INTERVAL, "seconds": 3600}
 
     @classmethod
     async def _effective_trigger(cls, definition: dict) -> tuple[dict, bool]:
         """优先取 DB override，其次回退默认。返回 (spec, is_custom)。"""
         # 手动专属任务：不接受 cron/interval override
-        if definition.get('manual_only'):
-            return {'type': 'manual'}, False
-        override = await SchedulerScheduleOperate.get_override(definition['id'])
+        if definition.get("manual_only"):
+            return {"type": "manual"}, False
+        override = await SchedulerScheduleOperate.get_override(definition["id"])
         if override:
-            if override['type'] == TRIGGER_CRON_DAILY and override.get('hour') is not None:
+            if override["type"] == TRIGGER_CRON_DAILY and override.get("hour") is not None:
                 return (
-                    {'type': TRIGGER_CRON_DAILY,
-                     'hour': int(override['hour']),
-                     'minute': int(override.get('minute') or 0)},
+                    {
+                        "type": TRIGGER_CRON_DAILY,
+                        "hour": int(override["hour"]),
+                        "minute": int(override.get("minute") or 0),
+                    },
                     True,
                 )
-            if override['type'] == TRIGGER_INTERVAL and override.get('seconds'):
+            if override["type"] == TRIGGER_INTERVAL and override.get("seconds"):
                 return (
-                    {'type': TRIGGER_INTERVAL, 'seconds': int(override['seconds'])},
+                    {"type": TRIGGER_INTERVAL, "seconds": int(override["seconds"])},
                     True,
                 )
         return cls._resolve_default_trigger(definition), False
@@ -339,23 +359,160 @@ class SchedulerService:
     @staticmethod
     def _trigger_from_spec(spec: dict):
         """把内部 spec 转成 APScheduler 触发器对象。"""
-        if spec['type'] == TRIGGER_CRON_DAILY:
+        if spec["type"] == TRIGGER_CRON_DAILY:
             return CronTrigger(
-                hour=int(spec['hour']),
-                minute=int(spec['minute']),
+                hour=int(spec["hour"]),
+                minute=int(spec["minute"]),
                 timezone=SchedulerConfig.TIMEZONE,
             )
         return IntervalTrigger(
-            seconds=int(spec['seconds']),
+            seconds=int(spec["seconds"]),
             timezone=SchedulerConfig.TIMEZONE,
         )
 
     @classmethod
     def _get_definition(cls, job_id: str) -> Optional[dict]:
         for d in cls.JOB_DEFINITIONS:
-            if d['id'] == job_id:
+            if d["id"] == job_id:
                 return d
         return None
+
+    @staticmethod
+    def _pid_alive(pid: int) -> bool:
+        if pid <= 0:
+            return False
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+
+    @staticmethod
+    def _default_lock_path() -> Path:
+        raw = os.getenv("TWILIGHT_SCHEDULER_LOCK_FILE")
+        return Path(raw).expanduser() if raw else Path.cwd() / "db" / "scheduler.lock"
+
+    @classmethod
+    def external_scheduler_active(cls) -> bool:
+        """是否已有其它进程持有 scheduler lock。"""
+        lock_path = cls._lock_path or cls._default_lock_path()
+        try:
+            pid = int(lock_path.read_text(encoding="utf-8").strip() or "0")
+        except (OSError, ValueError):
+            return False
+        return pid != os.getpid() and cls._pid_alive(pid)
+
+    @classmethod
+    async def start_singleton(cls) -> tuple[bool, str]:
+        """带进程锁启动调度器，供 API 进程兜底自动启动使用。"""
+        if cls._scheduler is not None and cls._scheduler.running:
+            return True, "调度器已在当前进程运行"
+
+        lock_path = cls._default_lock_path()
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        if lock_path.exists():
+            try:
+                existing_pid = int(lock_path.read_text(encoding="utf-8").strip() or "0")
+            except (OSError, ValueError):
+                existing_pid = 0
+            if existing_pid > 0 and existing_pid != os.getpid() and cls._pid_alive(existing_pid):
+                return False, f"已有 Scheduler 进程运行 (PID={existing_pid})"
+            try:
+                lock_path.unlink()
+            except OSError:
+                pass
+
+        try:
+            lock_path.write_text(str(os.getpid()), encoding="utf-8")
+            cls._lock_path = lock_path
+        except OSError as exc:
+            logger.warning(f"写入 Scheduler 锁文件失败: {exc}")
+
+        await cls.start()
+        return True, "调度器已启动"
+
+    @classmethod
+    def _config_files_mtime(cls) -> float:
+        paths = [get_primary_config_path()]
+        local_override = os.getenv("TWILIGHT_CONFIG_LOCAL_FILE")
+        if local_override:
+            paths.append(Path(local_override).expanduser())
+        else:
+            paths.append(get_primary_config_path().with_name("config.local.toml"))
+        mtimes: list[float] = []
+        for path in paths:
+            try:
+                mtimes.append(path.stat().st_mtime)
+            except OSError:
+                continue
+        return max(mtimes) if mtimes else 0.0
+
+    @classmethod
+    async def _watch_config_changes(cls) -> None:
+        """调度进程内热重载 config.toml，避免必须重启才能更新触发器。"""
+        while True:
+            await asyncio.sleep(10)
+            try:
+                current_mtime = cls._config_files_mtime()
+                if cls._config_mtime is None:
+                    cls._config_mtime = current_mtime
+                    continue
+                if current_mtime <= cls._config_mtime:
+                    continue
+                cls._config_mtime = current_mtime
+                ok, message = await cls.reload_from_config()
+                if ok:
+                    logger.info("Scheduler 配置热重载完成: %s", message)
+                else:
+                    logger.warning("Scheduler 配置热重载跳过: %s", message)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # pragma: no cover
+                logger.warning("Scheduler 配置热重载失败: %s", exc, exc_info=True)
+
+    @classmethod
+    def _ensure_config_watcher(cls) -> None:
+        if cls._config_watch_task is not None and not cls._config_watch_task.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        cls._config_mtime = cls._config_files_mtime()
+        cls._config_watch_task = loop.create_task(cls._watch_config_changes())
+
+    @classmethod
+    async def reload_from_config(cls, *, reload_config: bool = True) -> tuple[bool, str]:
+        """重新加载配置并重装调度任务。"""
+        sched_loop = cls._scheduler_loop
+        try:
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            running_loop = None
+        if sched_loop is not None and sched_loop is not running_loop:
+            fut = asyncio.run_coroutine_threadsafe(
+                cls.reload_from_config(reload_config=reload_config),
+                sched_loop,
+            )
+            try:
+                return fut.result(timeout=10)
+            except Exception as exc:
+                return False, f"调度器热重载失败: {exc}"
+
+        if reload_config:
+            from src.config import reload_runtime_config
+
+            reload_runtime_config()
+
+        scheduler = cls._scheduler
+        if scheduler is None or not scheduler.running:
+            return False, "调度器未在当前进程运行"
+
+        scheduler.remove_all_jobs()
+        if SchedulerConfig.ENABLED:
+            await cls._install_all_jobs()
+            return True, f"已重载 {len(scheduler.get_jobs())} 个定时任务"
+        return True, "调度器全局开关已关闭，已移除所有定时任务"
 
     # ============== 手动触发入口（管理员 API 调用） ==============
 
@@ -393,19 +550,23 @@ class SchedulerService:
             running_loop = None
 
         coro_factory = lambda: cls._run_with_tracking(
-            job_id, fn, trigger='manual', params=params,
+            job_id,
+            fn,
+            trigger="manual",
+            params=params,
         )
 
         if sched_loop is not None and sched_loop is not running_loop:
             # API 线程触发 → 把任务安排到调度器所在 loop，立即返回，不阻塞 API
             asyncio.run_coroutine_threadsafe(coro_factory(), sched_loop)
-            return True, "已触发，正在后台执行", cls._last_runs.get(job_id, {'status': 'running'})
+            return True, "已触发，正在后台执行", cls._last_runs.get(job_id, {"status": "running"})
 
         # 没有独立 scheduler loop：交给共享后台 loop，避免 asgiref/WsgiToAsgi
         # 在请求结束后销毁 per-request executor 导致孤儿任务崩溃。
         from src.core.background import submit_background
+
         submit_background(coro_factory())
-        return True, "已触发", cls._last_runs.get(job_id, {'status': 'running'})
+        return True, "已触发", cls._last_runs.get(job_id, {"status": "running"})
 
     @classmethod
     async def list_jobs(cls) -> list[dict]:
@@ -421,15 +582,17 @@ class SchedulerService:
         if sched is not None and sched.running:
             for j in sched.get_jobs():
                 scheduled_map[j.id] = j
+        external_running = not scheduled_map and cls.external_scheduler_active()
 
         items = []
         for definition in cls.JOB_DEFINITIONS:
-            jid = definition['id']
+            jid = definition["id"]
             scheduled = scheduled_map.get(jid)
             next_run = None
             schedule_str = None
+            enabled = scheduled is not None
             if scheduled is not None:
-                if getattr(scheduled, 'next_run_time', None):
+                if getattr(scheduled, "next_run_time", None):
                     next_run = int(scheduled.next_run_time.timestamp())
                 trigger = scheduled.trigger
                 schedule_str = str(trigger) if trigger else None
@@ -448,18 +611,35 @@ class SchedulerService:
             trigger_spec, is_custom = await cls._effective_trigger(definition)
             default_spec = cls._resolve_default_trigger(definition)
 
-            items.append({
-                **{k: v for k, v in definition.items() if k != 'default_trigger'},
-                'manual_only': bool(definition.get('manual_only')),
-                'enabled': scheduled is not None,
-                'schedule': schedule_str,
-                'next_run_at': next_run,
-                'last_run': last_run,
-                'is_running': is_running,
-                'trigger_spec': trigger_spec,
-                'default_trigger_spec': default_spec,
-                'is_custom': is_custom,
-            })
+            if not enabled and external_running and SchedulerConfig.ENABLED and not definition.get("manual_only"):
+                try:
+                    from src.services.telegram_membership import TelegramMembershipService
+
+                    if jid != "enforce_group_membership" or TelegramMembershipService.enforcement_enabled():
+                        trigger = cls._trigger_from_spec(trigger_spec)
+                        tz = getattr(trigger, "timezone", None)
+                        now = datetime.now(tz) if tz is not None else datetime.now()
+                        fire_time = trigger.get_next_fire_time(None, now)
+                        next_run = int(fire_time.timestamp()) if fire_time is not None else None
+                        schedule_str = str(trigger)
+                        enabled = True
+                except Exception as exc:  # pragma: no cover
+                    logger.debug("计算外部 Scheduler 下次执行时间失败 (%s): %s", jid, exc)
+
+            items.append(
+                {
+                    **{k: v for k, v in definition.items() if k != "default_trigger"},
+                    "manual_only": bool(definition.get("manual_only")),
+                    "enabled": enabled,
+                    "schedule": schedule_str,
+                    "next_run_at": next_run,
+                    "last_run": last_run,
+                    "is_running": is_running,
+                    "trigger_spec": trigger_spec,
+                    "default_trigger_spec": default_spec,
+                    "is_custom": is_custom,
+                }
+            )
         return items
 
     @classmethod
@@ -485,9 +665,9 @@ class SchedulerService:
         ctx.log("🔍 开始检查过期用户...")
         try:
             expired_users = await UserOperate.get_expired_users()
-            ctx.summary['scanned'] = len(expired_users)
-            ctx.summary['disabled'] = 0
-            ctx.summary['failed'] = 0
+            ctx.summary["scanned"] = len(expired_users)
+            ctx.summary["disabled"] = 0
+            ctx.summary["failed"] = 0
             if not expired_users:
                 ctx.log("✅ 没有需要处理的过期用户")
                 return
@@ -501,15 +681,12 @@ class SchedulerService:
                         await emby.set_user_enabled(user.EMBYID, False)
                     user.ACTIVE_STATUS = False
                     await UserOperate.update_user(user)
-                    ctx.summary['disabled'] += 1
+                    ctx.summary["disabled"] += 1
                     ctx.log(f"  ⏹️ 已禁用: {user.USERNAME} (UID: {user.UID})")
                 except Exception as e:
-                    ctx.summary['failed'] += 1
+                    ctx.summary["failed"] += 1
                     ctx.log(f"  ❌ 禁用失败: {user.USERNAME} - {e}")
-            ctx.log(
-                f"✅ 过期用户检查完成: 禁用 {ctx.summary['disabled']} 个, "
-                f"失败 {ctx.summary['failed']} 个"
-            )
+            ctx.log(f"✅ 过期用户检查完成: 禁用 {ctx.summary['disabled']} 个, " f"失败 {ctx.summary['failed']} 个")
         except Exception as e:
             ctx.log(f"❌ 检查过期用户时发生错误: {e}")
             raise
@@ -520,7 +697,7 @@ class SchedulerService:
         ctx.log("🔔 检查即将过期的用户...")
         try:
             expiring_users = await UserOperate.get_expiring_users(days=3)
-            ctx.summary['scanned'] = len(expiring_users)
+            ctx.summary["scanned"] = len(expiring_users)
             if not expiring_users:
                 ctx.log("✅ 没有即将过期的用户")
                 return
@@ -544,8 +721,8 @@ class SchedulerService:
             sessions = await emby.get_sessions()
             active = len([s for s in sessions if s.is_active])
             total = len(sessions)
-            ctx.summary['active'] = active
-            ctx.summary['total'] = total
+            ctx.summary["active"] = active
+            ctx.summary["total"] = total
             ctx.log(f"📊 当前会话: {active} 活跃 / {total} 总计")
         except Exception as e:
             ctx.log(f"❌ 清理会话时发生错误: {e}")
@@ -557,27 +734,29 @@ class SchedulerService:
         ctx.log("📊 生成每日统计...")
         try:
             from src.db.regcode import RegCodeOperate
+
             registered = await UserOperate.get_registered_users_count()
             active = await UserOperate.get_active_users_count()
             regcodes = await RegCodeOperate.get_active_regcodes_count()
             server_status = await EmbyService.get_server_status()
 
-            ctx.summary.update({
-                'registered': registered,
-                'user_limit': RegisterConfig.USER_LIMIT,
-                'active': active,
-                'available_regcodes': regcodes,
-                'emby_online': bool(server_status.get('online')),
-                'active_sessions': server_status.get('active_sessions', 0)
-                    if server_status.get('online') else 0,
-            })
+            ctx.summary.update(
+                {
+                    "registered": registered,
+                    "user_limit": RegisterConfig.USER_LIMIT,
+                    "active": active,
+                    "available_regcodes": regcodes,
+                    "emby_online": bool(server_status.get("online")),
+                    "active_sessions": server_status.get("active_sessions", 0) if server_status.get("online") else 0,
+                }
+            )
 
             ctx.log("=" * 30)
             ctx.log(f"👥 注册用户: {registered} / {RegisterConfig.USER_LIMIT}")
             ctx.log(f"✅ 活跃用户: {active}")
             ctx.log(f"🎫 可用注册码: {regcodes}")
             ctx.log(f"📺 Emby 状态: {'在线' if server_status.get('online') else '离线'}")
-            if server_status.get('online'):
+            if server_status.get("online"):
                 ctx.log(f"   活跃会话: {server_status.get('active_sessions', 0)}")
             ctx.log("=" * 30)
         except Exception as e:
@@ -588,11 +767,12 @@ class SchedulerService:
     async def send_expiry_reminders(ctx: RunContext):
         """发送到期提醒"""
         from src.services.admin_service import ReminderService
+
         ctx.log("📧 发送到期提醒...")
         try:
             result = await ReminderService.send_expiry_reminders()
-            sent = int(result.get('sent', 0)) if isinstance(result, dict) else 0
-            ctx.summary['sent'] = sent
+            sent = int(result.get("sent", 0)) if isinstance(result, dict) else 0
+            ctx.summary["sent"] = sent
             ctx.log(f"✅ 到期提醒发送完成: {sent} 条")
         except Exception as e:
             ctx.log(f"❌ 发送到期提醒出错: {e}")
@@ -604,8 +784,8 @@ class SchedulerService:
         ctx.log("🔄 开始 Emby 用户数据同步...")
         try:
             success, failed, errors = await EmbyService.sync_all_users()
-            ctx.summary['success'] = int(success or 0)
-            ctx.summary['failed'] = int(failed or 0)
+            ctx.summary["success"] = int(success or 0)
+            ctx.summary["failed"] = int(failed or 0)
             ctx.log(f"✅ Emby 同步完成: 成功 {success}, 失败 {failed}")
             if errors:
                 for e in errors[:10]:
@@ -627,39 +807,41 @@ class SchedulerService:
         """
         from src.config import TelegramConfig
         from src.services.telegram_membership import TelegramMembershipService
+
         if not TelegramMembershipService.enforcement_enabled():
-            ctx.summary['enabled'] = False
+            ctx.summary["enabled"] = False
             ctx.log("ℹ️ 群组成员巡检未启用")
             return
 
-        ban_on_leave = bool(getattr(TelegramConfig, 'BAN_ON_LEAVE', False))
+        ban_on_leave = bool(getattr(TelegramConfig, "BAN_ON_LEAVE", False))
 
         # Bot 未就绪时直接退出。继续往下跑会让 check_user_in_groups 对每个
         # 用户都返回 (True, []) —— 这会把所有用户误判为「仍在群」，并产生
         # 一段误导的"815 仍在群、0 已禁用"日志（其实根本没真正检查）。
         if not TelegramMembershipService.is_bot_available():
-            ctx.summary['enabled'] = True
-            ctx.summary['bot_unavailable'] = True
-            ctx.summary['scanned'] = 0
+            ctx.summary["enabled"] = True
+            ctx.summary["bot_unavailable"] = True
+            ctx.summary["scanned"] = 0
             ctx.log("⚠️ Bot 未就绪，无法发起群组成员检查；本次跳过，等待 Bot 初始化后下次再跑")
             return
 
-        ctx.summary['enabled'] = True
-        ctx.summary['ban_on_leave'] = ban_on_leave
+        ctx.summary["enabled"] = True
+        ctx.summary["ban_on_leave"] = ban_on_leave
         if ban_on_leave:
             ctx.log("⚠️ 退群完全封禁模式已开启：检测到退群的用户将被永久 ban，且不再做重新入群识别")
         ctx.log("🛂 开始群组成员资格巡检...")
         try:
             users = await UserOperate.get_active_telegram_bound_users()
-            ctx.summary['scanned'] = len(users)
-            ctx.summary['in_group'] = 0
-            ctx.summary['disabled'] = 0
-            ctx.summary['failed'] = 0
-            ctx.summary['permanently_banned'] = 0
-            ctx.summary['ban_failed'] = 0
-            ctx.summary['rejoin_scanned'] = 0
-            ctx.summary['rejoin_candidates'] = 0
-            ctx.summary['rejoin_uids'] = []
+            ctx.summary["scanned"] = len(users)
+            ctx.summary["in_group"] = 0
+            ctx.summary["disabled"] = 0
+            ctx.summary["failed"] = 0
+            ctx.summary["permanently_banned"] = 0
+            ctx.summary["ban_failed"] = 0
+            ctx.summary["rejoin_scanned"] = 0
+            ctx.summary["rejoin_candidates"] = 0
+            ctx.summary["rejoin_uids"] = []
+            ctx.summary["rejoin_expired_skipped"] = 0
             if not users:
                 ctx.log("✅ 没有需要检查的用户")
             else:
@@ -668,7 +850,7 @@ class SchedulerService:
                     try:
                         tg_ids.append(int(u.TELEGRAM_ID))
                     except (TypeError, ValueError):
-                        ctx.summary['failed'] += 1
+                        ctx.summary["failed"] += 1
                         ctx.log(f"  ⚠️ 跳过非法 Telegram ID: {u.USERNAME} (UID: {u.UID})")
 
                 # 以系统内绑定用户为基准做批量对照，不扫描群全量成员列表。
@@ -683,67 +865,55 @@ class SchedulerService:
 
                         missing = missing_map.get(user_tg_id, [])
                         if not missing:
-                            ctx.summary['in_group'] += 1
+                            ctx.summary["in_group"] += 1
                             continue
 
                         # 拿到了「明确不在群」的判定 → 禁用
-                        success, msg = await UserService.disable_user(
-                            u, reason="未加入必需 Telegram 群组"
-                        )
+                        success, msg = await UserService.disable_user(u, reason="未加入必需 Telegram 群组")
                         if success:
-                            ctx.summary['disabled'] += 1
+                            ctx.summary["disabled"] += 1
                             ctx.log(
                                 f"  ⏹️ 已禁用 {u.USERNAME} (UID: {u.UID}, "
                                 f"TG: {u.TELEGRAM_ID}) — 缺失群组: "
                                 f"{', '.join(m.id for m in missing) or '未知'}"
                             )
                         else:
-                            ctx.summary['failed'] += 1
+                            ctx.summary["failed"] += 1
                             ctx.log(f"  ⚠️ 禁用 {u.USERNAME} 失败: {msg}")
 
                         # 退群完全封禁模式：在所有 GROUP_ID 群里永久 ban，不解封
                         if ban_on_leave:
                             try:
                                 ban_result = await TelegramMembershipService.ban_user_permanently(
-                                    user_tg_id, reason="leave_required_group",
+                                    user_tg_id,
+                                    reason="leave_required_group",
                                 )
-                                banned_ids = ban_result.get('banned_groups') or []
-                                failed_groups = ban_result.get('failed_groups') or []
+                                banned_ids = ban_result.get("banned_groups") or []
+                                failed_groups = ban_result.get("failed_groups") or []
                                 if banned_ids:
-                                    ctx.summary['permanently_banned'] += 1
-                                    ctx.log(
-                                        f"    🚫 已在 {len(banned_ids)} 个群永久封禁 "
-                                        f"(TG: {user_tg_id})"
-                                    )
+                                    ctx.summary["permanently_banned"] += 1
+                                    ctx.log(f"    🚫 已在 {len(banned_ids)} 个群永久封禁 " f"(TG: {user_tg_id})")
                                 if failed_groups:
-                                    ctx.summary['ban_failed'] += 1
-                                    failed_ids = ', '.join(
-                                        item.get('id', '?') for item in failed_groups
-                                    )
-                                    ctx.log(
-                                        f"    ⚠️ 永封部分群失败 (TG: {user_tg_id}): "
-                                        f"{failed_ids}"
-                                    )
+                                    ctx.summary["ban_failed"] += 1
+                                    failed_ids = ", ".join(item.get("id", "?") for item in failed_groups)
+                                    ctx.log(f"    ⚠️ 永封部分群失败 (TG: {user_tg_id}): " f"{failed_ids}")
                             except Exception as ban_exc:  # pragma: no cover
-                                ctx.summary['ban_failed'] += 1
-                                ctx.log(
-                                    f"    ❌ 永封 {u.USERNAME} (TG: {user_tg_id}) "
-                                    f"异常: {ban_exc}"
-                                )
+                                ctx.summary["ban_failed"] += 1
+                                ctx.log(f"    ❌ 永封 {u.USERNAME} (TG: {user_tg_id}) " f"异常: {ban_exc}")
                     except Exception as exc:  # pragma: no cover
-                        ctx.summary['failed'] += 1
+                        ctx.summary["failed"] += 1
                         ctx.log(f"  ❌ 巡检 {u.USERNAME} (UID: {u.UID}) 出错: {exc}")
 
             # 已禁用账号重新入群识别：只上报管理员，不自动恢复，避免误恢复风控账号。
             # 退群完全封禁模式下用户被永封根本进不来群里，本分支永远拿不到结果，
             # 跑一遍只是浪费 RTT，直接跳过。
             if ban_on_leave:
-                ctx.summary['rejoin_skipped_due_to_ban_mode'] = True
+                ctx.summary["rejoin_skipped_due_to_ban_mode"] = True
                 ctx.log("ℹ️ 永封模式已开启，跳过重新入群识别")
                 inactive_users = []
             else:
                 inactive_users = await UserOperate.get_inactive_telegram_bound_users()
-            ctx.summary['rejoin_scanned'] = len(inactive_users)
+            ctx.summary["rejoin_scanned"] = len(inactive_users)
             if inactive_users:
                 inactive_tg_ids: list[int] = []
                 for u in inactive_users:
@@ -758,6 +928,7 @@ class SchedulerService:
                 )
 
                 rejoin_candidates: list[dict[str, object]] = []
+                now_ts = timestamp()
                 for u in inactive_users:
                     try:
                         tg_id = int(u.TELEGRAM_ID)
@@ -767,30 +938,41 @@ class SchedulerService:
                     if inactive_missing_map.get(tg_id):
                         continue
 
-                    rejoin_candidates.append({
-                        'uid': int(u.UID),
-                        'username': u.USERNAME,
-                        'telegram_id': tg_id,
-                    })
+                    exp_raw = getattr(u, "EXPIRED_AT", None)
+                    if exp_raw not in (None, -1, 0, "-1", "0"):
+                        try:
+                            exp_ts = int(exp_raw)
+                        except (TypeError, ValueError):
+                            exp_ts = 0
+                        if exp_ts > 0 and exp_ts < now_ts:
+                            ctx.summary["rejoin_expired_skipped"] += 1
+                            continue
+
+                    rejoin_candidates.append(
+                        {
+                            "uid": int(u.UID),
+                            "username": u.USERNAME,
+                            "telegram_id": tg_id,
+                        }
+                    )
 
                 if rejoin_candidates:
-                    ctx.summary['rejoin_candidates'] = len(rejoin_candidates)
-                    ctx.summary['rejoin_uids'] = [item['uid'] for item in rejoin_candidates[:50]]
+                    ctx.summary["rejoin_candidates"] = len(rejoin_candidates)
+                    ctx.summary["rejoin_uids"] = [item["uid"] for item in rejoin_candidates[:50]]
                     ctx.log(
                         f"  ℹ️ 发现 {len(rejoin_candidates)} 个已禁用但重新入群用户，"
-                        "请管理员在用户管理中手动评估是否恢复启用"
+                        "可在定时任务页面一键重新校验并启用"
                     )
                     for item in rejoin_candidates[:20]:
                         ctx.log(
-                            f"    ↩️ 候选恢复: {item['username']} "
-                            f"(UID: {item['uid']}, TG: {item['telegram_id']})"
+                            f"    ↩️ 候选恢复: {item['username']} " f"(UID: {item['uid']}, TG: {item['telegram_id']})"
                         )
                     if len(rejoin_candidates) > 20:
                         ctx.log(f"    ... 其余 {len(rejoin_candidates) - 20} 个请查看 summary.rejoin_uids")
 
             extra_summary = ""
             if ban_on_leave:
-                ban_failed_count = ctx.summary['ban_failed']
+                ban_failed_count = ctx.summary["ban_failed"]
                 extra_summary = f", 永封 {ctx.summary['permanently_banned']} 个"
                 if ban_failed_count:
                     extra_summary += f", 永封失败 {ban_failed_count} 个"
@@ -822,7 +1004,7 @@ class SchedulerService:
         """
         from src.services.telegram_membership import TelegramMembershipService
 
-        ctx.summary['enabled'] = False
+        ctx.summary["enabled"] = False
 
         if not TelegramMembershipService.is_bot_available():
             ctx.log("⚠️ Bot 未就绪或 Telegram 未启用，跳过")
@@ -832,38 +1014,38 @@ class SchedulerService:
             ctx.log("⚠️ 未配置 TelegramConfig.GROUP_ID，跳过")
             return
         chat_id = group_ids[0]
-        ctx.summary['enabled'] = True
-        ctx.summary['chat_id'] = str(chat_id)
+        ctx.summary["enabled"] = True
+        ctx.summary["chat_id"] = str(chat_id)
 
         # 手动参数：dry_run / max_per_run
-        params = getattr(ctx, 'params', {}) or {}
-        dry_run = bool(params.get('dry_run', False))
+        params = getattr(ctx, "params", {}) or {}
+        dry_run = bool(params.get("dry_run", False))
         try:
-            max_per_run = int(params.get('max_per_run', 200))
+            max_per_run = int(params.get("max_per_run", 200))
         except (TypeError, ValueError):
             max_per_run = 200
         max_per_run = max(1, min(max_per_run, 500))
 
         ctx.log("📋 构建踢人计划（按花名册反查系统账号）...")
         plan = await TelegramMembershipService.build_unbound_kick_plan(chat_id)
-        reasons: dict[int, str] = plan['reasons']  # type: ignore[assignment]
-        targets: list[int] = plan['targets']  # type: ignore[assignment]
-        excluded_ids: set[int] = plan['excluded_ids']  # type: ignore[assignment]
+        reasons: dict[int, str] = plan["reasons"]  # type: ignore[assignment]
+        targets: list[int] = plan["targets"]  # type: ignore[assignment]
+        excluded_ids: set[int] = plan["excluded_ids"]  # type: ignore[assignment]
 
-        reason_counts = {'no_account': 0, 'no_emby': 0, 'disabled': 0}
+        reason_counts = {"no_account": 0, "no_emby": 0, "disabled": 0}
         for r in reasons.values():
             reason_counts[r] = reason_counts.get(r, 0) + 1
 
-        ctx.summary['roster_size'] = plan['roster_size']
-        ctx.summary['bots_in_roster'] = plan['bots_in_roster']
-        ctx.summary['preserved_bound'] = plan['preserved_bound']
-        ctx.summary['admins_excluded'] = len(plan['group_admin_ids'])  # type: ignore[arg-type]
-        ctx.summary['excluded_total'] = len(excluded_ids)
-        ctx.summary['targets'] = len(targets)
-        ctx.summary['reason_no_account'] = reason_counts['no_account']
-        ctx.summary['reason_no_emby'] = reason_counts['no_emby']
-        ctx.summary['reason_disabled'] = reason_counts['disabled']
-        ctx.summary['dry_run'] = dry_run
+        ctx.summary["roster_size"] = plan["roster_size"]
+        ctx.summary["bots_in_roster"] = plan["bots_in_roster"]
+        ctx.summary["preserved_bound"] = plan["preserved_bound"]
+        ctx.summary["admins_excluded"] = len(plan["group_admin_ids"])  # type: ignore[arg-type]
+        ctx.summary["excluded_total"] = len(excluded_ids)
+        ctx.summary["targets"] = len(targets)
+        ctx.summary["reason_no_account"] = reason_counts["no_account"]
+        ctx.summary["reason_no_emby"] = reason_counts["no_emby"]
+        ctx.summary["reason_disabled"] = reason_counts["disabled"]
+        ctx.summary["dry_run"] = dry_run
 
         if not targets:
             ctx.log("✅ 没有可处理的候选 TG ID（roster 中的成员全部已绑 Emby/管理员）")
@@ -877,11 +1059,11 @@ class SchedulerService:
 
         if dry_run:
             ctx.log("ℹ️ dry_run=true，跳过实际踢人")
-            ctx.summary['kicked'] = 0
-            ctx.summary['skipped'] = 0
-            ctx.summary['failed'] = 0
-            ctx.summary['not_in_group'] = 0
-            ctx.summary['scanned'] = 0
+            ctx.summary["kicked"] = 0
+            ctx.summary["skipped"] = 0
+            ctx.summary["failed"] = 0
+            ctx.summary["not_in_group"] = 0
+            ctx.summary["scanned"] = 0
             return
 
         result = await TelegramMembershipService.kick_unknown_members(
@@ -891,10 +1073,10 @@ class SchedulerService:
             max_per_run=max_per_run,
         )
 
-        for key in ('scanned', 'kicked', 'skipped', 'failed', 'not_in_group'):
+        for key in ("scanned", "kicked", "skipped", "failed", "not_in_group"):
             ctx.summary[key] = int(result.get(key, 0) or 0)
 
-        details = result.get('details') or []
+        details = result.get("details") or []
         for item in details[:20]:
             ctx.log(f"  ℹ️ {item}")
 
@@ -917,16 +1099,14 @@ class SchedulerService:
         """
         from src.services.emby_register_queue import EmbyRegisterQueueService
 
-        params = getattr(ctx, 'params', {}) or {}
-        manual_days = params.get('days')
-        ignore_enabled_flag = bool(params.get('ignore_enabled_flag', False))
-        preserve_tg_bound_param = params.get('preserve_tg_bound')
+        params = getattr(ctx, "params", {}) or {}
+        manual_days = params.get("days")
+        ignore_enabled_flag = bool(params.get("ignore_enabled_flag", False))
+        preserve_tg_bound_param = params.get("preserve_tg_bound")
 
         # AUTO_CLEANUP_NO_EMBY 是给定时调度看的；手动触发时管理员可显式 override
-        if not RegisterConfig.AUTO_CLEANUP_NO_EMBY and not (
-            ctx.trigger == 'manual' and ignore_enabled_flag
-        ):
-            ctx.summary['enabled'] = False
+        if not RegisterConfig.AUTO_CLEANUP_NO_EMBY and not (ctx.trigger == "manual" and ignore_enabled_flag):
+            ctx.summary["enabled"] = False
             ctx.log("ℹ️ AUTO_CLEANUP_NO_EMBY 未启用，跳过（手动触发可传 ignore_enabled_flag=true 强制执行）")
             return
 
@@ -952,10 +1132,10 @@ class SchedulerService:
             ctx.log(f"⚠️ 读取 Emby 注册队列状态失败，按「无在飞」处理: {exc}")
             pending_uids = set()
 
-        ctx.summary['enabled'] = True
-        ctx.summary['days_threshold'] = days
-        ctx.summary['preserve_tg_bound'] = preserve_tg_bound
-        ctx.summary['pending_register_excluded'] = len(pending_uids)
+        ctx.summary["enabled"] = True
+        ctx.summary["days_threshold"] = days
+        ctx.summary["preserve_tg_bound"] = preserve_tg_bound
+        ctx.summary["pending_register_excluded"] = len(pending_uids)
         ctx.log(
             f"🧹 开始清理注册超过 {days} 天无 Emby 账户的用户"
             f"（保留TG绑定: {preserve_tg_bound}, 在飞注册排除: {len(pending_uids)}）..."
@@ -966,9 +1146,9 @@ class SchedulerService:
                 exclude_uids=pending_uids or None,
                 preserve_tg_bound=preserve_tg_bound,
             )
-            ctx.summary['scanned'] = len(users)
-            ctx.summary['deleted'] = 0
-            ctx.summary['failed'] = 0
+            ctx.summary["scanned"] = len(users)
+            ctx.summary["deleted"] = 0
+            ctx.summary["failed"] = 0
             if not users:
                 ctx.log("✅ 没有需要清理的无 Emby 账户用户")
                 return
@@ -977,17 +1157,16 @@ class SchedulerService:
                 try:
                     success, msg = await UserService.delete_user(user, delete_emby=False)
                     if success:
-                        ctx.summary['deleted'] += 1
+                        ctx.summary["deleted"] += 1
                         ctx.log(f"  🗑️ 已删除: {user.USERNAME} (UID: {user.UID})")
                     else:
-                        ctx.summary['failed'] += 1
+                        ctx.summary["failed"] += 1
                         ctx.log(f"  ⚠️ 删除失败: {user.USERNAME} - {msg}")
                 except Exception as e:
-                    ctx.summary['failed'] += 1
+                    ctx.summary["failed"] += 1
                     ctx.log(f"  ❌ 删除失败: {user.USERNAME} - {e}")
             ctx.log(
-                f"✅ 无 Emby 账户用户清理完成: 删除 {ctx.summary['deleted']} 个, "
-                f"失败 {ctx.summary['failed']} 个"
+                f"✅ 无 Emby 账户用户清理完成: 删除 {ctx.summary['deleted']} 个, " f"失败 {ctx.summary['failed']} 个"
             )
         except Exception as e:
             ctx.log(f"❌ 清理无 Emby 账户用户时发生错误: {e}")
@@ -996,8 +1175,10 @@ class SchedulerService:
     @classmethod
     async def start(cls):
         """启动调度器"""
-        if not SchedulerConfig.ENABLED:
-            logger.info("ℹ️ 调度器已禁用")
+        scheduler = cls.get_scheduler()
+        if scheduler.running:
+            cls._ensure_config_watcher()
+            logger.info("ℹ️ 调度器已在运行，跳过重复启动")
             return
 
         # 进程上一次崩溃前的「running」状态行先回写为 failed，避免前端永远转圈
@@ -1008,14 +1189,17 @@ class SchedulerService:
         except Exception as exc:  # pragma: no cover
             logger.warning(f"reconcile orphans 失败: {exc}")
 
-        scheduler = cls.get_scheduler()
         try:
             cls._scheduler_loop = asyncio.get_running_loop()
         except RuntimeError:
             cls._scheduler_loop = None
 
-        await cls._install_all_jobs()
+        if SchedulerConfig.ENABLED:
+            await cls._install_all_jobs()
+        else:
+            logger.info("ℹ️ 调度器全局开关已关闭：保持空调度器运行，用于监听配置热重载")
         scheduler.start()
+        cls._ensure_config_watcher()
 
         logger.info("=" * 50)
         logger.info(f"🌙 Twilight Scheduler 已启动 ({SchedulerConfig.TIMEZONE})")
@@ -1024,7 +1208,8 @@ class SchedulerService:
         logger.info("=" * 50)
 
         # 立即运行一次统计（走 tracking 包装，复用同一份 ctx/落库逻辑）
-        await cls._run_with_tracking('daily_stats', cls.daily_stats, trigger='startup')
+        if SchedulerConfig.ENABLED:
+            await cls._run_with_tracking("daily_stats", cls.daily_stats, trigger="startup")
 
     @classmethod
     async def _install_all_jobs(cls) -> None:
@@ -1035,15 +1220,16 @@ class SchedulerService:
         时才注册；管理员后续通过 UI 改 schedule 也只有在功能开启时才会生效。
         """
         from src.services.telegram_membership import TelegramMembershipService
+
         scheduler = cls.get_scheduler()
         fn_map = cls._job_fn_map()
 
         for definition in cls.JOB_DEFINITIONS:
-            jid = definition['id']
-            if definition.get('manual_only'):
+            jid = definition["id"]
+            if definition.get("manual_only"):
                 # 手动专属任务不进入 APScheduler；trigger_job 直接拉起
                 continue
-            if jid == 'enforce_group_membership' and not TelegramMembershipService.enforcement_enabled():
+            if jid == "enforce_group_membership" and not TelegramMembershipService.enforcement_enabled():
                 continue
             spec, _custom = await cls._effective_trigger(definition)
             scheduler.add_job(
@@ -1056,15 +1242,15 @@ class SchedulerService:
     @classmethod
     def _job_fn_map(cls) -> dict[str, Callable[..., Awaitable[Any]]]:
         return {
-            'check_expired': cls.check_expired_users,
-            'check_expiring': cls.check_expiring_users,
-            'expiry_reminders': cls.send_expiry_reminders,
-            'daily_stats': cls.daily_stats,
-            'cleanup_sessions': cls.cleanup_inactive_sessions,
-            'emby_sync': cls.emby_sync,
-            'cleanup_no_emby': cls.cleanup_no_emby_users,
-            'enforce_group_membership': cls.enforce_group_membership,
-            'kick_unknown_group_members': cls.kick_unknown_group_members,
+            "check_expired": cls.check_expired_users,
+            "check_expiring": cls.check_expiring_users,
+            "expiry_reminders": cls.send_expiry_reminders,
+            "daily_stats": cls.daily_stats,
+            "cleanup_sessions": cls.cleanup_inactive_sessions,
+            "emby_sync": cls.emby_sync,
+            "cleanup_no_emby": cls.cleanup_no_emby_users,
+            "enforce_group_membership": cls.enforce_group_membership,
+            "kick_unknown_group_members": cls.kick_unknown_group_members,
         }
 
     # ============== 管理 API：在线修改 / 重置触发器 ==============
@@ -1083,7 +1269,7 @@ class SchedulerService:
         definition = cls._get_definition(job_id)
         if not definition:
             return False, f"未知任务: {job_id}", None
-        if definition.get('manual_only'):
+        if definition.get("manual_only"):
             return False, "该任务仅支持手动触发，不能配置定时触发器", None
 
         try:
@@ -1109,7 +1295,7 @@ class SchedulerService:
         definition = cls._get_definition(job_id)
         if not definition:
             return False, f"未知任务: {job_id}", None
-        if definition.get('manual_only'):
+        if definition.get("manual_only"):
             return False, "该任务仅支持手动触发，无可恢复的默认触发器", None
 
         await SchedulerScheduleOperate.delete_override(job_id)
@@ -1147,7 +1333,8 @@ class SchedulerService:
         try:
             if sched_loop is not None and sched_loop is not running_loop:
                 fut = asyncio.run_coroutine_threadsafe(
-                    asyncio.to_thread(_do), sched_loop,
+                    asyncio.to_thread(_do),
+                    sched_loop,
                 )
                 # reschedule 是个轻量同步调用，等一会拿结果即可
                 fut.result(timeout=5)
@@ -1160,6 +1347,16 @@ class SchedulerService:
     @classmethod
     async def stop(cls):
         """停止调度器"""
+        if cls._config_watch_task is not None:
+            cls._config_watch_task.cancel()
+            cls._config_watch_task = None
         if cls._scheduler and cls._scheduler.running:
             cls._scheduler.shutdown()
             logger.info("👋 调度器已关闭")
+        if cls._lock_path is not None:
+            try:
+                if cls._lock_path.exists() and cls._lock_path.read_text(encoding="utf-8").strip() == str(os.getpid()):
+                    cls._lock_path.unlink()
+            except OSError:
+                pass
+            cls._lock_path = None

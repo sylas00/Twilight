@@ -48,7 +48,7 @@
 ### 环境要求
 
 - **Python** 3.10+（推荐 3.11+）
-- **Node.js** 18+（用于前端，推荐 20+）
+- **Node.js** 22+（用于前端与 Cloudflare Workers 工具链）
 - **Emby/Jellyfin** 已部署的服务器
 
 ---

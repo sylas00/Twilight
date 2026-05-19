@@ -395,7 +395,7 @@ export default function RegisterPage() {
                   <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
                     <p className="font-medium">在 Telegram 中打开服务 Bot 的私聊窗口。</p>
                     <p className="mt-1 leading-relaxed">
-                      点击"获取绑定码"后，在 Bot 私聊中发送 /bind &lt;绑定码&gt; 完成验证。
+                      点击“获取绑定码”后，在 Bot 私聊中发送 /bind &lt;绑定码&gt; 完成验证。
                     </p>
                     {systemInfo?.telegram_bot?.username ? (
                       <p className="mt-2 inline-flex items-center gap-1.5 text-xs text-amber-900">

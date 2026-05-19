@@ -3,6 +3,7 @@
 
 提供系统配置、状态等信息
 """
+
 from typing import Optional, Any
 from pathlib import Path
 import shutil
@@ -11,13 +12,24 @@ from flask import Blueprint, request, g
 from sqlalchemy import text
 
 from src.api.v1.auth import require_auth, require_admin, api_response
+from src.core.utils import parse_bool
 from src.config import (
-    Config, EmbyConfig, RegisterConfig,
-    DeviceLimitConfig, APIConfig, SecurityConfig,
-    SchedulerConfig, NotificationConfig, TelegramConfig,
+    Config,
+    EmbyConfig,
+    RegisterConfig,
+    DeviceLimitConfig,
+    APIConfig,
+    SecurityConfig,
+    SchedulerConfig,
+    NotificationConfig,
+    TelegramConfig,
     BangumiSyncConfig,
-    backup_config_file, fill_missing_config_items, sweep_config_toml,
-    get_primary_config_path, normalize_storage_settings,
+    backup_config_file,
+    fill_missing_config_items,
+    sweep_config_toml,
+    get_primary_config_path,
+    normalize_storage_settings,
+    reload_runtime_config as _config_reload_runtime_config,
 )
 from src import __version__
 from src.db.user import UsersSessionFactory
@@ -30,9 +42,16 @@ _reload_logger = logging.getLogger(__name__)
 
 
 _CONFIG_CLASSES = [
-    Config, EmbyConfig, TelegramConfig, RegisterConfig,
-    DeviceLimitConfig, APIConfig, SecurityConfig,
-    SchedulerConfig, NotificationConfig, BangumiSyncConfig,
+    Config,
+    EmbyConfig,
+    TelegramConfig,
+    RegisterConfig,
+    DeviceLimitConfig,
+    APIConfig,
+    SecurityConfig,
+    SchedulerConfig,
+    NotificationConfig,
+    BangumiSyncConfig,
 ]
 
 
@@ -56,7 +75,7 @@ def _schedule_process_restart(delay: float = 1.5) -> None:
 
         # 先尝试 SIGTERM 进程组，确保 API + Bot 等同组进程一同退出
         try:
-            if hasattr(os, 'killpg') and hasattr(os, 'getpgrp'):
+            if hasattr(os, "killpg") and hasattr(os, "getpgrp"):
                 os.killpg(os.getpgrp(), signal.SIGTERM)
                 # SIGTERM 后给一点时间让信号传达，再强制退出
                 _time_mod.sleep(2.0)
@@ -77,44 +96,49 @@ def _schedule_process_restart(delay: float = 1.5) -> None:
 
 def _reload_runtime_config() -> None:
     """重新加载运行时配置类。"""
-    Config.update_from_toml("Global")
-    EmbyConfig.update_from_toml('Emby')
-    TelegramConfig.update_from_toml('Telegram')
-    RegisterConfig.update_from_toml('SAR')
-    DeviceLimitConfig.update_from_toml('DeviceLimit')
-    APIConfig.update_from_toml('API')
-    SecurityConfig.update_from_toml('Security')
-    SchedulerConfig.update_from_toml('Scheduler')
-    NotificationConfig.update_from_toml('Notification')
-    BangumiSyncConfig.update_from_toml('BangumiSync')
-    normalize_storage_settings()
+    _config_reload_runtime_config()
+
+
+async def _apply_runtime_hot_reload() -> dict:
+    """刷新当前进程配置，并在本进程调度器存在时重装任务。"""
+    _reload_runtime_config()
+    payload = {"config": True, "scheduler": None}
+    try:
+        from src.services.scheduler_service import SchedulerService
+
+        ok, message = await SchedulerService.reload_from_config(reload_config=False)
+        payload["scheduler"] = {"success": ok, "message": message}
+    except Exception as exc:  # pragma: no cover
+        _reload_logger.warning("调度器热重载失败: %s", exc, exc_info=True)
+        payload["scheduler"] = {"success": False, "message": str(exc)}
+    return payload
 
 
 def _infer_schema_field_type(key: str, value: Any) -> str:
     """根据键名和值推断可视化配置字段类型。"""
-    key_lower = (key or '').lower()
-    if any(token in key_lower for token in ('token', 'password', 'secret', 'api_key', 'apikey')):
-        return 'secret'
+    key_lower = (key or "").lower()
+    if any(token in key_lower for token in ("token", "password", "secret", "api_key", "apikey")):
+        return "secret"
     if isinstance(value, bool):
-        return 'bool'
+        return "bool"
     if isinstance(value, int):
-        return 'int'
+        return "int"
     if isinstance(value, float):
-        return 'float'
+        return "float"
     if isinstance(value, list):
-        return 'list'
-    return 'string'
+        return "list"
+    return "string"
 
 
 _SCHEMA_HIDDEN_FIELDS: dict[str, set[str]] = {
     # 这些字段在配置类里仍是合法默认值，但「配置管理」UI 不再暴露；
     # Scheduler 的逐 job 触发器在「定时任务」页编辑，避免双入口冲突。
-    'Scheduler': {
-        'expired_check_time',
-        'expiring_check_time',
-        'daily_stats_time',
-        'session_cleanup_interval',
-        'emby_sync_interval',
+    "Scheduler": {
+        "expired_check_time",
+        "expiring_check_time",
+        "daily_stats_time",
+        "session_cleanup_interval",
+        "emby_sync_interval",
     },
 }
 
@@ -122,19 +146,19 @@ _SCHEMA_HIDDEN_FIELDS: dict[str, set[str]] = {
 def _augment_schema_with_missing_fields(schema: dict) -> None:
     """将配置类中存在但 schema 未声明的字段自动补进可视化配置。"""
     section_class_map = {
-        'Global': Config,
-        'Emby': EmbyConfig,
-        'Telegram': TelegramConfig,
-        'SAR': RegisterConfig,
-        'DeviceLimit': DeviceLimitConfig,
-        'API': APIConfig,
-        'Security': SecurityConfig,
-        'Scheduler': SchedulerConfig,
-        'Notification': NotificationConfig,
-        'BangumiSync': BangumiSyncConfig,
+        "Global": Config,
+        "Emby": EmbyConfig,
+        "Telegram": TelegramConfig,
+        "SAR": RegisterConfig,
+        "DeviceLimit": DeviceLimitConfig,
+        "API": APIConfig,
+        "Security": SecurityConfig,
+        "Scheduler": SchedulerConfig,
+        "Notification": NotificationConfig,
+        "BangumiSync": BangumiSyncConfig,
     }
-    sections = schema.get('sections', [])
-    section_map = {section.get('key'): section for section in sections}
+    sections = schema.get("sections", [])
+    section_map = {section.get("key"): section for section in sections}
 
     for section_key, conf_cls in section_class_map.items():
         section = section_map.get(section_key)
@@ -142,8 +166,8 @@ def _augment_schema_with_missing_fields(schema: dict) -> None:
             continue
 
         hidden = _SCHEMA_HIDDEN_FIELDS.get(section_key, set())
-        fields = section.get('fields', [])
-        existing = {field.get('key') for field in fields}
+        fields = section.get("fields", [])
+        existing = {field.get("key") for field in fields}
         defaults = conf_cls._get_default_values()
 
         for field_key, default_value in defaults.items():
@@ -151,13 +175,15 @@ def _augment_schema_with_missing_fields(schema: dict) -> None:
                 continue
 
             value = getattr(conf_cls, field_key.upper(), default_value)
-            fields.append({
-                'key': field_key,
-                'label': field_key,
-                'type': _infer_schema_field_type(field_key, value),
-                'description': '自动识别的配置项（尚未补充专用说明）',
-                'value': value,
-            })
+            fields.append(
+                {
+                    "key": field_key,
+                    "label": field_key,
+                    "type": _infer_schema_field_type(field_key, value),
+                    "description": "自动识别的配置项（尚未补充专用说明）",
+                    "value": value,
+                }
+            )
 
 
 def _backup_config_before_update(reason: str) -> Optional[Path]:
@@ -170,7 +196,7 @@ def _parse_csv_ids(value: str) -> set:
     if not value:
         return set()
     out: set = set()
-    for token in str(value).split(','):
+    for token in str(value).split(","):
         token = token.strip()
         if not token:
             continue
@@ -184,7 +210,7 @@ def _parse_csv_ids(value: str) -> set:
 def _parse_csv_names(value: str) -> set:
     if not value:
         return set()
-    return {n.strip().lower() for n in str(value).split(',') if n.strip()}
+    return {n.strip().lower() for n in str(value).split(",") if n.strip()}
 
 
 async def _sync_admin_role_from_config():
@@ -210,16 +236,11 @@ async def _sync_admin_role_from_config():
 
     async with UsersSessionFactory() as session:
         async with session.begin():
-            result = await session.execute(
-                select(UserModel.UID, UserModel.USERNAME, UserModel.ROLE)
-            )
+            result = await session.execute(select(UserModel.UID, UserModel.USERNAME, UserModel.ROLE))
             for uid, username, role in result.all():
-                uname = (username or '').lower()
+                uname = (username or "").lower()
                 is_cfg_admin = uid in admin_uids or (uname and uname in admin_names)
-                is_cfg_white = (
-                    not is_cfg_admin
-                    and (uid in white_uids or (uname and uname in white_names))
-                )
+                is_cfg_white = not is_cfg_admin and (uid in white_uids or (uname and uname in white_names))
                 if is_cfg_admin:
                     if role != Role.ADMIN.value:
                         promote_admin.append(uid)
@@ -231,34 +252,27 @@ async def _sync_admin_role_from_config():
 
             if promote_admin:
                 await session.execute(
-                    update(UserModel)
-                    .where(UserModel.UID.in_(promote_admin))
-                    .values(ROLE=Role.ADMIN.value)
+                    update(UserModel).where(UserModel.UID.in_(promote_admin)).values(ROLE=Role.ADMIN.value)
                 )
             if promote_white:
                 await session.execute(
-                    update(UserModel)
-                    .where(UserModel.UID.in_(promote_white))
-                    .values(ROLE=Role.WHITE_LIST.value)
+                    update(UserModel).where(UserModel.UID.in_(promote_white)).values(ROLE=Role.WHITE_LIST.value)
                 )
             if demote:
-                await session.execute(
-                    update(UserModel)
-                    .where(UserModel.UID.in_(demote))
-                    .values(ROLE=Role.NORMAL.value)
-                )
+                await session.execute(update(UserModel).where(UserModel.UID.in_(demote)).values(ROLE=Role.NORMAL.value))
 
     _reload_logger.info(
         f"管理员配置同步完成: 升级 admin={len(promote_admin)}, 升级 white={len(promote_white)}, 降级 normal={len(demote)}"
     )
 
 
-system_bp = Blueprint('system', __name__, url_prefix='/system')
+system_bp = Blueprint("system", __name__, url_prefix="/system")
 
 
 # ==================== 公开信息 ====================
 
-@system_bp.route('/info', methods=['GET'])
+
+@system_bp.route("/info", methods=["GET"])
 async def get_system_info():
     """
     获取系统公开信息
@@ -281,108 +295,102 @@ async def get_system_info():
         except Exception:
             telegram_bot_username = None
 
-    telegram_bot_url = (
-        f"https://t.me/{telegram_bot_username}" if telegram_bot_username else None
+    telegram_bot_url = f"https://t.me/{telegram_bot_username}" if telegram_bot_username else None
+
+    return api_response(
+        True,
+        "获取成功",
+        {
+            "name": Config.SERVER_NAME or "Twilight",
+            "icon": Config.SERVER_ICON or "",
+            "version": __version__,
+            "features": {
+                "register": RegisterConfig.REGISTER_MODE,
+                "emby_direct_register": RegisterConfig.EMBY_DIRECT_REGISTER_ENABLED,
+                "telegram": Config.TELEGRAM_MODE,
+                "force_bind_telegram": Config.FORCE_BIND_TELEGRAM,
+            },
+            "limits": {
+                "user_limit": RegisterConfig.USER_LIMIT,
+                "stream_limit": DeviceLimitConfig.MAX_STREAMS if DeviceLimitConfig.DEVICE_LIMIT_ENABLED else None,
+            },
+            "telegram_bot": {
+                "username": telegram_bot_username,
+                "url": telegram_bot_url,
+            },
+        },
     )
 
-    return api_response(True, "获取成功", {
-        'name': Config.SERVER_NAME or 'Twilight',
-        'icon': Config.SERVER_ICON or '',
-        'version': __version__,
-        'features': {
-            'register': RegisterConfig.REGISTER_MODE,
-            'emby_direct_register': RegisterConfig.EMBY_DIRECT_REGISTER_ENABLED,
-            'telegram': Config.TELEGRAM_MODE,
-            'force_bind_telegram': Config.FORCE_BIND_TELEGRAM,
-        },
-        'limits': {
-            'user_limit': RegisterConfig.USER_LIMIT,
-            'stream_limit': DeviceLimitConfig.MAX_STREAMS if DeviceLimitConfig.DEVICE_LIMIT_ENABLED else None,
-        },
-        'telegram_bot': {
-            'username': telegram_bot_username,
-            'url': telegram_bot_url,
-        },
-    })
 
-
-@system_bp.route('/health', methods=['GET'])
+@system_bp.route("/health", methods=["GET"])
 async def health_check():
     """健康检查"""
     from src.services import get_emby_client
-    
+
     status = {
-        'api': True,
-        'database': False,
-        'emby': False,
+        "api": True,
+        "database": False,
+        "emby": False,
     }
-    
+
     # 检查数据库连接
     try:
         async with UsersSessionFactory() as session:
-            await session.execute(text('SELECT 1'))
-        status['database'] = True
+            await session.execute(text("SELECT 1"))
+        status["database"] = True
     except Exception:
-        status['database'] = False
+        status["database"] = False
 
     # 检查 Emby 连接
     try:
         emby = get_emby_client()
         info = await emby.get_public_info()
-        status['emby'] = bool(info)
+        status["emby"] = bool(info)
     except Exception:
         pass
-    
+
     all_healthy = all(status.values())
-    
+
     return api_response(all_healthy, "OK" if all_healthy else "部分服务异常", status)
 
 
-@system_bp.route('/stats', methods=['GET'])
+@system_bp.route("/stats", methods=["GET"])
 @require_auth
 @require_admin
 async def system_stats():
     """获取系统运行时统计信息（管理员）"""
     import os
     import time
+
     try:
         import psutil
     except ImportError:
         psutil = None
 
     stats = {
-        'timestamp': int(time.time()),
-        'cpu_count': os.cpu_count(),
-        'cpu_percent': None,
-        'memory': None,
-        'disk': None,
+        "timestamp": int(time.time()),
+        "cpu_count": os.cpu_count(),
+        "cpu_percent": None,
+        "memory": None,
+        "disk": None,
     }
 
     if psutil:
-        stats['cpu_percent'] = psutil.cpu_percent(interval=None)
-        
+        stats["cpu_percent"] = psutil.cpu_percent(interval=None)
+
         mem = psutil.virtual_memory()
-        stats['memory'] = {
-            'total': mem.total,
-            'available': mem.available,
-            'percent': mem.percent,
-            'used': mem.used
-        }
-        
-        disk = psutil.disk_usage('/')
-        stats['disk'] = {
-            'total': disk.total,
-            'free': disk.free,
-            'percent': disk.percent
-        }
-    
+        stats["memory"] = {"total": mem.total, "available": mem.available, "percent": mem.percent, "used": mem.used}
+
+        disk = psutil.disk_usage("/")
+        stats["disk"] = {"total": disk.total, "free": disk.free, "percent": disk.percent}
+
     # 获取应用级统计 (如总用户数，今日活跃等，这里由于性能原因可以简化或异步获取，暂时只返回系统级)
     # 若需业务统计，可复用 src.api.v1.stats
-    
+
     return api_response(True, "获取成功", stats)
 
 
-@system_bp.route('/emby-urls', methods=['GET'])
+@system_bp.route("/emby-urls", methods=["GET"])
 @require_auth
 async def get_emby_urls():
     """
@@ -399,119 +407,133 @@ async def get_emby_urls():
     """
     from src.db.user import Role
 
-    user = getattr(g, 'current_user', None)
+    user = getattr(g, "current_user", None)
     is_admin = bool(user and user.ROLE == Role.ADMIN.value)
     # 与 user_service.get_user_info / admin 列表用同一套口径：
     # 「真正绑定 Emby」=有 EMBYID 且 PENDING_EMBY 为假；只要还在 pending 就视作未绑。
-    emby_bound = bool(user and user.EMBYID and not bool(getattr(user, 'PENDING_EMBY', False)))
+    emby_bound = bool(user and user.EMBYID and not bool(getattr(user, "PENDING_EMBY", False)))
 
     # 没绑定 Emby 且不是管理员 → 不下发任何线路，前端会据此隐藏整块 UI
     if user and not emby_bound and not is_admin:
-        return api_response(True, "未绑定 Emby 账号，未下发线路", {
-            'lines': [],
-            'requires_emby_account': True,
-        })
+        return api_response(
+            True,
+            "未绑定 Emby 账号，未下发线路",
+            {
+                "lines": [],
+                "requires_emby_account": True,
+            },
+        )
 
     def parse_url_entry(entry: str) -> dict:
         """解析 'Label : http://...' 格式"""
-        if ' : ' in entry:
-            parts = entry.split(' : ', 1)
-            return {'name': parts[0].strip(), 'url': parts[1].strip()}
-        return {'name': '默认线路', 'url': entry.strip()}
+        if " : " in entry:
+            parts = entry.split(" : ", 1)
+            return {"name": parts[0].strip(), "url": parts[1].strip()}
+        return {"name": "默认线路", "url": entry.strip()}
 
     lines = [parse_url_entry(u) for u in EmbyConfig.EMBY_URL_LIST]
 
-    result = {'lines': lines}
+    result = {"lines": lines}
 
     # 白名单/管理员用户额外返回专属线路
     if user and user.ROLE in (Role.ADMIN.value, Role.WHITE_LIST.value):
         whitelist_lines = [parse_url_entry(u) for u in EmbyConfig.EMBY_URL_LIST_FOR_WHITELIST]
         if whitelist_lines:
-            result['whitelist_lines'] = whitelist_lines
+            result["whitelist_lines"] = whitelist_lines
 
     return api_response(True, "获取成功", result)
 
 
 # ==================== 需要登录 ====================
 
-@system_bp.route('/config', methods=['GET'])
+
+@system_bp.route("/config", methods=["GET"])
 @require_auth
 async def get_user_config():
     """获取用户可见的配置"""
-    return api_response(True, "获取成功", {
-        'device_limit': {
-            'enabled': DeviceLimitConfig.DEVICE_LIMIT_ENABLED,
-            'max_devices': DeviceLimitConfig.MAX_DEVICES,
-            'max_streams': DeviceLimitConfig.MAX_STREAMS,
+    return api_response(
+        True,
+        "获取成功",
+        {
+            "device_limit": {
+                "enabled": DeviceLimitConfig.DEVICE_LIMIT_ENABLED,
+                "max_devices": DeviceLimitConfig.MAX_DEVICES,
+                "max_streams": DeviceLimitConfig.MAX_STREAMS,
+            },
         },
-    })
+    )
 
 
 # ==================== 管理员专用 ====================
 
-@system_bp.route('/admin/config', methods=['GET'])
+
+@system_bp.route("/admin/config", methods=["GET"])
 @require_auth
 @require_admin
 async def get_admin_config():
     """获取完整的系统配置（管理员）"""
-    return api_response(True, "获取成功", {
-        'global': {
-            'logging': Config.LOGGING,
-            'log_level': Config.LOG_LEVEL,
-            'telegram_mode': Config.TELEGRAM_MODE,
-            'force_bind_telegram': Config.FORCE_BIND_TELEGRAM,
+    return api_response(
+        True,
+        "获取成功",
+        {
+            "global": {
+                "logging": Config.LOGGING,
+                "log_level": Config.LOG_LEVEL,
+                "telegram_mode": Config.TELEGRAM_MODE,
+                "force_bind_telegram": Config.FORCE_BIND_TELEGRAM,
+            },
+            "emby": {
+                "url": EmbyConfig.EMBY_URL,
+                "url_list": EmbyConfig.EMBY_URL_LIST,
+            },
+            "telegram": {
+                "enabled": Config.TELEGRAM_MODE,
+                "admin_ids": TelegramConfig.ADMIN_ID,
+                "group_ids": TelegramConfig.GROUP_ID,
+                "channel_ids": TelegramConfig.CHANNEL_ID,
+                "force_subscribe": TelegramConfig.FORCE_SUBSCRIBE,
+            },
+            "sar": {
+                "register_mode": RegisterConfig.REGISTER_MODE,
+                "register_code_limit": RegisterConfig.REGISTER_CODE_LIMIT,
+                "emby_direct_register_enabled": RegisterConfig.EMBY_DIRECT_REGISTER_ENABLED,
+                "emby_direct_register_days": RegisterConfig.EMBY_DIRECT_REGISTER_DAYS,
+                "emby_user_limit": RegisterConfig.EMBY_USER_LIMIT,
+                "emby_direct_register_workers": RegisterConfig.EMBY_DIRECT_REGISTER_WORKERS,
+                "emby_direct_register_max_queue": RegisterConfig.EMBY_DIRECT_REGISTER_MAX_QUEUE,
+                "emby_direct_register_status_ttl": RegisterConfig.EMBY_DIRECT_REGISTER_STATUS_TTL,
+                "user_limit": RegisterConfig.USER_LIMIT,
+            },
+            "device_limit": {
+                "enabled": DeviceLimitConfig.DEVICE_LIMIT_ENABLED,
+                "max_devices": DeviceLimitConfig.MAX_DEVICES,
+                "max_streams": DeviceLimitConfig.MAX_STREAMS,
+                "kick_oldest": DeviceLimitConfig.KICK_OLDEST_SESSION,
+            },
+            "security": {
+                "login_fail_threshold": SecurityConfig.LOGIN_FAIL_THRESHOLD,
+                "lockout_minutes": SecurityConfig.LOCKOUT_MINUTES,
+            },
+            "api": {
+                "host": APIConfig.HOST,
+                "port": APIConfig.PORT,
+                "debug": APIConfig.DEBUG,
+                "token_expire": APIConfig.TOKEN_EXPIRE,
+                "cors_enabled": APIConfig.CORS_ENABLED,
+            },
+            "scheduler": {
+                "enabled": SchedulerConfig.ENABLED,
+                "timezone": SchedulerConfig.TIMEZONE,
+            },
+            "notification": {
+                "enabled": NotificationConfig.ENABLED,
+                "expiry_remind_days": NotificationConfig.EXPIRY_REMIND_DAYS,
+            },
         },
-        'emby': {
-            'url': EmbyConfig.EMBY_URL,
-            'url_list': EmbyConfig.EMBY_URL_LIST,
-        },
-        'telegram': {
-            'enabled': Config.TELEGRAM_MODE,
-            'admin_ids': TelegramConfig.ADMIN_ID,
-            'group_ids': TelegramConfig.GROUP_ID,
-            'channel_ids': TelegramConfig.CHANNEL_ID,
-            'force_subscribe': TelegramConfig.FORCE_SUBSCRIBE,
-        },
-        'sar': {
-            'register_mode': RegisterConfig.REGISTER_MODE,
-            'register_code_limit': RegisterConfig.REGISTER_CODE_LIMIT,
-            'emby_direct_register_enabled': RegisterConfig.EMBY_DIRECT_REGISTER_ENABLED,
-            'emby_direct_register_days': RegisterConfig.EMBY_DIRECT_REGISTER_DAYS,
-            'emby_user_limit': RegisterConfig.EMBY_USER_LIMIT,
-            'emby_direct_register_workers': RegisterConfig.EMBY_DIRECT_REGISTER_WORKERS,
-            'emby_direct_register_max_queue': RegisterConfig.EMBY_DIRECT_REGISTER_MAX_QUEUE,
-            'emby_direct_register_status_ttl': RegisterConfig.EMBY_DIRECT_REGISTER_STATUS_TTL,
-            'user_limit': RegisterConfig.USER_LIMIT,
-        },
-        'device_limit': {
-            'enabled': DeviceLimitConfig.DEVICE_LIMIT_ENABLED,
-            'max_devices': DeviceLimitConfig.MAX_DEVICES,
-            'max_streams': DeviceLimitConfig.MAX_STREAMS,
-            'kick_oldest': DeviceLimitConfig.KICK_OLDEST_SESSION,
-        },
-        'security': {
-            'login_fail_threshold': SecurityConfig.LOGIN_FAIL_THRESHOLD,
-            'lockout_minutes': SecurityConfig.LOCKOUT_MINUTES,
-        },
-        'api': {
-            'host': APIConfig.HOST,
-            'port': APIConfig.PORT,
-            'debug': APIConfig.DEBUG,
-            'token_expire': APIConfig.TOKEN_EXPIRE,
-            'cors_enabled': APIConfig.CORS_ENABLED,
-        },
-        'scheduler': {
-            'enabled': SchedulerConfig.ENABLED,
-            'timezone': SchedulerConfig.TIMEZONE,
-        },
-        'notification': {
-            'enabled': NotificationConfig.ENABLED,
-            'expiry_remind_days': NotificationConfig.EXPIRY_REMIND_DAYS,
-        },
-    })
+    )
 
 
-@system_bp.route('/admin/stats', methods=['GET'])
+@system_bp.route("/admin/stats", methods=["GET"])
 @require_auth
 @require_admin
 async def get_system_stats():
@@ -519,133 +541,149 @@ async def get_system_stats():
     from src.db.user import UserOperate
     from src.db.regcode import RegCodeOperate
     from src.services import EmbyService
-    
+
     # 用户统计
     total_users = await UserOperate.get_registered_users_count()
     active_users = await UserOperate.get_active_users_count()
     emby_bound_users = await UserOperate.get_emby_bound_users_count()
-    
+
     # 注册码统计（使用数据库层面计数，避免全量加载到内存）
     regcode_stats = await RegCodeOperate.get_regcode_stats()
-    
+
     # Emby 状态
     try:
         emby_status = await EmbyService.get_server_status()
     except Exception:
-        emby_status = {'online': False}
-    
+        emby_status = {"online": False}
+
     # 把注册队列里 in-flight 的请求也算进 Emby 占用统计，便于运维一眼看到真实余量
     from src.services import EmbyRegisterQueueService
+
     emby_pending = EmbyRegisterQueueService.in_flight_count()
     emby_projected = emby_bound_users + emby_pending
 
-    return api_response(True, "获取成功", {
-        'users': {
-            'total': total_users,
-            'active': active_users,
-            'limit': RegisterConfig.USER_LIMIT,
-            'usage_percent': round(total_users / RegisterConfig.USER_LIMIT * 100, 1) if RegisterConfig.USER_LIMIT > 0 else 0,
-            'emby_bound': emby_bound_users,
-            'emby_pending': emby_pending,
-            'emby_projected': emby_projected,
-            'emby_limit': RegisterConfig.EMBY_USER_LIMIT,
-            'emby_usage_percent': (
-                round(emby_projected / RegisterConfig.EMBY_USER_LIMIT * 100, 1)
-                if RegisterConfig.EMBY_USER_LIMIT > 0 else 0
-            ),
+    return api_response(
+        True,
+        "获取成功",
+        {
+            "users": {
+                "total": total_users,
+                "active": active_users,
+                "limit": RegisterConfig.USER_LIMIT,
+                "usage_percent": (
+                    round(total_users / RegisterConfig.USER_LIMIT * 100, 1) if RegisterConfig.USER_LIMIT > 0 else 0
+                ),
+                "emby_bound": emby_bound_users,
+                "emby_pending": emby_pending,
+                "emby_projected": emby_projected,
+                "emby_limit": RegisterConfig.EMBY_USER_LIMIT,
+                "emby_usage_percent": (
+                    round(emby_projected / RegisterConfig.EMBY_USER_LIMIT * 100, 1)
+                    if RegisterConfig.EMBY_USER_LIMIT > 0
+                    else 0
+                ),
+            },
+            "regcodes": regcode_stats,
+            "emby": emby_status,
         },
-        'regcodes': regcode_stats,
-        'emby': emby_status,
-    })
+    )
 
 
-@system_bp.route('/admin/config/toml', methods=['GET'])
+@system_bp.route("/admin/config/toml", methods=["GET"])
 @require_auth
 @require_admin
 async def get_config_toml():
     """获取 config.toml 文件内容（管理员）"""
     config_file = get_primary_config_path()
-    
+
     if not config_file.exists():
         return api_response(False, "配置文件不存在", code=404)
-    
+
     try:
-        with open(config_file, 'r', encoding='utf-8') as f:
+        with open(config_file, "r", encoding="utf-8") as f:
             content = f.read()
-        return api_response(True, "获取成功", {
-            'content': content,
-            'path': str(config_file),
-        })
+        return api_response(
+            True,
+            "获取成功",
+            {
+                "content": content,
+                "path": str(config_file),
+            },
+        )
     except Exception as e:
         import logging
+
         logger = logging.getLogger(__name__)
         logger.error(f"读取配置文件失败: {e}", exc_info=True)
         return api_response(False, f"读取配置文件失败: {e}", code=500)
 
 
-@system_bp.route('/admin/config/toml', methods=['PUT'])
+@system_bp.route("/admin/config/toml", methods=["PUT"])
 @require_auth
 @require_admin
 async def update_config_toml():
     """更新 config.toml 文件内容（管理员）"""
     import toml
-    
+
     data = request.get_json() or {}
-    content = data.get('content')
-    
+    content = data.get("content")
+
     if content is None:
         return api_response(False, "缺少 content 参数", code=400)
-    
+
     config_file = get_primary_config_path()
-    
+
     # 验证 TOML 格式
     try:
         toml.loads(content)
     except Exception as e:
         return api_response(False, f"TOML 格式错误: {e}", code=400)
-    
+
     backup_file: Optional[Path] = None
     try:
-        backup_file = _backup_config_before_update('admin-toml')
+        backup_file = _backup_config_before_update("admin-toml")
     except Exception as e:
         _reload_logger.warning(f"备份配置文件失败: {e}")
-    
+
     # 写入新内容
     try:
-        with open(config_file, 'w', encoding='utf-8') as f:
+        with open(config_file, "w", encoding="utf-8") as f:
             f.write(content)
 
         # sweep 会顺手补缺失项 + 迁移历史字段 + 清理无效条目；admin 手编时同样适用
         sweep_result = sweep_config_toml(config_classes=_CONFIG_CLASSES, auto_backup=False)
-        _reload_runtime_config()
+        reload_result = await _apply_runtime_hot_reload()
 
-        # 改为重启整个程序（由进程管理器/启动脚本拉起）
-        _schedule_process_restart()
-
-        return api_response(True, "配置已保存，程序将自动重启", {
-            'path': str(config_file),
-            'backup_path': str(backup_file) if backup_file else None,
-            'filled': sweep_result.get('filled') or {},
-            'removed': sweep_result.get('removed') or {},
-            'migrated': sweep_result.get('migrated') or [],
-            'restart': True,
-        })
+        return api_response(
+            True,
+            "配置已保存并热重载",
+            {
+                "path": str(config_file),
+                "backup_path": str(backup_file) if backup_file else None,
+                "filled": sweep_result.get("filled") or {},
+                "removed": sweep_result.get("removed") or {},
+                "migrated": sweep_result.get("migrated") or [],
+                "restart": False,
+                "reload": reload_result,
+            },
+        )
     except Exception as e:
         import logging
+
         logger = logging.getLogger(__name__)
         logger.error(f"更新配置文件失败: {e}", exc_info=True)
-        
+
         # 尝试恢复备份
         if backup_file and backup_file.exists():
             try:
                 shutil.copy2(backup_file, config_file)
             except Exception:
                 pass
-        
+
         return api_response(False, f"更新配置文件失败: {e}", code=500)
 
 
-@system_bp.route('/admin/config/schema', methods=['GET'])
+@system_bp.route("/admin/config/schema", methods=["GET"])
 @require_auth
 @require_admin
 async def get_config_schema():
@@ -655,172 +693,729 @@ async def get_config_schema():
     """
     schema = {
         # 前端按下列顺序渲染分组；section 的 category 必须与其中之一匹配
-        'categories': [
-            {'key': 'base', 'title': '基础设置'},
-            {'key': 'media', 'title': '媒体服务'},
-            {'key': 'integration', 'title': '第三方接入'},
-            {'key': 'user', 'title': '用户与注册'},
-            {'key': 'api', 'title': 'API 与安全'},
-            {'key': 'automation', 'title': '自动化与通知'},
+        "categories": [
+            {"key": "base", "title": "基础设置"},
+            {"key": "media", "title": "媒体服务"},
+            {"key": "integration", "title": "第三方接入"},
+            {"key": "user", "title": "用户与注册"},
+            {"key": "api", "title": "API 与安全"},
+            {"key": "automation", "title": "自动化与通知"},
         ],
-        'sections': [
+        "sections": [
             {
-                'key': 'Global',
-                'category': 'base',
-                'title': '全局配置',
-                'description': '站点名称、日志、数据库等基础设置',
-                'fields': [
-                    {'key': 'server_name', 'label': '服务器名称', 'type': 'string', 'description': '服务器名称，用于前端和通知中显示', 'value': Config.SERVER_NAME},
-                    {'key': 'server_icon', 'label': '服务器图标', 'type': 'string', 'description': '服务器图标 URL，留空使用默认', 'value': Config.SERVER_ICON},
-                    {'key': 'logging', 'label': '日志开关', 'type': 'bool', 'description': '是否启用日志记录', 'value': Config.LOGGING},
-                    {'key': 'log_level', 'label': '日志等级', 'type': 'select', 'description': '日志等级，10=DEBUG, 20=INFO, 30=WARNING, 40=ERROR', 'value': Config.LOG_LEVEL, 'options': [{'label': 'DEBUG', 'value': 10}, {'label': 'INFO', 'value': 20}, {'label': 'WARNING', 'value': 30}, {'label': 'ERROR', 'value': 40}]},
-                    {'key': 'sqlalchemy_log', 'label': 'SQLAlchemy 日志', 'type': 'bool', 'description': '是否输出 SQLAlchemy ORM 日志（调试用）', 'value': Config.SQLALCHEMY_LOG},
-                    {'key': 'max_retry', 'label': '最大重试次数', 'type': 'int', 'description': 'HTTP 请求失败时的最大重试次数', 'value': Config.MAX_RETRY},
-                    {'key': 'databases_dir', 'label': '数据库目录', 'type': 'string', 'description': 'SQLite 数据库文件存储目录', 'value': str(Config.DATABASES_DIR)},
-                    {'key': 'redis_url', 'label': 'Redis 连接', 'type': 'string', 'description': 'Redis 连接串，如 redis://localhost:6379/0；留空则不使用 Redis，加锁/会话回退数据库', 'value': Config.REDIS_URL},
-                    {'key': 'bangumi_token', 'label': 'Bangumi Token', 'type': 'secret', 'description': 'Bangumi API 访问令牌', 'value': Config.BANGUMI_TOKEN},
-                    {'key': 'telegram_mode', 'label': 'Telegram 模式', 'type': 'bool', 'description': '是否启用 Telegram Bot 功能', 'value': Config.TELEGRAM_MODE},
-                    {'key': 'force_bind_telegram', 'label': '强制绑定 Telegram', 'type': 'bool', 'description': '是否强制用户绑定 Telegram', 'value': Config.FORCE_BIND_TELEGRAM},
-                    {'key': 'tmdb_api_key', 'label': 'TMDB API Key', 'type': 'secret', 'description': 'TMDB API Key (v3)，用于获取影视元数据', 'value': Config.TMDB_API_KEY},
-                    {'key': 'tmdb_api_url', 'label': 'TMDB API 地址', 'type': 'string', 'description': 'TMDB API 服务器地址', 'value': Config.TMDB_API_URL},
-                    {'key': 'tmdb_image_url', 'label': 'TMDB 图片地址', 'type': 'string', 'description': 'TMDB 图片 CDN 地址', 'value': Config.TMDB_IMAGE_URL},
-                    {'key': 'bangumi_api_url', 'label': 'Bangumi API 地址', 'type': 'string', 'description': 'Bangumi API 服务器地址', 'value': Config.BANGUMI_API_URL},
-                    {'key': 'bangumi_app_id', 'label': 'Bangumi App ID', 'type': 'string', 'description': 'Bangumi OAuth App ID（可选）', 'value': Config.BANGUMI_APP_ID},
+                "key": "Global",
+                "category": "base",
+                "title": "全局配置",
+                "description": "站点名称、日志、数据库等基础设置",
+                "fields": [
+                    {
+                        "key": "server_name",
+                        "label": "服务器名称",
+                        "type": "string",
+                        "description": "服务器名称，用于前端和通知中显示",
+                        "value": Config.SERVER_NAME,
+                    },
+                    {
+                        "key": "server_icon",
+                        "label": "服务器图标",
+                        "type": "string",
+                        "description": "服务器图标 URL，留空使用默认",
+                        "value": Config.SERVER_ICON,
+                    },
+                    {
+                        "key": "logging",
+                        "label": "日志开关",
+                        "type": "bool",
+                        "description": "是否启用日志记录",
+                        "value": Config.LOGGING,
+                    },
+                    {
+                        "key": "log_level",
+                        "label": "日志等级",
+                        "type": "select",
+                        "description": "日志等级，10=DEBUG, 20=INFO, 30=WARNING, 40=ERROR",
+                        "value": Config.LOG_LEVEL,
+                        "options": [
+                            {"label": "DEBUG", "value": 10},
+                            {"label": "INFO", "value": 20},
+                            {"label": "WARNING", "value": 30},
+                            {"label": "ERROR", "value": 40},
+                        ],
+                    },
+                    {
+                        "key": "sqlalchemy_log",
+                        "label": "SQLAlchemy 日志",
+                        "type": "bool",
+                        "description": "是否输出 SQLAlchemy ORM 日志（调试用）",
+                        "value": Config.SQLALCHEMY_LOG,
+                    },
+                    {
+                        "key": "max_retry",
+                        "label": "最大重试次数",
+                        "type": "int",
+                        "description": "HTTP 请求失败时的最大重试次数",
+                        "value": Config.MAX_RETRY,
+                    },
+                    {
+                        "key": "databases_dir",
+                        "label": "数据库目录",
+                        "type": "string",
+                        "description": "SQLite 数据库文件存储目录",
+                        "value": str(Config.DATABASES_DIR),
+                    },
+                    {
+                        "key": "redis_url",
+                        "label": "Redis 连接",
+                        "type": "string",
+                        "description": "Redis 连接串，如 redis://localhost:6379/0；留空则不使用 Redis，加锁/会话回退数据库",
+                        "value": Config.REDIS_URL,
+                    },
+                    {
+                        "key": "bangumi_token",
+                        "label": "Bangumi Token",
+                        "type": "secret",
+                        "description": "Bangumi API 访问令牌",
+                        "value": Config.BANGUMI_TOKEN,
+                    },
+                    {
+                        "key": "telegram_mode",
+                        "label": "Telegram 模式",
+                        "type": "bool",
+                        "description": "是否启用 Telegram Bot 功能",
+                        "value": Config.TELEGRAM_MODE,
+                    },
+                    {
+                        "key": "force_bind_telegram",
+                        "label": "强制绑定 Telegram",
+                        "type": "bool",
+                        "description": "是否强制用户绑定 Telegram",
+                        "value": Config.FORCE_BIND_TELEGRAM,
+                    },
+                    {
+                        "key": "tmdb_api_key",
+                        "label": "TMDB API Key",
+                        "type": "secret",
+                        "description": "TMDB API Key (v3)，用于获取影视元数据",
+                        "value": Config.TMDB_API_KEY,
+                    },
+                    {
+                        "key": "tmdb_api_url",
+                        "label": "TMDB API 地址",
+                        "type": "string",
+                        "description": "TMDB API 服务器地址",
+                        "value": Config.TMDB_API_URL,
+                    },
+                    {
+                        "key": "tmdb_image_url",
+                        "label": "TMDB 图片地址",
+                        "type": "string",
+                        "description": "TMDB 图片 CDN 地址",
+                        "value": Config.TMDB_IMAGE_URL,
+                    },
+                    {
+                        "key": "bangumi_api_url",
+                        "label": "Bangumi API 地址",
+                        "type": "string",
+                        "description": "Bangumi API 服务器地址",
+                        "value": Config.BANGUMI_API_URL,
+                    },
+                    {
+                        "key": "bangumi_app_id",
+                        "label": "Bangumi App ID",
+                        "type": "string",
+                        "description": "Bangumi OAuth App ID（可选）",
+                        "value": Config.BANGUMI_APP_ID,
+                    },
                 ],
                 # 已删除字段（数据上仍可能存在历史值，但不再向 UI 暴露）：
                 # global_bgm_mode / email_bind / force_bind_email
             },
             {
-                'key': 'Emby',
-                'category': 'media',
-                'title': 'Emby 配置',
-                'description': 'Emby/Jellyfin 媒体服务器连接配置',
-                'fields': [
-                    {'key': 'emby_url', 'label': 'Emby 地址', 'type': 'string', 'description': 'Emby 服务器地址，如 http://127.0.0.1:8096/', 'value': EmbyConfig.EMBY_URL},
-                    {'key': 'emby_token', 'label': 'API Key', 'type': 'secret', 'description': 'Emby 管理后台生成的 API Key（主要认证方式）', 'value': EmbyConfig.EMBY_TOKEN},
-                    {'key': 'emby_username', 'label': '管理员用户名', 'type': 'string', 'description': 'Emby 管理员用户名（API Key 无效时的备用认证）', 'value': EmbyConfig.EMBY_USERNAME},
-                    {'key': 'emby_password', 'label': '管理员密码', 'type': 'secret', 'description': 'Emby 管理员密码（API Key 无效时的备用认证）', 'value': EmbyConfig.EMBY_PASSWORD},
-                    {'key': 'emby_url_list', 'label': '线路列表', 'type': 'list', 'description': '提供给用户的 Emby 服务器线路列表，格式: "线路名 : URL"', 'value': EmbyConfig.EMBY_URL_LIST},
-                    {'key': 'emby_url_list_for_whitelist', 'label': '白名单线路列表', 'type': 'list', 'description': '白名单用户专用的 Emby 服务器线路列表', 'value': EmbyConfig.EMBY_URL_LIST_FOR_WHITELIST},
+                "key": "Emby",
+                "category": "media",
+                "title": "Emby 配置",
+                "description": "Emby/Jellyfin 媒体服务器连接配置",
+                "fields": [
+                    {
+                        "key": "emby_url",
+                        "label": "Emby 地址",
+                        "type": "string",
+                        "description": "Emby 服务器地址，如 http://127.0.0.1:8096/",
+                        "value": EmbyConfig.EMBY_URL,
+                    },
+                    {
+                        "key": "emby_token",
+                        "label": "API Key",
+                        "type": "secret",
+                        "description": "Emby 管理后台生成的 API Key（主要认证方式）",
+                        "value": EmbyConfig.EMBY_TOKEN,
+                    },
+                    {
+                        "key": "emby_username",
+                        "label": "管理员用户名",
+                        "type": "string",
+                        "description": "Emby 管理员用户名（API Key 无效时的备用认证）",
+                        "value": EmbyConfig.EMBY_USERNAME,
+                    },
+                    {
+                        "key": "emby_password",
+                        "label": "管理员密码",
+                        "type": "secret",
+                        "description": "Emby 管理员密码（API Key 无效时的备用认证）",
+                        "value": EmbyConfig.EMBY_PASSWORD,
+                    },
+                    {
+                        "key": "emby_url_list",
+                        "label": "线路列表",
+                        "type": "list",
+                        "description": '提供给用户的 Emby 服务器线路列表，格式: "线路名 : URL"',
+                        "value": EmbyConfig.EMBY_URL_LIST,
+                    },
+                    {
+                        "key": "emby_url_list_for_whitelist",
+                        "label": "白名单线路列表",
+                        "type": "list",
+                        "description": "白名单用户专用的 Emby 服务器线路列表",
+                        "value": EmbyConfig.EMBY_URL_LIST_FOR_WHITELIST,
+                    },
                 ],
             },
             {
-                'key': 'Telegram',
-                'category': 'integration',
-                'title': 'Telegram 配置',
-                'description': 'Telegram Bot 相关设置',
-                'fields': [
-                    {'key': 'telegram_api_url', 'label': 'API 地址', 'type': 'string', 'description': 'Telegram Bot API 地址，可用于自建 API 代理', 'value': TelegramConfig.TELEGRAM_API_URL},
-                    {'key': 'bot_token', 'label': 'Bot Token', 'type': 'secret', 'description': '从 @BotFather 获取的 Bot Token', 'value': TelegramConfig.BOT_TOKEN},
-                    {'key': 'admin_id', 'label': '管理员 ID', 'type': 'list', 'description': 'Telegram 管理员用户 ID 列表', 'value': TelegramConfig.ADMIN_ID},
-                    {'key': 'group_id', 'label': '群组 ID', 'type': 'list', 'description': 'Telegram 群组 ID 列表，支持数字ID（如 -1001234567890）或 @用户名（如 @mygroup）', 'value': TelegramConfig.GROUP_ID},
-                    {'key': 'channel_id', 'label': '频道 ID', 'type': 'list', 'description': 'Telegram 频道 ID 列表，支持数字ID（如 -1001234567890）或 @用户名（如 @mychannel）', 'value': TelegramConfig.CHANNEL_ID},
-                    {'key': 'force_subscribe', 'label': '强制订阅', 'type': 'bool', 'description': '是否要求用户订阅频道后才能使用', 'value': TelegramConfig.FORCE_SUBSCRIBE},
-                    {'key': 'enable_tg_panel', 'label': '启用 TG 面板', 'type': 'bool', 'description': '启用后 Bot 提供完整的内联键盘面板功能，关闭则仅保留 /help、/bind、/me 基础命令', 'value': TelegramConfig.ENABLE_TG_PANEL},
-                    {'key': 'require_group_membership', 'label': '强制群组成员资格', 'type': 'bool', 'description': '开启后绑定时校验，且定时巡检；用户退出必需群组将被禁用并同步禁用 Emby', 'value': TelegramConfig.REQUIRE_GROUP_MEMBERSHIP},
-                    {'key': 'group_check_interval_minutes', 'label': '群组检查间隔（分钟）', 'type': 'int', 'description': '群组成员资格定时巡检间隔（分钟），开启上述开关后生效', 'value': TelegramConfig.GROUP_CHECK_INTERVAL_MINUTES},
-                    {'key': 'ban_on_leave', 'label': '退群完全封禁模式', 'type': 'bool', 'description': '⚠️ 危险操作：开启后巡检发现退群用户会被 Bot 在所有 GROUP_ID 群里永久 ban（不会自动解封）。依赖 Bot 是群管理员且有封禁权限；开启后"重新入群识别"分支会被跳过。默认关闭，谨慎使用', 'value': TelegramConfig.BAN_ON_LEAVE},
-                    {'key': 'proxy_url', 'label': '代理地址', 'type': 'string', 'description': 'Telegram Bot 代理地址（如 socks5://127.0.0.1:1080），留空不使用代理', 'value': TelegramConfig.PROXY_URL},
-                    {'key': 'bot_start_title', 'label': '/start 标题', 'type': 'string', 'description': '自定义 /start 第一行标题（Markdown），留空使用默认；支持 {server_name} 占位符', 'value': TelegramConfig.BOT_START_TITLE},
-                    {'key': 'bot_start_intro', 'label': '/start 简介', 'type': 'string', 'description': '自定义 /start 简介段落，留空使用默认', 'value': TelegramConfig.BOT_START_INTRO},
-                    {'key': 'bot_help_header', 'label': '/help 顶部段', 'type': 'string', 'description': '/help 命令列表前的自定义内容，可用来挂公告 / 群规', 'value': TelegramConfig.BOT_HELP_HEADER},
-                    {'key': 'bot_help_footer', 'label': '/help 底部段', 'type': 'string', 'description': '/help 末尾的自定义内容，可放群组链接、客服等', 'value': TelegramConfig.BOT_HELP_FOOTER},
-                    {'key': 'bot_about', 'label': '关于 / 服务说明', 'type': 'string', 'description': '关于 Bot / 站点的简介，预留用于 /about 等场景', 'value': TelegramConfig.BOT_ABOUT},
+                "key": "Telegram",
+                "category": "integration",
+                "title": "Telegram 配置",
+                "description": "Telegram Bot 相关设置",
+                "fields": [
+                    {
+                        "key": "telegram_api_url",
+                        "label": "API 地址",
+                        "type": "string",
+                        "description": "Telegram Bot API 地址，可用于自建 API 代理",
+                        "value": TelegramConfig.TELEGRAM_API_URL,
+                    },
+                    {
+                        "key": "bot_token",
+                        "label": "Bot Token",
+                        "type": "secret",
+                        "description": "从 @BotFather 获取的 Bot Token",
+                        "value": TelegramConfig.BOT_TOKEN,
+                    },
+                    {
+                        "key": "admin_id",
+                        "label": "管理员 ID",
+                        "type": "list",
+                        "description": "Telegram 管理员用户 ID 列表",
+                        "value": TelegramConfig.ADMIN_ID,
+                    },
+                    {
+                        "key": "group_id",
+                        "label": "群组 ID",
+                        "type": "list",
+                        "description": "Telegram 群组 ID 列表，支持数字ID（如 -1001234567890）或 @用户名（如 @mygroup）",
+                        "value": TelegramConfig.GROUP_ID,
+                    },
+                    {
+                        "key": "channel_id",
+                        "label": "频道 ID",
+                        "type": "list",
+                        "description": "Telegram 频道 ID 列表，支持数字ID（如 -1001234567890）或 @用户名（如 @mychannel）",
+                        "value": TelegramConfig.CHANNEL_ID,
+                    },
+                    {
+                        "key": "force_subscribe",
+                        "label": "强制订阅",
+                        "type": "bool",
+                        "description": "是否要求用户订阅频道后才能使用",
+                        "value": TelegramConfig.FORCE_SUBSCRIBE,
+                    },
+                    {
+                        "key": "enable_tg_panel",
+                        "label": "启用 TG 面板",
+                        "type": "bool",
+                        "description": "启用后 Bot 提供完整的内联键盘面板功能，关闭则仅保留 /help、/bind、/me 基础命令",
+                        "value": TelegramConfig.ENABLE_TG_PANEL,
+                    },
+                    {
+                        "key": "require_group_membership",
+                        "label": "强制群组成员资格",
+                        "type": "bool",
+                        "description": "开启后绑定时校验，且定时巡检；用户退出必需群组将被禁用并同步禁用 Emby",
+                        "value": TelegramConfig.REQUIRE_GROUP_MEMBERSHIP,
+                    },
+                    {
+                        "key": "group_check_interval_minutes",
+                        "label": "群组检查间隔（分钟）",
+                        "type": "int",
+                        "description": "群组成员资格定时巡检间隔（分钟），开启上述开关后生效",
+                        "value": TelegramConfig.GROUP_CHECK_INTERVAL_MINUTES,
+                    },
+                    {
+                        "key": "ban_on_leave",
+                        "label": "退群完全封禁模式",
+                        "type": "bool",
+                        "description": '⚠️ 危险操作：开启后巡检发现退群用户会被 Bot 在所有 GROUP_ID 群里永久 ban（不会自动解封）。依赖 Bot 是群管理员且有封禁权限；开启后"重新入群识别"分支会被跳过。默认关闭，谨慎使用',
+                        "value": TelegramConfig.BAN_ON_LEAVE,
+                    },
+                    {
+                        "key": "proxy_url",
+                        "label": "代理地址",
+                        "type": "string",
+                        "description": "Telegram Bot 代理地址（如 socks5://127.0.0.1:1080），留空不使用代理",
+                        "value": TelegramConfig.PROXY_URL,
+                    },
+                    {
+                        "key": "bot_start_title",
+                        "label": "/start 标题",
+                        "type": "string",
+                        "description": "自定义 /start 第一行标题（Markdown），留空使用默认；支持 {server_name} 占位符",
+                        "value": TelegramConfig.BOT_START_TITLE,
+                    },
+                    {
+                        "key": "bot_start_intro",
+                        "label": "/start 简介",
+                        "type": "string",
+                        "description": "自定义 /start 简介段落，留空使用默认",
+                        "value": TelegramConfig.BOT_START_INTRO,
+                    },
+                    {
+                        "key": "bot_help_header",
+                        "label": "/help 顶部段",
+                        "type": "string",
+                        "description": "/help 命令列表前的自定义内容，可用来挂公告 / 群规",
+                        "value": TelegramConfig.BOT_HELP_HEADER,
+                    },
+                    {
+                        "key": "bot_help_footer",
+                        "label": "/help 底部段",
+                        "type": "string",
+                        "description": "/help 末尾的自定义内容，可放群组链接、客服等",
+                        "value": TelegramConfig.BOT_HELP_FOOTER,
+                    },
+                    {
+                        "key": "bot_about",
+                        "label": "关于 / 服务说明",
+                        "type": "string",
+                        "description": "关于 Bot / 站点的简介，预留用于 /about 等场景",
+                        "value": TelegramConfig.BOT_ABOUT,
+                    },
                 ],
             },
             {
-                'key': 'SAR',
-                'category': 'user',
-                'title': '注册与用户策略',
-                'description': '注册、用户限制与 Emby 自由注册配置',
-                'fields': [
-                    {'key': 'register_mode', 'label': '注册模式', 'type': 'bool', 'description': '是否开放注册', 'value': RegisterConfig.REGISTER_MODE},
-                    {'key': 'register_code_limit', 'label': '注册码限制', 'type': 'bool', 'description': '是否限制必须使用注册码注册', 'value': RegisterConfig.REGISTER_CODE_LIMIT},
-                    {'key': 'user_limit', 'label': '用户上限', 'type': 'int', 'description': '系统允许的最大注册用户数量', 'value': RegisterConfig.USER_LIMIT},
-                    {'key': 'max_concurrent_requests_per_user', 'label': '每用户最大同时求片数', 'type': 'int', 'description': '每个用户允许同时存在的待处理或下载中的求片请求数量，-1 表示不限制', 'value': RegisterConfig.MAX_CONCURRENT_REQUESTS_PER_USER},
-                    {'key': 'allow_pending_register', 'label': '允许无码注册', 'type': 'bool', 'description': '是否允许无注册码注册（待激活状态）', 'value': RegisterConfig.ALLOW_PENDING_REGISTER},
-                    {'key': 'allow_no_emby_view', 'label': '无Emby查看', 'type': 'bool', 'description': '是否允许未激活 Emby 账户的用户查看部分信息', 'value': RegisterConfig.ALLOW_NO_EMBY_VIEW},
-                    {'key': 'emby_direct_register_enabled', 'label': '开启 Emby 自由注册', 'type': 'bool', 'description': '开启后用户可直接申请 Emby 账号（需先完成 Telegram 绑定）', 'value': RegisterConfig.EMBY_DIRECT_REGISTER_ENABLED},
-                    {'key': 'emby_direct_register_days', 'label': '自由注册开通天数', 'type': 'int', 'description': '所有自由注册账号统一使用的开通天数（管理员固定，-1=永久）', 'value': RegisterConfig.EMBY_DIRECT_REGISTER_DAYS},
-                    {'key': 'emby_user_limit', 'label': 'Emby 用户上限', 'type': 'int', 'description': '已绑定 Emby 的本站用户总上限，-1 表示不限制（自由注册队列、绑定已有 Emby 账户、管理员强制绑定都受此上限管控；同时会把注册队列里 in-flight 的请求计入名额）', 'value': RegisterConfig.EMBY_USER_LIMIT},
-                    {'key': 'emby_direct_register_workers', 'label': '自由注册并发 Worker', 'type': 'int', 'description': '队列并发处理 worker 数（建议 4-16）', 'value': RegisterConfig.EMBY_DIRECT_REGISTER_WORKERS},
-                    {'key': 'emby_direct_register_max_queue', 'label': '自由注册队列上限', 'type': 'int', 'description': '允许排队的最大请求数，超过后直接拒绝', 'value': RegisterConfig.EMBY_DIRECT_REGISTER_MAX_QUEUE},
-                    {'key': 'emby_direct_register_status_ttl', 'label': '注册状态保留秒数', 'type': 'int', 'description': '注册完成后状态保留秒数，便于前端查询结果', 'value': RegisterConfig.EMBY_DIRECT_REGISTER_STATUS_TTL},
-                    {'key': 'admin_uids', 'label': '管理员 UID', 'type': 'string', 'description': '管理员 UID 列表，逗号分隔（如 "1,2,3"）', 'value': RegisterConfig.ADMIN_UIDS},
-                    {'key': 'admin_usernames', 'label': '管理员用户名', 'type': 'string', 'description': '管理员用户名列表，逗号分隔', 'value': RegisterConfig.ADMIN_USERNAMES},
-                    {'key': 'white_list_uids', 'label': '白名单 UID', 'type': 'string', 'description': '白名单 UID 列表，逗号分隔', 'value': RegisterConfig.WHITE_LIST_UIDS},
-                    {'key': 'white_list_usernames', 'label': '白名单用户名', 'type': 'string', 'description': '白名单用户名列表，逗号分隔', 'value': RegisterConfig.WHITE_LIST_USERNAMES},
-                    {'key': 'invite_enabled', 'label': '启用邀请树', 'type': 'bool', 'description': '启用后，已绑定 Emby 的用户可生成邀请码，被邀请人成为其下级，形成树状关系', 'value': RegisterConfig.INVITE_ENABLED},
-                    {'key': 'invite_max_depth', 'label': '邀请最大层级', 'type': 'int', 'description': '邀请树最大层级（B→A→C 计为 3）。1 表示禁止任何邀请', 'value': RegisterConfig.INVITE_MAX_DEPTH},
-                    {'key': 'invite_limit', 'label': '单人邀请上限', 'type': 'int', 'description': '每人最多同时存在多少未使用的邀请码，-1 = 无限制', 'value': RegisterConfig.INVITE_LIMIT},
-                    {'key': 'invite_require_emby', 'label': '邀请需绑定 Emby', 'type': 'bool', 'description': '是否要求邀请人已绑定 Emby 账号才能生成邀请码', 'value': RegisterConfig.INVITE_REQUIRE_EMBY},
-                    {'key': 'invite_code_default_days', 'label': '邀请码默认天数', 'type': 'int', 'description': '被邀请人 Emby 账号默认开通天数（0 或 -1 表示永久）', 'value': RegisterConfig.INVITE_CODE_DEFAULT_DAYS},
+                "key": "SAR",
+                "category": "user",
+                "title": "注册与用户策略",
+                "description": "注册、用户限制与 Emby 自由注册配置",
+                "fields": [
+                    {
+                        "key": "register_mode",
+                        "label": "注册模式",
+                        "type": "bool",
+                        "description": "是否开放注册",
+                        "value": RegisterConfig.REGISTER_MODE,
+                    },
+                    {
+                        "key": "register_code_limit",
+                        "label": "注册码限制",
+                        "type": "bool",
+                        "description": "是否限制必须使用注册码注册",
+                        "value": RegisterConfig.REGISTER_CODE_LIMIT,
+                    },
+                    {
+                        "key": "user_limit",
+                        "label": "用户上限",
+                        "type": "int",
+                        "description": "系统允许的最大注册用户数量",
+                        "value": RegisterConfig.USER_LIMIT,
+                    },
+                    {
+                        "key": "max_concurrent_requests_per_user",
+                        "label": "每用户最大同时求片数",
+                        "type": "int",
+                        "description": "每个用户允许同时存在的待处理或下载中的求片请求数量，-1 表示不限制",
+                        "value": RegisterConfig.MAX_CONCURRENT_REQUESTS_PER_USER,
+                    },
+                    {
+                        "key": "allow_pending_register",
+                        "label": "允许无码注册",
+                        "type": "bool",
+                        "description": "是否允许无注册码注册（待激活状态）",
+                        "value": RegisterConfig.ALLOW_PENDING_REGISTER,
+                    },
+                    {
+                        "key": "allow_no_emby_view",
+                        "label": "无Emby查看",
+                        "type": "bool",
+                        "description": "是否允许未激活 Emby 账户的用户查看部分信息",
+                        "value": RegisterConfig.ALLOW_NO_EMBY_VIEW,
+                    },
+                    {
+                        "key": "emby_direct_register_enabled",
+                        "label": "开启 Emby 自由注册",
+                        "type": "bool",
+                        "description": "开启后用户可直接申请 Emby 账号（需先完成 Telegram 绑定）",
+                        "value": RegisterConfig.EMBY_DIRECT_REGISTER_ENABLED,
+                    },
+                    {
+                        "key": "emby_direct_register_days",
+                        "label": "自由注册开通天数",
+                        "type": "int",
+                        "description": "所有自由注册账号统一使用的开通天数（管理员固定，-1=永久）",
+                        "value": RegisterConfig.EMBY_DIRECT_REGISTER_DAYS,
+                    },
+                    {
+                        "key": "emby_user_limit",
+                        "label": "Emby 用户上限",
+                        "type": "int",
+                        "description": "已绑定 Emby 的本站用户总上限，-1 表示不限制（自由注册队列、绑定已有 Emby 账户、管理员强制绑定都受此上限管控；同时会把注册队列里 in-flight 的请求计入名额）",
+                        "value": RegisterConfig.EMBY_USER_LIMIT,
+                    },
+                    {
+                        "key": "emby_direct_register_workers",
+                        "label": "自由注册并发 Worker",
+                        "type": "int",
+                        "description": "队列并发处理 worker 数（建议 4-16）",
+                        "value": RegisterConfig.EMBY_DIRECT_REGISTER_WORKERS,
+                    },
+                    {
+                        "key": "emby_direct_register_max_queue",
+                        "label": "自由注册队列上限",
+                        "type": "int",
+                        "description": "允许排队的最大请求数，超过后直接拒绝",
+                        "value": RegisterConfig.EMBY_DIRECT_REGISTER_MAX_QUEUE,
+                    },
+                    {
+                        "key": "emby_direct_register_status_ttl",
+                        "label": "注册状态保留秒数",
+                        "type": "int",
+                        "description": "注册完成后状态保留秒数，便于前端查询结果",
+                        "value": RegisterConfig.EMBY_DIRECT_REGISTER_STATUS_TTL,
+                    },
+                    {
+                        "key": "admin_uids",
+                        "label": "管理员 UID",
+                        "type": "string",
+                        "description": '管理员 UID 列表，逗号分隔（如 "1,2,3"）',
+                        "value": RegisterConfig.ADMIN_UIDS,
+                    },
+                    {
+                        "key": "admin_usernames",
+                        "label": "管理员用户名",
+                        "type": "string",
+                        "description": "管理员用户名列表，逗号分隔",
+                        "value": RegisterConfig.ADMIN_USERNAMES,
+                    },
+                    {
+                        "key": "white_list_uids",
+                        "label": "白名单 UID",
+                        "type": "string",
+                        "description": "白名单 UID 列表，逗号分隔",
+                        "value": RegisterConfig.WHITE_LIST_UIDS,
+                    },
+                    {
+                        "key": "white_list_usernames",
+                        "label": "白名单用户名",
+                        "type": "string",
+                        "description": "白名单用户名列表，逗号分隔",
+                        "value": RegisterConfig.WHITE_LIST_USERNAMES,
+                    },
+                    {
+                        "key": "invite_enabled",
+                        "label": "启用邀请树",
+                        "type": "bool",
+                        "description": "启用后，已绑定 Emby 的用户可生成邀请码，被邀请人成为其下级，形成树状关系",
+                        "value": RegisterConfig.INVITE_ENABLED,
+                    },
+                    {
+                        "key": "invite_max_depth",
+                        "label": "邀请最大层级",
+                        "type": "int",
+                        "description": "邀请树最大层级（B→A→C 计为 3）。1 表示禁止任何邀请",
+                        "value": RegisterConfig.INVITE_MAX_DEPTH,
+                    },
+                    {
+                        "key": "invite_limit",
+                        "label": "单人邀请上限",
+                        "type": "int",
+                        "description": "每人最多同时存在多少未使用的邀请码，-1 = 无限制",
+                        "value": RegisterConfig.INVITE_LIMIT,
+                    },
+                    {
+                        "key": "invite_require_emby",
+                        "label": "邀请需绑定 Emby",
+                        "type": "bool",
+                        "description": "是否要求邀请人已绑定 Emby 账号才能生成邀请码",
+                        "value": RegisterConfig.INVITE_REQUIRE_EMBY,
+                    },
+                    {
+                        "key": "invite_code_default_days",
+                        "label": "邀请码默认天数",
+                        "type": "int",
+                        "description": "被邀请人 Emby 账号默认开通天数（0 或 -1 表示永久）",
+                        "value": RegisterConfig.INVITE_CODE_DEFAULT_DAYS,
+                    },
                     # —— 签到 / 积分（原 [Signin] 节，并入此处。仅装饰用途，无排行榜）
-                    {'key': 'signin_enabled', 'label': '启用签到', 'type': 'bool', 'description': '是否开放签到功能（原 [Signin].enabled）', 'value': RegisterConfig.SIGNIN_ENABLED},
-                    {'key': 'currency_name', 'label': '货币名称', 'type': 'string', 'description': '展示用的货币名（如 星币 / 金币 / 云币）', 'value': RegisterConfig.CURRENCY_NAME},
-                    {'key': 'daily_min', 'label': '每日最少奖励', 'type': 'int', 'description': '单日签到获得的最少积分（含 0）', 'value': RegisterConfig.DAILY_MIN},
-                    {'key': 'daily_max', 'label': '每日最多奖励', 'type': 'int', 'description': '单日签到获得的最多积分（≥ 最少）', 'value': RegisterConfig.DAILY_MAX},
-                    {'key': 'streak_bonus_enabled', 'label': '启用连签奖励', 'type': 'bool', 'description': '关闭后只发放每日奖励，连签天数仍记录但不再额外赠送积分', 'value': RegisterConfig.STREAK_BONUS_ENABLED},
-                    {'key': 'streak_bonus_days', 'label': '连签加成天数', 'type': 'list', 'description': '达到该连签天数时获得额外奖励，与下方"加成积分"列表一一对应（仅在"启用连签奖励"开启时生效）', 'value': RegisterConfig.STREAK_BONUS_DAYS},
-                    {'key': 'streak_bonus_points', 'label': '加成积分', 'type': 'list', 'description': '上方天数对应的额外奖励积分', 'value': RegisterConfig.STREAK_BONUS_POINTS},
-                    {'key': 'reset_after_miss', 'label': '漏签清零连签', 'type': 'bool', 'description': '关闭后即使漏签也保留并累计连签', 'value': RegisterConfig.RESET_AFTER_MISS},
+                    {
+                        "key": "signin_enabled",
+                        "label": "启用签到",
+                        "type": "bool",
+                        "description": "是否开放签到功能（原 [Signin].enabled）",
+                        "value": RegisterConfig.SIGNIN_ENABLED,
+                    },
+                    {
+                        "key": "currency_name",
+                        "label": "货币名称",
+                        "type": "string",
+                        "description": "展示用的货币名（如 星币 / 金币 / 云币）",
+                        "value": RegisterConfig.CURRENCY_NAME,
+                    },
+                    {
+                        "key": "daily_min",
+                        "label": "每日最少奖励",
+                        "type": "int",
+                        "description": "单日签到获得的最少积分（含 0）",
+                        "value": RegisterConfig.DAILY_MIN,
+                    },
+                    {
+                        "key": "daily_max",
+                        "label": "每日最多奖励",
+                        "type": "int",
+                        "description": "单日签到获得的最多积分（≥ 最少）",
+                        "value": RegisterConfig.DAILY_MAX,
+                    },
+                    {
+                        "key": "streak_bonus_enabled",
+                        "label": "启用连签奖励",
+                        "type": "bool",
+                        "description": "关闭后只发放每日奖励，连签天数仍记录但不再额外赠送积分",
+                        "value": RegisterConfig.STREAK_BONUS_ENABLED,
+                    },
+                    {
+                        "key": "streak_bonus_days",
+                        "label": "连签加成天数",
+                        "type": "list",
+                        "description": '达到该连签天数时获得额外奖励，与下方"加成积分"列表一一对应（仅在"启用连签奖励"开启时生效）',
+                        "value": RegisterConfig.STREAK_BONUS_DAYS,
+                    },
+                    {
+                        "key": "streak_bonus_points",
+                        "label": "加成积分",
+                        "type": "list",
+                        "description": "上方天数对应的额外奖励积分",
+                        "value": RegisterConfig.STREAK_BONUS_POINTS,
+                    },
+                    {
+                        "key": "reset_after_miss",
+                        "label": "漏签清零连签",
+                        "type": "bool",
+                        "description": "关闭后即使漏签也保留并累计连签",
+                        "value": RegisterConfig.RESET_AFTER_MISS,
+                    },
                 ],
             },
             {
-                'key': 'DeviceLimit',
-                'category': 'media',
-                'title': '设备限制',
-                'description': '用户设备和播放流数限制',
-                'fields': [
-                    {'key': 'device_limit_enabled', 'label': '启用设备限制', 'type': 'bool', 'description': '是否限制用户的设备数量', 'value': DeviceLimitConfig.DEVICE_LIMIT_ENABLED},
-                    {'key': 'max_devices', 'label': '最大设备数', 'type': 'int', 'description': '每个用户允许的最大设备数', 'value': DeviceLimitConfig.MAX_DEVICES},
-                    {'key': 'max_streams', 'label': '最大同时播放', 'type': 'int', 'description': '每个用户允许的最大同时播放流数', 'value': DeviceLimitConfig.MAX_STREAMS},
-                    {'key': 'kick_oldest_session', 'label': '踢出最早会话', 'type': 'bool', 'description': '超过限制时是否自动踢掉最早的会话', 'value': DeviceLimitConfig.KICK_OLDEST_SESSION},
+                "key": "DeviceLimit",
+                "category": "media",
+                "title": "设备限制",
+                "description": "用户设备和播放流数限制",
+                "fields": [
+                    {
+                        "key": "device_limit_enabled",
+                        "label": "启用设备限制",
+                        "type": "bool",
+                        "description": "是否限制用户的设备数量",
+                        "value": DeviceLimitConfig.DEVICE_LIMIT_ENABLED,
+                    },
+                    {
+                        "key": "max_devices",
+                        "label": "最大设备数",
+                        "type": "int",
+                        "description": "每个用户允许的最大设备数",
+                        "value": DeviceLimitConfig.MAX_DEVICES,
+                    },
+                    {
+                        "key": "max_streams",
+                        "label": "最大同时播放",
+                        "type": "int",
+                        "description": "每个用户允许的最大同时播放流数",
+                        "value": DeviceLimitConfig.MAX_STREAMS,
+                    },
+                    {
+                        "key": "kick_oldest_session",
+                        "label": "踢出最早会话",
+                        "type": "bool",
+                        "description": "超过限制时是否自动踢掉最早的会话",
+                        "value": DeviceLimitConfig.KICK_OLDEST_SESSION,
+                    },
                 ],
             },
             {
-                'key': 'API',
-                'category': 'api',
-                'title': 'API 服务器',
-                'description': 'Web API 服务器配置',
-                'fields': [
-                    {'key': 'host', 'label': '监听地址', 'type': 'string', 'description': 'API 服务器监听地址（0.0.0.0 表示所有接口）', 'value': APIConfig.HOST},
-                    {'key': 'port', 'label': '端口', 'type': 'int', 'description': 'API 服务器监听端口', 'value': APIConfig.PORT},
-                    {'key': 'debug', 'label': '调试模式', 'type': 'bool', 'description': '是否开启调试模式（生产环境请关闭）', 'value': APIConfig.DEBUG},
-                    {'key': 'token_expire', 'label': 'Token 有效期', 'type': 'int', 'description': '用户登录 Token 有效期（秒）', 'value': APIConfig.TOKEN_EXPIRE},
-                    {'key': 'cors_enabled', 'label': '启用 CORS', 'type': 'bool', 'description': '是否允许跨域请求', 'value': APIConfig.CORS_ENABLED},
-                    {'key': 'cors_origins', 'label': 'CORS 白名单', 'type': 'list', 'description': '允许跨域请求的源地址列表；含 "*" 时浏览器禁用 Cookie（无法登录），生产请显式填前端域名', 'value': APIConfig.CORS_ORIGINS},
-                    {'key': 'upload_folder', 'label': '上传目录', 'type': 'string', 'description': '文件上传目录（绝对路径或相对项目根目录）', 'value': APIConfig.UPLOAD_FOLDER},
-                    {'key': 'max_upload_size', 'label': '最大上传大小（字节）', 'type': 'int', 'description': '单文件上传字节上限，默认 5 MiB', 'value': APIConfig.MAX_UPLOAD_SIZE},
-                    {'key': 'session_cookie_name', 'label': '会话 Cookie 名', 'type': 'string', 'description': '保存登录会话的 Cookie 名称', 'value': APIConfig.SESSION_COOKIE_NAME},
-                    {'key': 'session_cookie_secure', 'label': 'Cookie 仅 HTTPS', 'type': 'bool', 'description': '生产强烈建议开启；HTTP 调试时关闭', 'value': APIConfig.SESSION_COOKIE_SECURE},
-                    {'key': 'session_cookie_samesite', 'label': 'Cookie SameSite', 'type': 'select', 'description': 'Strict 最严格；前后端跨域部署需要 None（同时 secure=true）', 'value': APIConfig.SESSION_COOKIE_SAMESITE, 'options': [{'label': 'Strict', 'value': 'Strict'}, {'label': 'Lax', 'value': 'Lax'}, {'label': 'None', 'value': 'None'}]},
-                    {'key': 'session_cookie_domain', 'label': 'Cookie 域', 'type': 'string', 'description': '为空使用请求 Host；跨子域共享会话时填顶级域，如 .example.com', 'value': APIConfig.SESSION_COOKIE_DOMAIN},
-                    {'key': 'session_cookie_path', 'label': 'Cookie 路径', 'type': 'string', 'description': '默认 / 即可', 'value': APIConfig.SESSION_COOKIE_PATH},
+                "key": "API",
+                "category": "api",
+                "title": "API 服务器",
+                "description": "Web API 服务器配置",
+                "fields": [
+                    {
+                        "key": "host",
+                        "label": "监听地址",
+                        "type": "string",
+                        "description": "API 服务器监听地址（0.0.0.0 表示所有接口）",
+                        "value": APIConfig.HOST,
+                    },
+                    {
+                        "key": "port",
+                        "label": "端口",
+                        "type": "int",
+                        "description": "API 服务器监听端口",
+                        "value": APIConfig.PORT,
+                    },
+                    {
+                        "key": "debug",
+                        "label": "调试模式",
+                        "type": "bool",
+                        "description": "是否开启调试模式（生产环境请关闭）",
+                        "value": APIConfig.DEBUG,
+                    },
+                    {
+                        "key": "token_expire",
+                        "label": "Token 有效期",
+                        "type": "int",
+                        "description": "用户登录 Token 有效期（秒）",
+                        "value": APIConfig.TOKEN_EXPIRE,
+                    },
+                    {
+                        "key": "cors_enabled",
+                        "label": "启用 CORS",
+                        "type": "bool",
+                        "description": "是否允许跨域请求",
+                        "value": APIConfig.CORS_ENABLED,
+                    },
+                    {
+                        "key": "cors_origins",
+                        "label": "CORS 白名单",
+                        "type": "list",
+                        "description": '允许跨域请求的源地址列表；含 "*" 时浏览器禁用 Cookie（无法登录），生产请显式填前端域名',
+                        "value": APIConfig.CORS_ORIGINS,
+                    },
+                    {
+                        "key": "upload_folder",
+                        "label": "上传目录",
+                        "type": "string",
+                        "description": "文件上传目录（绝对路径或相对项目根目录）",
+                        "value": APIConfig.UPLOAD_FOLDER,
+                    },
+                    {
+                        "key": "max_upload_size",
+                        "label": "最大上传大小（字节）",
+                        "type": "int",
+                        "description": "单文件上传字节上限，默认 5 MiB",
+                        "value": APIConfig.MAX_UPLOAD_SIZE,
+                    },
+                    {
+                        "key": "session_cookie_name",
+                        "label": "会话 Cookie 名",
+                        "type": "string",
+                        "description": "保存登录会话的 Cookie 名称",
+                        "value": APIConfig.SESSION_COOKIE_NAME,
+                    },
+                    {
+                        "key": "session_cookie_secure",
+                        "label": "Cookie 仅 HTTPS",
+                        "type": "bool",
+                        "description": "生产强烈建议开启；HTTP 调试时关闭",
+                        "value": APIConfig.SESSION_COOKIE_SECURE,
+                    },
+                    {
+                        "key": "session_cookie_samesite",
+                        "label": "Cookie SameSite",
+                        "type": "select",
+                        "description": "Strict 最严格；前后端跨域部署需要 None（同时 secure=true）",
+                        "value": APIConfig.SESSION_COOKIE_SAMESITE,
+                        "options": [
+                            {"label": "Strict", "value": "Strict"},
+                            {"label": "Lax", "value": "Lax"},
+                            {"label": "None", "value": "None"},
+                        ],
+                    },
+                    {
+                        "key": "session_cookie_domain",
+                        "label": "Cookie 域",
+                        "type": "string",
+                        "description": "为空使用请求 Host；跨子域共享会话时填顶级域，如 .example.com",
+                        "value": APIConfig.SESSION_COOKIE_DOMAIN,
+                    },
+                    {
+                        "key": "session_cookie_path",
+                        "label": "Cookie 路径",
+                        "type": "string",
+                        "description": "默认 / 即可",
+                        "value": APIConfig.SESSION_COOKIE_PATH,
+                    },
                 ],
                 # 已删除字段：api_key_length（apikey 模块用固定长度生成）
             },
             {
-                'key': 'Security',
-                'category': 'api',
-                'title': '安全配置',
-                'description': '登录失败锁定等安全策略',
-                'fields': [
-                    {'key': 'login_fail_threshold', 'label': '登录失败阈值', 'type': 'int', 'description': '连续登录失败多少次后锁定账号', 'value': SecurityConfig.LOGIN_FAIL_THRESHOLD},
-                    {'key': 'lockout_minutes', 'label': '锁定时间', 'type': 'int', 'description': '账号锁定持续时间（分钟）', 'value': SecurityConfig.LOCKOUT_MINUTES},
-                    {'key': 'telegram_direct_login_enabled', 'label': 'Telegram 直登', 'type': 'bool', 'description': '是否允许仅凭 Telegram ID 直接换取登录会话（高风险）', 'value': SecurityConfig.TELEGRAM_DIRECT_LOGIN_ENABLED},
-                    {'key': 'apikey_direct_login_enabled', 'label': 'API Key 直登', 'type': 'bool', 'description': '是否允许通过 API Key 直接换取完整会话 Token', 'value': SecurityConfig.APIKEY_DIRECT_LOGIN_ENABLED},
-                    {'key': 'bot_internal_secret', 'label': 'Bot 内部密钥', 'type': 'secret', 'description': 'Bot 调用内部接口的密钥（建议显式配置）', 'value': SecurityConfig.BOT_INTERNAL_SECRET},
+                "key": "Security",
+                "category": "api",
+                "title": "安全配置",
+                "description": "登录失败锁定等安全策略",
+                "fields": [
+                    {
+                        "key": "login_fail_threshold",
+                        "label": "登录失败阈值",
+                        "type": "int",
+                        "description": "连续登录失败多少次后锁定账号",
+                        "value": SecurityConfig.LOGIN_FAIL_THRESHOLD,
+                    },
+                    {
+                        "key": "lockout_minutes",
+                        "label": "锁定时间",
+                        "type": "int",
+                        "description": "账号锁定持续时间（分钟）",
+                        "value": SecurityConfig.LOCKOUT_MINUTES,
+                    },
+                    {
+                        "key": "telegram_direct_login_enabled",
+                        "label": "Telegram 直登",
+                        "type": "bool",
+                        "description": "是否允许仅凭 Telegram ID 直接换取登录会话（高风险）",
+                        "value": SecurityConfig.TELEGRAM_DIRECT_LOGIN_ENABLED,
+                    },
+                    {
+                        "key": "apikey_direct_login_enabled",
+                        "label": "API Key 直登",
+                        "type": "bool",
+                        "description": "是否允许通过 API Key 直接换取完整会话 Token",
+                        "value": SecurityConfig.APIKEY_DIRECT_LOGIN_ENABLED,
+                    },
+                    {
+                        "key": "bot_internal_secret",
+                        "label": "Bot 内部密钥",
+                        "type": "secret",
+                        "description": "Bot 调用内部接口的密钥（建议显式配置）",
+                        "value": SecurityConfig.BOT_INTERNAL_SECRET,
+                    },
                 ],
             },
             {
-                'key': 'Scheduler',
-                'category': 'automation',
-                'title': '定时任务',
-                'description': '仅保留全局开关与时区；每个任务的执行时间 / 间隔请前往「定时任务」页面编辑。',
-                'fields': [
-                    {'key': 'enabled', 'label': '启用定时任务', 'type': 'bool', 'description': '是否启用整个定时任务系统（关闭后所有任务都不再触发）', 'value': SchedulerConfig.ENABLED},
-                    {'key': 'timezone', 'label': '时区', 'type': 'string', 'description': '定时任务使用的时区，如 Asia/Shanghai', 'value': SchedulerConfig.TIMEZONE},
+                "key": "Scheduler",
+                "category": "automation",
+                "title": "定时任务",
+                "description": "仅保留全局开关与时区；每个任务的执行时间 / 间隔请前往「定时任务」页面编辑。",
+                "fields": [
+                    {
+                        "key": "enabled",
+                        "label": "启用定时任务",
+                        "type": "bool",
+                        "description": "是否启用整个定时任务系统（关闭后所有任务都不再触发）",
+                        "value": SchedulerConfig.ENABLED,
+                    },
+                    {
+                        "key": "timezone",
+                        "label": "时区",
+                        "type": "string",
+                        "description": "定时任务使用的时区，如 Asia/Shanghai",
+                        "value": SchedulerConfig.TIMEZONE,
+                    },
                 ],
                 # 已迁出的字段（仍在 toml 中作为缺省值；不再向「配置管理」UI 暴露）：
                 #   expired_check_time / expiring_check_time / daily_stats_time
@@ -828,27 +1423,75 @@ async def get_config_schema():
                 # 改为在「定时任务」页面按 job 维度调整，避免双入口冲突。
             },
             {
-                'key': 'Notification',
-                'category': 'automation',
-                'title': '通知配置',
-                'description': '系统通知相关设置',
-                'fields': [
-                    {'key': 'enabled', 'label': '启用通知', 'type': 'bool', 'description': '是否启用通知系统', 'value': NotificationConfig.ENABLED},
-                    {'key': 'expiry_remind_days', 'label': '到期提醒天数', 'type': 'int', 'description': '提前多少天提醒用户即将到期', 'value': NotificationConfig.EXPIRY_REMIND_DAYS},
-                    {'key': 'new_media_notify', 'label': '新媒体通知', 'type': 'bool', 'description': '有新媒体入库时是否通知', 'value': NotificationConfig.NEW_MEDIA_NOTIFY},
+                "key": "Notification",
+                "category": "automation",
+                "title": "通知配置",
+                "description": "系统通知相关设置",
+                "fields": [
+                    {
+                        "key": "enabled",
+                        "label": "启用通知",
+                        "type": "bool",
+                        "description": "是否启用通知系统",
+                        "value": NotificationConfig.ENABLED,
+                    },
+                    {
+                        "key": "expiry_remind_days",
+                        "label": "到期提醒天数",
+                        "type": "int",
+                        "description": "提前多少天提醒用户即将到期",
+                        "value": NotificationConfig.EXPIRY_REMIND_DAYS,
+                    },
+                    {
+                        "key": "new_media_notify",
+                        "label": "新媒体通知",
+                        "type": "bool",
+                        "description": "有新媒体入库时是否通知",
+                        "value": NotificationConfig.NEW_MEDIA_NOTIFY,
+                    },
                 ],
             },
             {
-                'key': 'BangumiSync',
-                'category': 'integration',
-                'title': 'Bangumi 同步',
-                'description': 'Bangumi 观看记录同步设置',
-                'fields': [
-                    {'key': 'enabled', 'label': '启用同步', 'type': 'bool', 'description': '是否启用 Bangumi 观看记录同步', 'value': BangumiSyncConfig.ENABLED},
-                    {'key': 'auto_add_collection', 'label': '自动收藏', 'type': 'bool', 'description': '同步时是否自动添加到 Bangumi 收藏（在看）', 'value': BangumiSyncConfig.AUTO_ADD_COLLECTION},
-                    {'key': 'private_collection', 'label': '私有收藏', 'type': 'bool', 'description': '观看记录是否设为 Bangumi 私有', 'value': BangumiSyncConfig.PRIVATE_COLLECTION},
-                    {'key': 'block_keywords', 'label': '屏蔽关键词', 'type': 'list', 'description': '不同步的条目关键词列表', 'value': BangumiSyncConfig.BLOCK_KEYWORDS},
-                    {'key': 'min_progress_percent', 'label': '最小播放进度', 'type': 'int', 'description': '播放进度达到多少百分比才算看完并同步', 'value': BangumiSyncConfig.MIN_PROGRESS_PERCENT},
+                "key": "BangumiSync",
+                "category": "integration",
+                "title": "Bangumi 同步",
+                "description": "Bangumi 观看记录同步设置",
+                "fields": [
+                    {
+                        "key": "enabled",
+                        "label": "启用同步",
+                        "type": "bool",
+                        "description": "是否启用 Bangumi 观看记录同步",
+                        "value": BangumiSyncConfig.ENABLED,
+                    },
+                    {
+                        "key": "auto_add_collection",
+                        "label": "自动收藏",
+                        "type": "bool",
+                        "description": "同步时是否自动添加到 Bangumi 收藏（在看）",
+                        "value": BangumiSyncConfig.AUTO_ADD_COLLECTION,
+                    },
+                    {
+                        "key": "private_collection",
+                        "label": "私有收藏",
+                        "type": "bool",
+                        "description": "观看记录是否设为 Bangumi 私有",
+                        "value": BangumiSyncConfig.PRIVATE_COLLECTION,
+                    },
+                    {
+                        "key": "block_keywords",
+                        "label": "屏蔽关键词",
+                        "type": "list",
+                        "description": "不同步的条目关键词列表",
+                        "value": BangumiSyncConfig.BLOCK_KEYWORDS,
+                    },
+                    {
+                        "key": "min_progress_percent",
+                        "label": "最小播放进度",
+                        "type": "int",
+                        "description": "播放进度达到多少百分比才算看完并同步",
+                        "value": BangumiSyncConfig.MIN_PROGRESS_PERCENT,
+                    },
                 ],
             },
         ],
@@ -858,75 +1501,77 @@ async def get_config_schema():
     return api_response(True, "获取成功", schema)
 
 
-@system_bp.route('/admin/config/schema', methods=['PUT'])
+@system_bp.route("/admin/config/schema", methods=["PUT"])
 @require_auth
 @require_admin
 async def update_config_by_schema():
     """通过结构化数据更新配置（管理员）"""
     import toml
-    
+
     data = request.get_json() or {}
-    sections = data.get('sections', {})
-    
+    sections = data.get("sections", {})
+
     if not sections:
         return api_response(False, "缺少配置数据", code=400)
-    
+
     config_file = get_primary_config_path()
-    
+
     # 读取当前配置
     try:
         config = toml.load(config_file)
     except Exception as e:
         return api_response(False, f"读取配置文件失败: {e}", code=500)
-    
+
     backup_file: Optional[Path] = None
     try:
-        backup_file = _backup_config_before_update('admin-schema')
+        backup_file = _backup_config_before_update("admin-schema")
     except Exception as e:
         _reload_logger.warning(f"备份配置文件失败: {e}")
-    
+
     # 更新配置
     for section_key, fields in sections.items():
         if section_key not in config:
             config[section_key] = {}
         for field_key, value in fields.items():
             config[section_key][field_key] = value
-    
+
     # 写入文件
     try:
-        with open(config_file, 'w', encoding='utf-8') as f:
+        with open(config_file, "w", encoding="utf-8") as f:
             toml.dump(config, f)
 
         sweep_result = sweep_config_toml(config_classes=_CONFIG_CLASSES, auto_backup=False)
 
-        # 重新加载所有配置（仅供短暂回应使用，实际仍以重启后为准）
-        _reload_runtime_config()
+        reload_result = await _apply_runtime_hot_reload()
 
-        # 改为重启整个程序（由进程管理器/启动脚本拉起）
-        _schedule_process_restart()
-
-        return api_response(True, "配置已保存，程序将自动重启", {
-            'backup_path': str(backup_file) if backup_file else None,
-            'filled': sweep_result.get('filled') or {},
-            'removed': sweep_result.get('removed') or {},
-            'migrated': sweep_result.get('migrated') or [],
-            'restart': True,
-        })
+        return api_response(
+            True,
+            "配置已保存并热重载",
+            {
+                "backup_path": str(backup_file) if backup_file else None,
+                "filled": sweep_result.get("filled") or {},
+                "removed": sweep_result.get("removed") or {},
+                "migrated": sweep_result.get("migrated") or [],
+                "restart": False,
+                "reload": reload_result,
+            },
+        )
     except Exception as e:
         import logging
+
         logging.getLogger(__name__).error(f"更新配置文件失败: {e}", exc_info=True)
-        
+
         # 尝试恢复备份
         if backup_file and backup_file.exists():
             try:
                 shutil.copy2(backup_file, config_file)
             except Exception:
                 pass
-        
+
         return api_response(False, f"更新配置文件失败: {e}", code=500)
 
 
-@system_bp.route('/admin/config/sweep', methods=['POST'])
+@system_bp.route("/admin/config/sweep", methods=["POST"])
 @require_auth
 @require_admin
 async def admin_trigger_config_sweep():
@@ -948,8 +1593,8 @@ async def admin_trigger_config_sweep():
         }
     """
     data = request.get_json(silent=True) or {}
-    auto_backup = bool(data.get('auto_backup', True))
-    restart = bool(data.get('restart', False))
+    auto_backup = parse_bool(data.get("auto_backup"), default=True)
+    restart = parse_bool(data.get("restart"), default=False)
 
     try:
         result = sweep_config_toml(
@@ -960,88 +1605,96 @@ async def admin_trigger_config_sweep():
         _reload_logger.error("管理员触发 sweep 失败: %s", exc, exc_info=True)
         return api_response(False, f"整理配置失败: {exc}", code=500)
 
-    if result.get('error'):
-        return api_response(False, result['error'], result, code=500)
+    if result.get("error"):
+        return api_response(False, result["error"], result, code=500)
 
-    # 内存里的 Config 对象同步刷新一次，避免「DB 里改了/没改」前端看到的值滞后
-    _reload_runtime_config()
+    # 内存里的 Config 对象同步刷新一次，避免前端看到旧值；本进程调度器也顺手重装任务。
+    reload_result = await _apply_runtime_hot_reload()
 
     payload = {
-        'filled': result.get('filled') or {},
-        'removed': result.get('removed') or {},
-        'migrated': result.get('migrated') or [],
-        'backup_path': result.get('backup_path'),
-        'restart': False,
+        "filled": result.get("filled") or {},
+        "removed": result.get("removed") or {},
+        "migrated": result.get("migrated") or [],
+        "backup_path": result.get("backup_path"),
+        "restart": False,
+        "reload": reload_result,
     }
 
     # 整理本身不强求重启；但若调用方显式要求 或 实际产生过变更，则按现有流程退出进程
-    has_change = bool(payload['filled'] or payload['removed'] or payload['migrated'])
+    has_change = bool(payload["filled"] or payload["removed"] or payload["migrated"])
     if restart and has_change:
-        payload['restart'] = True
+        payload["restart"] = True
         _schedule_process_restart()
 
     msg = "已整理 config.toml" if has_change else "config.toml 已是最新，无需整理"
     return api_response(True, msg, payload)
 
 
-@system_bp.route('/admin/apis', methods=['GET'])
+@system_bp.route("/admin/apis", methods=["GET"])
 @require_auth
 @require_admin
 async def list_all_apis():
     """获取所有 API 列表（管理员）"""
     from flask import current_app
-    
+
     apis = []
-    
+
     # 遍历所有注册的蓝图和路由
     for rule in current_app.url_map.iter_rules():
         # 过滤掉静态文件、根路径和 OPTIONS 方法
-        if rule.endpoint == 'static' or rule.rule == '/' or 'OPTIONS' in rule.methods:
+        if rule.endpoint == "static" or rule.rule == "/" or "OPTIONS" in rule.methods:
             continue
-        
+
         # 只获取 /api/v1 开头的路由
-        if not rule.rule.startswith('/api/v1'):
+        if not rule.rule.startswith("/api/v1"):
             continue
-        
+
         # 获取方法
-        methods = [m for m in rule.methods if m != 'OPTIONS' and m != 'HEAD']
+        methods = [m for m in rule.methods if m != "OPTIONS" and m != "HEAD"]
         if not methods:
             continue
-        
+
         # 构建路径（移除 /api/v1 前缀以便前端使用）
         path = rule.rule[7:]  # 移除 '/api/v1'
-        
+
         for method in methods:
-            apis.append({
-                'method': method,
-                'path': path,
-                'endpoint': rule.endpoint,
-                'full_path': rule.rule,
-            })
-    
+            apis.append(
+                {
+                    "method": method,
+                    "path": path,
+                    "endpoint": rule.endpoint,
+                    "full_path": rule.rule,
+                }
+            )
+
     # 按路径和方法排序
-    apis.sort(key=lambda x: (x['path'], x['method']))
-    
-    return api_response(True, "获取成功", {
-        'apis': apis,
-        'total': len(apis),
-    })
+    apis.sort(key=lambda x: (x["path"], x["method"]))
+
+    return api_response(
+        True,
+        "获取成功",
+        {
+            "apis": apis,
+            "total": len(apis),
+        },
+    )
 
 
-@system_bp.route('/admin/emby/libraries', methods=['GET'])
+@system_bp.route("/admin/emby/libraries", methods=["GET"])
 @require_auth
 @require_admin
 async def get_emby_libraries():
     """获取所有 Emby 媒体库列表（管理员）"""
     from src.services import EmbyService
-    
+
     libraries = await EmbyService.get_libraries_info()
     return api_response(True, "获取成功", libraries)
 
 
 # ==================== Bot 连通性测试 ====================
 
-@system_bp.route('/admin/bot/test', methods=['POST'])
+
+@system_bp.route("/admin/bot/test", methods=["POST"])
 @require_auth
 @require_admin
 async def test_bot_connectivity():
@@ -1061,7 +1714,7 @@ async def test_bot_connectivity():
         return api_response(False, "未配置 Bot Token", code=400)
 
     data = request.get_json() or {}
-    target = data.get('target')  # 可选：指定群组/频道，不传则发送到所有配置的群组和频道
+    target = data.get("target")  # 可选：指定群组/频道，不传则发送到所有配置的群组和频道
 
     # 解析目标列表
     targets = []
@@ -1077,8 +1730,8 @@ async def test_bot_connectivity():
         targets = list(group_ids) + list(channel_ids)
 
     # 构造 Telegram Bot API 基础地址（兼容自定义代理 API）
-    api_base = (TelegramConfig.TELEGRAM_API_URL or 'https://api.telegram.org/bot').rstrip('/')
-    if api_base.endswith('/bot'):
+    api_base = (TelegramConfig.TELEGRAM_API_URL or "https://api.telegram.org/bot").rstrip("/")
+    if api_base.endswith("/bot"):
         api_url = f"{api_base}{TelegramConfig.BOT_TOKEN}"
     else:
         api_url = f"{api_base}/bot{TelegramConfig.BOT_TOKEN}"
@@ -1091,24 +1744,28 @@ async def test_bot_connectivity():
         async with httpx.AsyncClient(timeout=timeout, proxy=proxy) as client:
             resp = await client.get(f"{api_url}/getMe")
             payload = resp.json() if resp.content else {}
-            if resp.status_code != 200 or not payload.get('ok'):
-                desc = payload.get('description') or f"HTTP {resp.status_code}"
+            if resp.status_code != 200 or not payload.get("ok"):
+                desc = payload.get("description") or f"HTTP {resp.status_code}"
                 return api_response(False, f"Bot Token 验证失败: {desc}", code=400)
-            bot_info = payload.get('result') or {}
+            bot_info = payload.get("result") or {}
     except Exception as e:
         return api_response(False, f"无法连接 Telegram Bot API: {e}", code=400)
 
     if not targets:
-        return api_response(True, "Bot Token 有效，但未配置群组或频道，跳过发送测试", {
-            'bot': {
-                'id': bot_info.get('id'),
-                'username': bot_info.get('username'),
-                'first_name': bot_info.get('first_name'),
+        return api_response(
+            True,
+            "Bot Token 有效，但未配置群组或频道，跳过发送测试",
+            {
+                "bot": {
+                    "id": bot_info.get("id"),
+                    "username": bot_info.get("username"),
+                    "first_name": bot_info.get("first_name"),
+                },
+                "results": [],
             },
-            'results': [],
-        })
+        )
 
-    test_time = time.strftime('%Y-%m-%d %H:%M:%S')
+    test_time = time.strftime("%Y-%m-%d %H:%M:%S")
     test_text = (
         f"✅ *Twilight Bot 连通性测试*\n\n"
         f"服务器: {Config.SERVER_NAME}\n"
@@ -1123,31 +1780,39 @@ async def test_bot_connectivity():
                 resp = await client.post(
                     f"{api_url}/sendMessage",
                     json={
-                        'chat_id': chat_id,
-                        'text': test_text,
-                        'parse_mode': 'Markdown',
+                        "chat_id": chat_id,
+                        "text": test_text,
+                        "parse_mode": "Markdown",
                     },
                 )
                 payload = resp.json() if resp.content else {}
-                ok = resp.status_code == 200 and bool(payload.get('ok'))
-                results.append({
-                    'target': str(chat_id),
-                    'success': ok,
-                    'error': None if ok else (payload.get('description') or f"HTTP {resp.status_code}"),
-                })
+                ok = resp.status_code == 200 and bool(payload.get("ok"))
+                results.append(
+                    {
+                        "target": str(chat_id),
+                        "success": ok,
+                        "error": None if ok else (payload.get("description") or f"HTTP {resp.status_code}"),
+                    }
+                )
             except Exception as e:
-                results.append({
-                    'target': str(chat_id),
-                    'success': False,
-                    'error': str(e),
-                })
+                results.append(
+                    {
+                        "target": str(chat_id),
+                        "success": False,
+                        "error": str(e),
+                    }
+                )
 
-    all_ok = all(r['success'] for r in results)
-    return api_response(all_ok, "测试完成" if all_ok else "部分目标发送失败", {
-        'bot': {
-            'id': bot_info.get('id'),
-            'username': bot_info.get('username'),
-            'first_name': bot_info.get('first_name'),
+    all_ok = all(r["success"] for r in results)
+    return api_response(
+        all_ok,
+        "测试完成" if all_ok else "部分目标发送失败",
+        {
+            "bot": {
+                "id": bot_info.get("id"),
+                "username": bot_info.get("username"),
+                "first_name": bot_info.get("first_name"),
+            },
+            "results": results,
         },
-        'results': results,
-    })
+    )

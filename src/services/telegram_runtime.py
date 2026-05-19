@@ -4,6 +4,7 @@
 1) 进程内存在运行中的 Bot：把调用投递到 Bot 所在线程/事件循环执行，避免跨线程冲突。
 2) API 与 Bot 分离进程：回退到独立 Bot API 客户端直接调用 Telegram。
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -35,9 +36,7 @@ def has_running_bot_instance() -> bool:
 
     bot_instance = get_bot_instance()
     return bool(
-        bot_instance
-        and getattr(bot_instance, "application", None)
-        and getattr(bot_instance.application, "bot", None)
+        bot_instance and getattr(bot_instance, "application", None) and getattr(bot_instance.application, "bot", None)
     )
 
 
@@ -108,6 +107,7 @@ async def run_bot_operation(
             running_bot = None
 
     if running_bot is not None:
+
         async def _invoke() -> T:
             return await operation(running_bot)
 

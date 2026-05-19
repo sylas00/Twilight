@@ -61,6 +61,7 @@
    - 高级设置：
      - 路径：`/webui`
      - 环境变量：`NEXT_PUBLIC_API_URL` = `你的后端地址`
+     - 环境变量：`NODE_VERSION` = `22`
 
 7. 保存并部署，等待完成。
 8. 可选操作：
@@ -110,6 +111,15 @@ pnpm start                          # next start
    ```bash
    pip install -r requirements.txt
    # 或
+   uv pip install -r requirements.txt
+   ```
+
+   NixOS 用户先进入项目 flake 环境，再创建虚拟环境：
+
+   ```bash
+   nix develop
+   uv venv .venv
+   . .venv/bin/activate
    uv pip install -r requirements.txt
    ```
 

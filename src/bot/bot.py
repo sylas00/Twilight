@@ -4,6 +4,7 @@ Telegram Bot 核心模块
 基于 python-telegram-bot 实现的 Telegram Bot
 参考: https://github.com/Prejudice-Studio/Telegram-Jellyfin-Bot
 """
+
 import asyncio
 import logging
 import os
@@ -20,7 +21,7 @@ from src.config import Config, TelegramConfig
 logger = logging.getLogger(__name__)
 
 # 全局 Bot 实例
-_bot_instance: Optional['TelegramBot'] = None
+_bot_instance: Optional["TelegramBot"] = None
 _bot_loop: Optional[asyncio.AbstractEventLoop] = None
 _bot_lock_fd: Optional[int] = None
 _bot_lock_path: Optional[Path] = None
@@ -139,47 +140,84 @@ class TelegramBot:
     """Telegram Bot 主类"""
 
     KNOWN_COMMANDS = {
-        "start", "help", "me", "bind", "cancel",
-        "admin", "adduser", "regcode", "broadcast", "stats", "userinfo",
-        "emby", "resetpwd", "playinfo", "sessions", "kick",
+        "start",
+        "help",
+        "me",
+        "bind",
+        "cancel",
+        "admin",
+        "adduser",
+        "regcode",
+        "broadcast",
+        "stats",
+        "userinfo",
+        "emby",
+        "resetpwd",
+        "playinfo",
+        "sessions",
+        "kick",
     }
 
     KNOWN_CALLBACK_EXACT = {
-        "back_start", "close_msg", "panel_help", "panel_user", "user_tg_info",
-        "user_unbindtg_confirm", "user_playinfo", "panel_admin", "admin_users",
-        "admin_regcode", "admin_stats", "admin_emby", "admin_broadcast",
-        "adm_queryuser", "adm_adduser", "adm_banmenu", "adm_regcode_gen",
-        "adm_regcode_list", "adm_emby_test", "adm_emby_sessions", "adm_emby_users",
-        "adm_emby_cleanup", "adm_emby_cleanup_confirm", "noop", "panel_emby",
-        "emby_resetpwd", "emby_playinfo",
+        "back_start",
+        "close_msg",
+        "panel_help",
+        "panel_user",
+        "user_tg_info",
+        "user_unbindtg_confirm",
+        "user_playinfo",
+        "panel_admin",
+        "admin_users",
+        "admin_regcode",
+        "admin_stats",
+        "admin_emby",
+        "admin_broadcast",
+        "adm_queryuser",
+        "adm_adduser",
+        "adm_banmenu",
+        "adm_regcode_gen",
+        "adm_regcode_list",
+        "adm_emby_test",
+        "adm_emby_sessions",
+        "adm_emby_users",
+        "adm_emby_cleanup",
+        "adm_emby_cleanup_confirm",
+        "noop",
+        "panel_emby",
+        "emby_resetpwd",
+        "emby_playinfo",
     }
 
     KNOWN_CALLBACK_PREFIX = (
-        "adm_userlist:", "adm_act:", "adm_userdetail:", "adm_renew:", "adm_reggen:",
+        "adm_userlist:",
+        "adm_act:",
+        "adm_userdetail:",
+        "adm_renew:",
+        "adm_reggen:",
     )
-    
+
     def __init__(self):
         if not Config.TELEGRAM_MODE:
             raise RuntimeError("Telegram 模式未启用，请在配置文件中设置 telegram_mode = true")
-        
+
         if not TelegramConfig.BOT_TOKEN:
             raise RuntimeError("未配置 BOT_TOKEN")
-        
+
         self.bot_token = TelegramConfig.BOT_TOKEN
         self.admin_ids = self._normalize_ids(TelegramConfig.ADMIN_ID)
         self.group_ids = self._normalize_ids(TelegramConfig.GROUP_ID)
         self.channel_ids = self._normalize_ids(TelegramConfig.CHANNEL_ID)
         self.force_subscribe = TelegramConfig.FORCE_SUBSCRIBE
         self._running = False
-        
+
         # 创建 python-telegram-bot Application
         builder = Application.builder().token(self.bot_token)
-        
+
         # 自定义 Telegram API URL（用于代理/自建 API）
         base_url = TelegramConfig.TELEGRAM_API_URL
-        if base_url and base_url != 'https://api.telegram.org/bot':
+        if base_url and base_url != "https://api.telegram.org/bot":
             builder = builder.base_url(base_url)
-        
+
         # 代理配置
         proxy_url = TelegramConfig.PROXY_URL
         if proxy_url:
@@ -205,34 +243,37 @@ class TelegramBot:
             builder = builder.connect_timeout(60)
             builder = builder.read_timeout(60)
             builder = builder.write_timeout(60)
-        
+
         builder = builder.concurrent_updates(True)
-        
+
         self.application = builder.build()
-        
+
         # 注册处理器
         self._register_handlers()
-        
+
         # 注册全局错误处理
         self.application.add_error_handler(self._error_handler)
-        
+
         logger.info("Telegram Bot 初始化完成")
-    
+
     @staticmethod
     def _normalize_ids(ids: Union[int, str, List[Union[int, str]]]) -> List[Union[int, str]]:
         """标准化 ID 列表，支持数字ID和 @channelusername 格式"""
         if isinstance(ids, (int, str)):
             return [ids] if ids else []
         return ids or []
-    
+
     def is_admin(self, user_id: int) -> bool:
         """检查是否为管理员"""
         return user_id in self.admin_ids
-    
+
     def _register_handlers(self):
         """注册消息处理器"""
         from src.bot.handlers import (
-            user_handlers, admin_handlers, emby_handlers, roster_handlers,
+            user_handlers,
+            admin_handlers,
+            emby_handlers,
+            roster_handlers,
         )
 
         # 注册用户命令
@@ -281,25 +322,25 @@ class TelegramBot:
             await query.answer("菜单可能已过期，请发送 /start 刷新", show_alert=True)
         except Exception:
             pass
-    
+
     @staticmethod
     async def _error_handler(update: object, context) -> None:
         """全局错误处理"""
         error = context.error
-        
+
         if isinstance(error, RetryAfter):
             logger.warning(f"Flood control: 等待 {error.retry_after}s")
             await asyncio.sleep(error.retry_after)
             return
-        
+
         if isinstance(error, TimedOut):
             logger.warning(f"请求超时: {error}")
             return
-        
+
         if isinstance(error, NetworkError):
             logger.warning(f"网络错误 (将自动重试): {error}")
             return
-        
+
         if isinstance(error, BadRequest):
             if "Message is not modified" in str(error):
                 return  # 忽略消息未修改
@@ -307,38 +348,38 @@ class TelegramBot:
                 return  # 忽略过期 callback
             logger.warning(f"BadRequest: {error}")
             return
-        
+
         # 其他错误
         logger.error(f"Bot 未处理异常: {error}", exc_info=context.error)
-    
+
     @property
     def bot(self) -> Bot:
         """获取底层 Bot 对象"""
         return self.application.bot
-    
+
     @property
     def is_running(self) -> bool:
         """检查 Bot 是否正在运行"""
         return self._running
-    
+
     async def start(self):
         """启动 Bot（非阻塞，使用 polling）"""
         logger.info("正在启动 Telegram Bot...")
-        
+
         await self.application.initialize()
         await self.application.start()
-        
+
         # 启动 polling（不阻塞）
         await self.application.updater.start_polling(
             allowed_updates=Update.ALL_TYPES,
             drop_pending_updates=True,
         )
-        
+
         self._running = True
-        
+
         me = await self.bot.get_me()
         logger.info(f"Telegram Bot 已启动: @{me.username}")
-    
+
     async def stop(self):
         """停止 Bot"""
         logger.info("正在停止 Telegram Bot...")
@@ -348,7 +389,7 @@ class TelegramBot:
         await self.application.shutdown()
         self._running = False
         logger.info("Telegram Bot 已停止")
-    
+
     async def send_message(
         self,
         chat_id: Union[int, str],
@@ -367,7 +408,7 @@ class TelegramBot:
         except Exception as e:
             logger.error(f"发送消息失败: {e}")
             return None
-    
+
     async def broadcast(
         self,
         text: str,
@@ -376,19 +417,19 @@ class TelegramBot:
     ) -> int:
         """
         广播消息
-        
+
         :param text: 消息内容
         :param chat_ids: 目标用户列表，为空则发送给所有管理员
         :return: 成功发送数量
         """
         if not chat_ids:
             chat_ids = self.admin_ids
-        
+
         success = 0
         for chat_id in chat_ids:
             if await self.send_message(chat_id, text, reply_markup):
                 success += 1
-        
+
         return success
 
 
@@ -447,4 +488,3 @@ async def stop_bot():
 
     _set_bot_loop(None)
     _release_bot_lock()
-

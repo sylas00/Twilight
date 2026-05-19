@@ -3,6 +3,7 @@
 
 处理用户注册、续期、绑定等业务逻辑
 """
+
 import time
 import json
 import logging
@@ -28,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 class RegisterResult(Enum):
     """注册结果"""
+
     SUCCESS = "success"
     USER_EXISTS = "user_exists"
     EMBY_EXISTS = "emby_exists"
@@ -43,6 +45,7 @@ class RegisterResult(Enum):
 @dataclass
 class RegisterResponse:
     """注册响应"""
+
     result: RegisterResult
     message: str
     user: Optional[UserModel] = None
@@ -68,7 +71,7 @@ class UserService:
     @staticmethod
     def _normalize_emby_user_limit() -> int:
         try:
-            limit = int(getattr(RegisterConfig, 'EMBY_USER_LIMIT', -1))
+            limit = int(getattr(RegisterConfig, "EMBY_USER_LIMIT", -1))
         except (TypeError, ValueError):
             limit = -1
         return -1 if limit <= 0 else limit
@@ -113,7 +116,7 @@ class UserService:
         策略：天数由管理员通过 ``RegisterConfig.EMBY_DIRECT_REGISTER_DAYS`` 单一固定值决定，
         前端不再提供 "选套餐 / 自定义天数" 入口。注册码授予的 PENDING_EMBY_DAYS 仍优先生效。
         """
-        pending_days = getattr(user, 'PENDING_EMBY_DAYS', None)
+        pending_days = getattr(user, "PENDING_EMBY_DAYS", None)
         if pending_days is not None:
             days = UserService._normalize_code_days(pending_days, default=30)
             return True, days, ""
@@ -121,7 +124,7 @@ class UserService:
         if not RegisterConfig.EMBY_DIRECT_REGISTER_ENABLED:
             return False, None, "当前未开启自由注册 Emby"
 
-        if not getattr(user, 'TELEGRAM_ID', None):
+        if not getattr(user, "TELEGRAM_ID", None):
             return False, None, "自由注册 Emby 前请先绑定 Telegram"
 
         days = UserService._normalize_code_days(
@@ -172,11 +175,11 @@ class UserService:
         """检查是否可以注册"""
         if not RegisterConfig.REGISTER_MODE:
             return False, "注册功能已关闭"
-        
+
         current_count = await UserService.get_registered_user_count(use_cache=use_cache)
         if current_count >= RegisterConfig.USER_LIMIT:
             return False, f"已达到用户数量上限 ({RegisterConfig.USER_LIMIT})"
-        
+
         return True, "可以注册"
 
     @staticmethod
@@ -198,12 +201,14 @@ class UserService:
         return note
 
     @staticmethod
-    async def create_telegram_rebind_request(user: UserModel, reason: Optional[str] = None) -> Tuple[bool, str, Optional[object]]:
+    async def create_telegram_rebind_request(
+        user: UserModel, reason: Optional[str] = None
+    ) -> Tuple[bool, str, Optional[object]]:
         if not user.TELEGRAM_ID:
             return False, "当前账号尚未绑定 Telegram"
 
         existing = await TelegramRebindRequestOperate.get_request_by_uid(user.UID)
-        if existing and existing.STATUS == 'pending':
+        if existing and existing.STATUS == "pending":
             return False, "您已有待处理的换绑请求，请等待管理员处理"
 
         clean_reason = UserService._normalize_text_note(reason, max_length=500)
@@ -215,11 +220,13 @@ class UserService:
         return await TelegramRebindRequestOperate.list_requests(status=status, page=page, per_page=per_page)
 
     @staticmethod
-    async def approve_telegram_rebind_request(request_id: int, reviewer_uid: int, admin_note: Optional[str] = None) -> Tuple[bool, str]:
+    async def approve_telegram_rebind_request(
+        request_id: int, reviewer_uid: int, admin_note: Optional[str] = None
+    ) -> Tuple[bool, str]:
         request = await TelegramRebindRequestOperate.get_request_by_id(request_id)
         if not request:
             return False, "换绑请求不存在"
-        if request.STATUS != 'pending':
+        if request.STATUS != "pending":
             return False, "该请求已处理"
 
         user = await UserOperate.get_user_by_uid(request.UID)
@@ -232,7 +239,7 @@ class UserService:
         clean_note = UserService._normalize_text_note(admin_note, max_length=500)
         success = await TelegramRebindRequestOperate.update_request_status(
             request_id,
-            'approved',
+            "approved",
             reviewer_uid=reviewer_uid,
             admin_note=clean_note,
         )
@@ -242,17 +249,19 @@ class UserService:
         return True, "已批准换绑请求并解绑当前 Telegram，用户可重新绑定新账号"
 
     @staticmethod
-    async def reject_telegram_rebind_request(request_id: int, reviewer_uid: int, admin_note: Optional[str] = None) -> Tuple[bool, str]:
+    async def reject_telegram_rebind_request(
+        request_id: int, reviewer_uid: int, admin_note: Optional[str] = None
+    ) -> Tuple[bool, str]:
         request = await TelegramRebindRequestOperate.get_request_by_id(request_id)
         if not request:
             return False, "换绑请求不存在"
-        if request.STATUS != 'pending':
+        if request.STATUS != "pending":
             return False, "该请求已处理"
 
         clean_note = UserService._normalize_text_note(admin_note, max_length=500)
         success = await TelegramRebindRequestOperate.update_request_status(
             request_id,
-            'rejected',
+            "rejected",
             reviewer_uid=reviewer_uid,
             admin_note=clean_note,
         )
@@ -267,7 +276,7 @@ class UserService:
         username: str,
         reg_code: str,
         email: Optional[str] = None,
-        password: Optional[str] = None
+        password: Optional[str] = None,
     ) -> RegisterResponse:
         """
         通过注册码注册：仅创建系统账号并标记 PENDING_EMBY=True，
@@ -317,9 +326,7 @@ class UserService:
             await RegCodeOperate.update_regcode_use_count(reg_code, 1)
             # 重新组装一份更贴合"已使用注册码"的提示文案
             days_text = "永久" if pending_days <= 0 else f"{pending_days} 天"
-            response.message = (
-                f"注册成功！注册码已使用，Emby 账号开通时长 {days_text}，请在首次登录后补建 Emby 账号。"
-            )
+            response.message = f"注册成功！注册码已使用，Emby 账号开通时长 {days_text}，请在首次登录后补建 Emby 账号。"
 
         return response
 
@@ -366,53 +373,53 @@ class UserService:
             available, msg = await UserService.check_registration_available(use_cache=False)
             if not available:
                 return RegisterResponse(RegisterResult.USER_LIMIT_REACHED, msg)
-            
+
             # 检查用户名是否已存在
             existing = await UserOperate.get_user_by_username(username)
             if existing:
                 return RegisterResponse(RegisterResult.USER_EXISTS, "用户名已被使用")
-            
+
             # 如果有 telegram_id，检查是否已注册
             if telegram_id:
                 existing_tg = await UserOperate.get_user_by_telegram_id(telegram_id)
                 if existing_tg:
                     return RegisterResponse(RegisterResult.USER_EXISTS, "该 Telegram 账号已注册")
-            
+
             # 先获取新 UID
             new_uid = await UserOperate.get_new_uid()
             user_password = password if password else generate_password(12)
-            
+
             # 检查是否是预设管理员或白名单（优先使用 UID，其次使用用户名）
             is_admin = False
             is_whitelist = False
-            
+
             # 先检查管理员 UID 列表
             admin_uids = RegisterConfig.ADMIN_UIDS
             if admin_uids:
-                uid_list = [int(u.strip()) for u in admin_uids.split(',') if u.strip().isdigit()]
+                uid_list = [int(u.strip()) for u in admin_uids.split(",") if u.strip().isdigit()]
                 is_admin = new_uid in uid_list
-            
+
             # 如果 UID 未匹配，再检查管理员用户名列表
             if not is_admin:
                 admin_usernames = RegisterConfig.ADMIN_USERNAMES
                 if admin_usernames:
-                    name_list = [n.strip().lower() for n in admin_usernames.split(',') if n.strip()]
+                    name_list = [n.strip().lower() for n in admin_usernames.split(",") if n.strip()]
                     is_admin = username.lower() in name_list
-            
+
             # 检查白名单 UID 列表
             if not is_admin:
                 whitelist_uids = RegisterConfig.WHITE_LIST_UIDS
                 if whitelist_uids:
-                    uid_list = [int(u.strip()) for u in whitelist_uids.split(',') if u.strip().isdigit()]
+                    uid_list = [int(u.strip()) for u in whitelist_uids.split(",") if u.strip().isdigit()]
                     is_whitelist = new_uid in uid_list
-            
+
             # 如果 UID 未匹配，再检查白名单用户名列表
             if not is_admin and not is_whitelist:
                 whitelist_usernames = RegisterConfig.WHITE_LIST_USERNAMES
                 if whitelist_usernames:
-                    name_list = [n.strip().lower() for n in whitelist_usernames.split(',') if n.strip()]
+                    name_list = [n.strip().lower() for n in whitelist_usernames.split(",") if n.strip()]
                     is_whitelist = username.lower() in name_list
-            
+
             # 9999-12-31 的时间戳（管理员和白名单使用）
             permanent_expire = 253402214400
             created_at = timestamp()
@@ -472,15 +479,13 @@ class UserService:
                 )
             await UserOperate.add_user(user)
 
-            logger.info(
-                f"待激活用户注册: {username} (UID: {new_uid}, pending_emby_days={pending_emby_days})"
-            )
+            logger.info(f"待激活用户注册: {username} (UID: {new_uid}, pending_emby_days={pending_emby_days})")
 
             return RegisterResponse(
                 result=RegisterResult.SUCCESS,
                 message="注册成功！您可以登录并使用基础功能。",
                 user=user,
-                emby_password=user_password if not password else None
+                emby_password=user_password if not password else None,
             )
         finally:
             await release_global_registration_lock(global_lock)
@@ -502,7 +507,7 @@ class UserService:
         if user.EMBYID:
             return RegisterResponse(RegisterResult.USER_EXISTS, "您已绑定 Emby 账号")
 
-        emby_username = (emby_username or '').strip()
+        emby_username = (emby_username or "").strip()
         if not emby_username:
             return RegisterResponse(RegisterResult.ERROR, "Emby 用户名不能为空")
         if not is_valid_username(emby_username):
@@ -558,7 +563,7 @@ class UserService:
                     other_data = json.loads(user.OTHER)
                 except (json.JSONDecodeError, TypeError):
                     other_data = {}
-            other_data['emby_username'] = emby_username
+            other_data["emby_username"] = emby_username
             user.OTHER = json.dumps(other_data)
 
             await UserOperate.update_user(user)
@@ -585,11 +590,11 @@ class UserService:
         email: Optional[str],
         days: int,
         reg_code: Optional[str] = None,
-        password: Optional[str] = None
+        password: Optional[str] = None,
     ) -> RegisterResponse:
         """创建 Emby 用户（内部方法）"""
         emby = get_emby_client()
-        
+
         try:
             cap_ok, cap_msg = await UserService.check_emby_user_capacity()
             if not cap_ok:
@@ -599,23 +604,23 @@ class UserService:
             existing_emby = await emby.get_user_by_name(username)
             if existing_emby:
                 return RegisterResponse(RegisterResult.EMBY_EXISTS, "该用户名在 Emby 中已存在")
-            
+
             # 使用提供的密码或生成随机密码
             user_password = password if password else generate_password(12)
             emby_user = await emby.create_user(username, user_password)
-            
+
             if not emby_user:
                 return RegisterResponse(RegisterResult.EMBY_ERROR, "创建 Emby 账户失败")
-            
+
             # 计算过期时间
             expire_at = timestamp() + days_to_seconds(days) if days > 0 else -1
             now_ts = timestamp()
-            
+
             # 创建或更新本地用户记录
             existing_user = None
             if telegram_id:
                 existing_user = await UserOperate.get_user_by_telegram_id(telegram_id)
-            
+
             if existing_user:
                 existing_user.EMBYID = emby_user.id
                 existing_user.PASSWORD = hash_password(user_password)
@@ -634,46 +639,47 @@ class UserService:
                 if not existing_user.REGISTER_TIME:
                     existing_user.REGISTER_TIME = existing_user.CREATE_AT or now_ts
                 import json
+
                 other_data = {}
                 if existing_user.OTHER:
                     try:
                         other_data = json.loads(existing_user.OTHER)
                     except (json.JSONDecodeError, TypeError):
                         other_data = {}
-                other_data['emby_username'] = username
+                other_data["emby_username"] = username
                 existing_user.OTHER = json.dumps(other_data)
                 await UserOperate.update_user(existing_user)
                 user = existing_user
             else:
                 new_uid = await UserOperate.get_new_uid()
-                
+
                 # 检查是否是管理员或白名单
                 is_admin = False
                 is_whitelist = False
-                
+
                 # 检查管理员
                 admin_uids = RegisterConfig.ADMIN_UIDS
                 if admin_uids:
-                    uid_list = [int(u.strip()) for u in admin_uids.split(',') if u.strip().isdigit()]
+                    uid_list = [int(u.strip()) for u in admin_uids.split(",") if u.strip().isdigit()]
                     is_admin = new_uid in uid_list
                 if not is_admin:
                     admin_usernames = RegisterConfig.ADMIN_USERNAMES
                     if admin_usernames:
-                        name_list = [n.strip().lower() for n in admin_usernames.split(',') if n.strip()]
+                        name_list = [n.strip().lower() for n in admin_usernames.split(",") if n.strip()]
                         is_admin = username.lower() in name_list
-                
+
                 # 检查白名单
                 if not is_admin:
                     whitelist_uids = RegisterConfig.WHITE_LIST_UIDS
                     if whitelist_uids:
-                        uid_list = [int(u.strip()) for u in whitelist_uids.split(',') if u.strip().isdigit()]
+                        uid_list = [int(u.strip()) for u in whitelist_uids.split(",") if u.strip().isdigit()]
                         is_whitelist = new_uid in uid_list
                 if not is_admin and not is_whitelist:
                     whitelist_usernames = RegisterConfig.WHITE_LIST_USERNAMES
                     if whitelist_usernames:
-                        name_list = [n.strip().lower() for n in whitelist_usernames.split(',') if n.strip()]
+                        name_list = [n.strip().lower() for n in whitelist_usernames.split(",") if n.strip()]
                         is_whitelist = username.lower() in name_list
-                
+
                 # 确定角色和到期时间
                 if is_admin:
                     user_role = Role.ADMIN.value
@@ -684,7 +690,7 @@ class UserService:
                 else:
                     user_role = Role.NORMAL.value
                     user_expire = expire_at
-                
+
                 user = UserModel(
                     UID=new_uid,
                     TELEGRAM_ID=telegram_id,  # 可以为 None
@@ -696,24 +702,25 @@ class UserService:
                     EXPIRED_AT=user_expire,
                     CREATE_AT=now_ts,
                     REGISTER_TIME=now_ts,
-                    OTHER=json.dumps({'emby_username': username}),
+                    OTHER=json.dumps({"emby_username": username}),
                 )
                 await UserOperate.add_user(user)
 
             # 更新注册码使用记录
             if reg_code:
                 from src.db.regcode import RegCodeOperate
+
                 await RegCodeOperate.update_regcode_use_count(reg_code, 1)
 
             logger.info(f"用户注册成功: {username} (TG: {telegram_id})")
-            
+
             return RegisterResponse(
                 result=RegisterResult.SUCCESS,
                 message=f"注册成功！有效期 {days} 天",
                 user=user,
-                emby_password=user_password if not password else None  # 仅自动生成时返回
+                emby_password=user_password if not password else None,  # 仅自动生成时返回
             )
-            
+
         except EmbyError as e:
             logger.error(f"Emby 错误: {e}")
             return RegisterResponse(RegisterResult.EMBY_ERROR, f"Emby 服务器错误: {e}")
@@ -722,11 +729,7 @@ class UserService:
             return RegisterResponse(RegisterResult.ERROR, f"注册失败: {e}")
 
     @staticmethod
-    async def renew_user(
-        user: UserModel,
-        days: int,
-        reg_code: Optional[str] = None
-    ) -> Tuple[bool, str]:
+    async def renew_user(user: UserModel, days: int, reg_code: Optional[str] = None) -> Tuple[bool, str]:
         """
         续期用户
 
@@ -741,20 +744,20 @@ class UserService:
 
         if reg_code:
             from src.db.regcode import RegCodeOperate, Type as RegCodeType
-            
+
             code_info = await RegCodeOperate.get_regcode_by_code(reg_code)
             if not code_info:
                 return False, "续期码无效"
-            
+
             if code_info.TYPE != RegCodeType.RENEW.value:
                 return False, "这不是续期码"
-            
+
             if not code_info.ACTIVE:
                 return False, "续期码已停用"
-            
+
             if code_info.USE_COUNT_LIMIT != -1 and code_info.USE_COUNT >= code_info.USE_COUNT_LIMIT:
                 return False, "续期码已被使用完"
-            
+
             days = UserService._normalize_code_days(code_info.DAYS, default=days)
             await RegCodeOperate.update_regcode_use_count(reg_code, 1)
 
@@ -763,17 +766,17 @@ class UserService:
             await UserOperate.update_user(user)
         else:
             await UserOperate.renew_user_expire_time(user, days)
-        
+
         # 如果用户被禁用，重新启用
         if not user.ACTIVE_STATUS:
             user.ACTIVE_STATUS = True
             await UserOperate.update_user(user)
-            
+
             # 同时启用 Emby 账户
             if user.EMBYID:
                 emby = get_emby_client()
                 await emby.set_user_enabled(user.EMBYID, True)
-        
+
         logger.info(f"用户续期成功: {user.USERNAME}, days={days}")
         if days <= 0:
             return True, "续期成功！有效期已设置为永久"
@@ -785,12 +788,12 @@ class UserService:
         try:
             user.ACTIVE_STATUS = False
             await UserOperate.update_user(user)
-            
+
             # 禁用 Emby 账户
             if user.EMBYID:
                 emby = get_emby_client()
                 await emby.set_user_enabled(user.EMBYID, False)
-            
+
             logger.info(f"用户已禁用: {user.USERNAME}, 原因: {reason}")
             return True, "用户已禁用"
         except Exception as e:
@@ -803,11 +806,11 @@ class UserService:
         try:
             user.ACTIVE_STATUS = True
             await UserOperate.update_user(user)
-            
+
             if user.EMBYID:
                 emby = get_emby_client()
                 await emby.set_user_enabled(user.EMBYID, True)
-            
+
             logger.info(f"用户已启用: {user.USERNAME}")
             return True, "用户已启用"
         except Exception as e:
@@ -831,6 +834,7 @@ class UserService:
             # 清理邀请关系（如果启用）：子节点自动晋升为新树根
             try:
                 from src.db.invite import InviteRelationOperate, InviteCodeOperate
+
                 await InviteRelationOperate.delete_relations_for_uid(user.UID)
                 await InviteCodeOperate.delete_for_inviter(user.UID)
             except Exception as exc:  # pragma: no cover - 邀请表缺失不应阻塞主删除
@@ -868,8 +872,8 @@ class UserService:
             except (json.JSONDecodeError, TypeError):
                 other_data = {}
             if isinstance(other_data, dict):
-                other_data.pop('emby_username', None)
-                user.OTHER = json.dumps(other_data) if other_data else ''
+                other_data.pop("emby_username", None)
+                user.OTHER = json.dumps(other_data) if other_data else ""
         await UserOperate.update_user(user)
 
         logger.info(f"已删除 Emby 账户: {user.USERNAME} (原 Emby ID: {old_emby_id})")
@@ -884,38 +888,38 @@ class UserService:
     ) -> Tuple[bool, str, Optional[str]]:
         """
         已登录用户统一使用注册码/续期码/白名单码
-        
+
         - 注册码(TYPE=1)：为无 Emby 账户的用户创建 Emby 账户
         - 续期码(TYPE=2)：续期
         - 白名单码(TYPE=3)：赋予白名单角色，如果没有 Emby 账户则自动创建
-        
+
         :return: (成功, 消息, 新Emby密码 或 None)
         """
         from src.db.regcode import RegCodeOperate, Type as RegCodeType
-        
+
         code_info = await RegCodeOperate.get_regcode_by_code(code_str)
         if not code_info:
             return False, "注册码/续期码无效", None
-        
+
         if not code_info.ACTIVE:
             return False, "注册码/续期码已停用", None
-        
+
         if code_info.USE_COUNT_LIMIT != -1 and code_info.USE_COUNT >= code_info.USE_COUNT_LIMIT:
             return False, "注册码/续期码已被使用完", None
-        
+
         # 检查有效期
         if code_info.VALIDITY_TIME != -1:
             expire_time = code_info.CREATED_TIME + code_info.VALIDITY_TIME * 3600
             if timestamp() > expire_time:
                 return False, "注册码/续期码已过期", None
-        
+
         code_type = code_info.TYPE
-        
+
         # ========== 续期码 ==========
         if code_type == RegCodeType.RENEW.value:
             success, msg = await UserService.renew_user(user, 30, code_str)
             return success, msg, None
-        
+
         # ========== 注册码 ==========
         if code_type == RegCodeType.REGISTER.value:
             if user.EMBYID:
@@ -925,7 +929,7 @@ class UserService:
             if not cap_ok:
                 return False, cap_msg, None
 
-            emby_username = (emby_username or '').strip()
+            emby_username = (emby_username or "").strip()
             if not emby_username:
                 return False, "使用注册码创建 Emby 账号时，请填写 Emby 用户名", None
 
@@ -939,16 +943,16 @@ class UserService:
             # 为已有系统账户的用户创建 Emby 账户
             emby = get_emby_client()
             days = UserService._normalize_code_days(code_info.DAYS, default=30)
-            
+
             try:
                 existing_emby = await emby.get_user_by_name(emby_username)
                 if existing_emby:
                     return False, "该 Emby 用户名已被占用", None
-                
-                emby_user = await emby.create_user(emby_username, emby_password or '')
+
+                emby_user = await emby.create_user(emby_username, emby_password or "")
                 if not emby_user:
                     return False, "创建 Emby 账户失败", None
-                
+
                 user.EMBYID = emby_user.id
                 user.ACTIVE_STATUS = True
                 if user.ROLE in (Role.ADMIN.value, Role.WHITE_LIST.value):
@@ -962,28 +966,28 @@ class UserService:
                         other_data = json.loads(user.OTHER)
                     except (json.JSONDecodeError, TypeError):
                         other_data = {}
-                other_data['emby_username'] = emby_username
+                other_data["emby_username"] = emby_username
                 user.OTHER = json.dumps(other_data)
                 await UserOperate.update_user(user)
-                
+
                 await RegCodeOperate.update_regcode_use_count(code_str, 1)
                 logger.info(f"注册码创建 Emby 账户成功: system={user.USERNAME}, emby={emby_username}")
                 return True, f"Emby 账户创建成功！有效期 {UserService._format_days_text(days)}", None
             except EmbyError as e:
                 logger.error(f"注册码创建 Emby 账户失败: {e}")
                 return False, f"Emby 服务器错误: {e}", None
-        
+
         # ========== 白名单码 ==========
         if code_type == RegCodeType.WHITELIST.value:
             created_emby_account = False
-            
+
             # 如果没有 Emby 账户，自动创建
             if not user.EMBYID:
                 cap_ok, cap_msg = await UserService.check_emby_user_capacity()
                 if not cap_ok:
                     return False, cap_msg, None
 
-                emby_username = (emby_username or '').strip()
+                emby_username = (emby_username or "").strip()
                 if not emby_username:
                     return False, "使用白名单码创建 Emby 账号时，请填写 Emby 用户名", None
 
@@ -995,16 +999,16 @@ class UserService:
                     return False, pwd_msg, None
 
                 emby = get_emby_client()
-                
+
                 try:
                     existing_emby = await emby.get_user_by_name(emby_username)
                     if existing_emby:
                         return False, "该 Emby 用户名已被占用", None
-                    
-                    emby_user = await emby.create_user(emby_username, emby_password or '')
+
+                    emby_user = await emby.create_user(emby_username, emby_password or "")
                     if not emby_user:
                         return False, "创建 Emby 账户失败", None
-                    
+
                     user.EMBYID = emby_user.id
                     created_emby_account = True
                     other_data = {}
@@ -1013,26 +1017,26 @@ class UserService:
                             other_data = json.loads(user.OTHER)
                         except (json.JSONDecodeError, TypeError):
                             other_data = {}
-                    other_data['emby_username'] = emby_username
+                    other_data["emby_username"] = emby_username
                     user.OTHER = json.dumps(other_data)
                 except EmbyError as e:
                     logger.error(f"白名单码创建 Emby 账户失败: {e}")
                     return False, f"Emby 服务器错误: {e}", None
-            
+
             # 赋予白名单角色 + 永久有效期
             user.ROLE = Role.WHITE_LIST.value
             user.ACTIVE_STATUS = True
             user.EXPIRED_AT = 253402214400  # 9999-12-31
             await UserOperate.update_user(user)
-            
+
             await RegCodeOperate.update_regcode_use_count(code_str, 1)
-            
+
             msg = "白名单授权成功！已获得永久有效期"
             if created_emby_account:
                 msg += "，Emby 账户已创建"
             logger.info(f"白名单码激活: {user.USERNAME}")
             return True, msg, None
-        
+
         return False, "未知的注册码/续期码类型", None
 
     @staticmethod
@@ -1104,9 +1108,7 @@ class UserService:
             return False, f"重置失败: {e}", None
 
     @staticmethod
-    async def change_password(
-        user: UserModel, old_password: str, new_password: str
-    ) -> Tuple[bool, str]:
+    async def change_password(user: UserModel, old_password: str, new_password: str) -> Tuple[bool, str]:
         """
         修改用户密码（同时修改系统密码和 Emby 密码）
 
@@ -1141,9 +1143,7 @@ class UserService:
             return False, f"修改密码失败: {e}"
 
     @staticmethod
-    async def change_system_password(
-        user: UserModel, old_password: str, new_password: str
-    ) -> Tuple[bool, str]:
+    async def change_system_password(user: UserModel, old_password: str, new_password: str) -> Tuple[bool, str]:
         """
         修改系统登录密码（不影响 Emby 密码）
 
@@ -1220,9 +1220,9 @@ class UserService:
             return None
         if not isinstance(data, dict):
             return None
-        value = data.get('telegram_username')
+        value = data.get("telegram_username")
         if isinstance(value, str) and value.strip():
-            return value.strip().lstrip('@')
+            return value.strip().lstrip("@")
         return None
 
     @staticmethod
@@ -1238,7 +1238,7 @@ class UserService:
         """
         if user is None:
             return False
-        normalized = (username or '').strip().lstrip('@') or None
+        normalized = (username or "").strip().lstrip("@") or None
 
         try:
             data = json.loads(user.OTHER) if user.OTHER else {}
@@ -1247,16 +1247,16 @@ class UserService:
         if not isinstance(data, dict):
             data = {}
 
-        current = data.get('telegram_username') or None
+        current = data.get("telegram_username") or None
         if (current or None) == (normalized or None):
             return False
 
         if normalized:
-            data['telegram_username'] = normalized
+            data["telegram_username"] = normalized
         else:
-            data.pop('telegram_username', None)
+            data.pop("telegram_username", None)
 
-        user.OTHER = json.dumps(data) if data else ''
+        user.OTHER = json.dumps(data) if data else ""
         await UserOperate.update_user(user)
         return True
 
@@ -1264,7 +1264,7 @@ class UserService:
     async def get_user_info(user: UserModel) -> dict:
         """获取用户详细信息"""
         from src.core.utils import format_expire_time, mask_email
-        
+
         # 角色名称映射
         role_name_map = {
             Role.ADMIN.value: "管理员",
@@ -1273,19 +1273,19 @@ class UserService:
             Role.UNRECOGNIZED.value: "未注册",
         }
         role_name = role_name_map.get(user.ROLE, "未知")
-        
+
         embay_username = None
         if user.OTHER:
             try:
                 other_data = json.loads(user.OTHER)
-                embay_username = other_data.get('emby_username')
+                embay_username = other_data.get("emby_username")
             except (json.JSONDecodeError, TypeError):
                 embay_username = None
 
         if not embay_username and user.EMBYID:
             embay_username = user.USERNAME
 
-        is_pending_emby = bool(getattr(user, 'PENDING_EMBY', False)) and not user.EMBYID
+        is_pending_emby = bool(getattr(user, "PENDING_EMBY", False)) and not user.EMBYID
         # 未绑定 Emby（无 EMBYID 或处于 pending）时，覆盖默认的 expire_status 文案，
         # 避免展示"已过期"/"剩余 x"误导，同时让前端可以靠这串直接判断渲染。
         if is_pending_emby or not user.EMBYID:
@@ -1313,7 +1313,7 @@ class UserService:
             "emby_username": embay_username,
             "emby_bound": emby_bound,
             "pending_emby": is_pending_emby,
-            "pending_emby_days": getattr(user, 'PENDING_EMBY_DAYS', None),
+            "pending_emby_days": getattr(user, "PENDING_EMBY_DAYS", None),
         }
 
         return info
@@ -1322,44 +1322,45 @@ class UserService:
     async def change_username(user: UserModel, new_username: str) -> Tuple[bool, str]:
         """
         修改用户名
-        
+
         同时修改 Emby 和本地用户名
         """
         if not user.EMBYID:
             return False, "用户没有关联的 Emby 账户"
-        
+
         emby = get_emby_client()
-        
+
         try:
             # 检查新用户名是否已存在
             existing = await emby.get_user_by_name(new_username)
             if existing and existing.id != user.EMBYID:
                 return False, "该用户名已被使用"
-            
+
             # 获取当前 Emby 用户信息
             emby_user = await emby.get_user(user.EMBYID)
             if not emby_user:
                 return False, "Emby 用户不存在"
-            
+
             # 更新 Emby 用户名
-            success = await emby.update_user(user.EMBYID, {'Name': new_username})
+            success = await emby.update_user(user.EMBYID, {"Name": new_username})
             if not success:
                 return False, "更新 Emby 用户名失败"
-            
+
             # 更新本地用户名
             old_username = user.USERNAME
             user.USERNAME = new_username
             import json
+
             other_data = {}
             if user.OTHER:
                 try:
                     other_data = json.loads(user.OTHER)
                 except (json.JSONDecodeError, TypeError):
                     other_data = {}
-            other_data['emby_username'] = new_username
+            other_data["emby_username"] = new_username
             user.OTHER = json.dumps(other_data)
             await UserOperate.update_user(user)
-            
+
             logger.info(f"用户名已修改: {old_username} -> {new_username}")
             return True, "用户名修改成功"
         except EmbyError as e:
@@ -1388,11 +1389,7 @@ class UserService:
             return False, f"操作失败: {e}"
 
     @staticmethod
-    async def create_whitelist_user(
-        telegram_id: int,
-        username: str,
-        email: Optional[str] = None
-    ) -> RegisterResponse:
+    async def create_whitelist_user(telegram_id: int, username: str, email: Optional[str] = None) -> RegisterResponse:
         """创建白名单用户（永久有效）"""
         cap_ok, cap_msg = await UserService.check_emby_user_capacity()
         if not cap_ok:
@@ -1402,23 +1399,24 @@ class UserService:
         existing_user = await UserOperate.get_user_by_telegram_id(telegram_id)
         if existing_user and existing_user.EMBYID:
             return RegisterResponse(RegisterResult.USER_EXISTS, "用户已存在")
-        
+
         emby = get_emby_client()
-        
+
         try:
             # 检查 Emby 用户名
             existing_emby = await emby.get_user_by_name(username)
             if existing_emby:
                 return RegisterResponse(RegisterResult.EMBY_EXISTS, "Emby 用户名已存在")
-            
+
             # 创建 Emby 用户
             from src.core.utils import generate_password
+
             password = generate_password(12)
             emby_user = await emby.create_user(username, password)
-            
+
             if not emby_user:
                 return RegisterResponse(RegisterResult.EMBY_ERROR, "创建 Emby 账户失败")
-            
+
             # 创建本地用户（永久有效）
             new_uid = await UserOperate.get_new_uid()
             now_ts = timestamp()
@@ -1435,16 +1433,15 @@ class UserService:
                 REGISTER_TIME=now_ts,
             )
             await UserOperate.add_user(user)
-            
+
             logger.info(f"白名单用户创建成功: {username}")
-            
+
             return RegisterResponse(
                 result=RegisterResult.SUCCESS,
                 message="白名单用户创建成功（永久有效）",
                 user=user,
-                emby_password=password
+                emby_password=password,
             )
         except EmbyError as e:
             logger.error(f"创建白名单用户失败: {e}")
             return RegisterResponse(RegisterResult.EMBY_ERROR, f"Emby 错误: {e}")
-

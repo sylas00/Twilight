@@ -4,6 +4,7 @@
 /admin - 管理面板（inline 按钮）
 支持用户管理、注册码、统计、Emby、广播等
 """
+
 import logging
 import time
 
@@ -11,9 +12,14 @@ from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 
 from src.bot.handlers.common import (
-    require_admin, require_private,
-    format_user_info, is_admin, safe_edit_message, answer_callback_safe,
-    back_button, close_button,
+    require_admin,
+    require_private,
+    format_user_info,
+    is_admin,
+    safe_edit_message,
+    answer_callback_safe,
+    back_button,
+    close_button,
 )
 from src.db.user import UserOperate, Role
 from src.db.regcode import RegCodeOperate
@@ -31,7 +37,7 @@ _ADMIN_STATE_TTL = 15 * 60
 
 def _set_admin_state(uid: int, state: dict):
     payload = dict(state)
-    payload['_ts'] = int(time.time())
+    payload["_ts"] = int(time.time())
     _admin_states[uid] = payload
 
 
@@ -40,13 +46,13 @@ def _get_admin_state(uid: int):
     if not state:
         return None
 
-    ts = int(state.get('_ts', 0))
+    ts = int(state.get("_ts", 0))
     if ts <= 0 or int(time.time()) - ts > _ADMIN_STATE_TTL:
         _admin_states.pop(uid, None)
         return None
 
     payload = dict(state)
-    payload.pop('_ts', None)
+    payload.pop("_ts", None)
     return payload
 
 
@@ -101,17 +107,19 @@ def register(bot):
         """用户管理面板"""
         query = update.callback_query
         await answer_callback_safe(query)
-        kb = InlineKeyboardMarkup([
+        kb = InlineKeyboardMarkup(
             [
-                InlineKeyboardButton("➕ 添加用户", callback_data="adm_adduser"),
-                InlineKeyboardButton("🔍 查询用户", callback_data="adm_queryuser"),
-            ],
-            [
-                InlineKeyboardButton("👥 用户列表", callback_data="adm_userlist:1"),
-                InlineKeyboardButton("🚫 禁用/解禁", callback_data="adm_banmenu"),
-            ],
-            [InlineKeyboardButton("🔙 管理面板", callback_data="panel_admin")],
-        ])
+                [
+                    InlineKeyboardButton("➕ 添加用户", callback_data="adm_adduser"),
+                    InlineKeyboardButton("🔍 查询用户", callback_data="adm_queryuser"),
+                ],
+                [
+                    InlineKeyboardButton("👥 用户列表", callback_data="adm_userlist:1"),
+                    InlineKeyboardButton("🚫 禁用/解禁", callback_data="adm_banmenu"),
+                ],
+                [InlineKeyboardButton("🔙 管理面板", callback_data="panel_admin")],
+            ]
+        )
         await safe_edit_message(query.message, "👥 **用户管理**\n\n请选择操作：", reply_markup=kb)
 
     @require_admin
@@ -151,10 +159,12 @@ def register(bot):
         if page < total_pages:
             nav.append(InlineKeyboardButton("➡️ 下一页", callback_data=f"adm_userlist:{page + 1}"))
 
-        kb = InlineKeyboardMarkup([
-            nav,
-            [InlineKeyboardButton("🔙 返回", callback_data="admin_users")],
-        ])
+        kb = InlineKeyboardMarkup(
+            [
+                nav,
+                [InlineKeyboardButton("🔙 返回", callback_data="admin_users")],
+            ]
+        )
         await safe_edit_message(query.message, "\n".join(lines), reply_markup=kb)
 
     @require_admin
@@ -165,7 +175,9 @@ def register(bot):
         uid = update.effective_user.id
         _set_admin_state(uid, {"action": "query_user"})
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("❌ 取消", callback_data="admin_users")]])
-        await safe_edit_message(query.message, "🔍 **查询用户**\n\n请发送用户名：\n💡 发送 /cancel 可取消", reply_markup=kb)
+        await safe_edit_message(
+            query.message, "🔍 **查询用户**\n\n请发送用户名：\n💡 发送 /cancel 可取消", reply_markup=kb
+        )
 
     @require_admin
     async def cb_adm_adduser(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -250,12 +262,14 @@ def register(bot):
             return
 
         elif action == "del_confirm":
-            kb = InlineKeyboardMarkup([
+            kb = InlineKeyboardMarkup(
                 [
-                    InlineKeyboardButton("⚠️ 确认删除", callback_data=f"adm_act:del:{username}"),
-                    InlineKeyboardButton("🔙 取消", callback_data=f"adm_userdetail:{username}"),
+                    [
+                        InlineKeyboardButton("⚠️ 确认删除", callback_data=f"adm_act:del:{username}"),
+                        InlineKeyboardButton("🔙 取消", callback_data=f"adm_userdetail:{username}"),
+                    ]
                 ]
-            ])
+            )
             await answer_callback_safe(query)
             await safe_edit_message(
                 query.message,
@@ -293,7 +307,9 @@ def register(bot):
         uid = update.effective_user.id
         _set_admin_state(uid, {"action": "renew_user", "username": username})
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("❌ 取消", callback_data=f"adm_userdetail:{username}")]])
-        await safe_edit_message(query.message, f"🔄 **续期 `{username}`**\n\n请发送天数：\n💡 发送 /cancel 可取消", reply_markup=kb)
+        await safe_edit_message(
+            query.message, f"🔄 **续期 `{username}`**\n\n请发送天数：\n💡 发送 /cancel 可取消", reply_markup=kb
+        )
 
     # ======================== 注册码管理 ========================
 
@@ -302,13 +318,15 @@ def register(bot):
         """注册码面板"""
         query = update.callback_query
         await answer_callback_safe(query)
-        kb = InlineKeyboardMarkup([
+        kb = InlineKeyboardMarkup(
             [
-                InlineKeyboardButton("🆕 生成注册码", callback_data="adm_regcode_gen"),
-                InlineKeyboardButton("📋 查看列表", callback_data="adm_regcode_list"),
-            ],
-            [InlineKeyboardButton("🔙 管理面板", callback_data="panel_admin")],
-        ])
+                [
+                    InlineKeyboardButton("🆕 生成注册码", callback_data="adm_regcode_gen"),
+                    InlineKeyboardButton("📋 查看列表", callback_data="adm_regcode_list"),
+                ],
+                [InlineKeyboardButton("🔙 管理面板", callback_data="panel_admin")],
+            ]
+        )
         await safe_edit_message(query.message, "🎫 **注册码管理**\n\n请选择操作：", reply_markup=kb)
 
     @require_admin
@@ -316,19 +334,21 @@ def register(bot):
         """生成注册码选择天数"""
         query = update.callback_query
         await answer_callback_safe(query)
-        kb = InlineKeyboardMarkup([
+        kb = InlineKeyboardMarkup(
             [
-                InlineKeyboardButton("7天", callback_data="adm_reggen:7:1"),
-                InlineKeyboardButton("15天", callback_data="adm_reggen:15:1"),
-                InlineKeyboardButton("30天", callback_data="adm_reggen:30:1"),
-            ],
-            [
-                InlineKeyboardButton("90天", callback_data="adm_reggen:90:1"),
-                InlineKeyboardButton("180天", callback_data="adm_reggen:180:1"),
-                InlineKeyboardButton("365天", callback_data="adm_reggen:365:1"),
-            ],
-            [InlineKeyboardButton("🔙 返回", callback_data="admin_regcode")],
-        ])
+                [
+                    InlineKeyboardButton("7天", callback_data="adm_reggen:7:1"),
+                    InlineKeyboardButton("15天", callback_data="adm_reggen:15:1"),
+                    InlineKeyboardButton("30天", callback_data="adm_reggen:30:1"),
+                ],
+                [
+                    InlineKeyboardButton("90天", callback_data="adm_reggen:90:1"),
+                    InlineKeyboardButton("180天", callback_data="adm_reggen:180:1"),
+                    InlineKeyboardButton("365天", callback_data="adm_reggen:365:1"),
+                ],
+                [InlineKeyboardButton("🔙 返回", callback_data="admin_regcode")],
+            ]
+        )
         await safe_edit_message(query.message, "🆕 **生成注册码**\n\n选择有效天数：", reply_markup=kb)
 
     @require_admin
@@ -348,10 +368,12 @@ def register(bot):
 
         days_text = "永久" if days <= 0 else f"{days}天"
         text = f"✅ **生成 {count} 个注册码** ({days_text})\n\n" + "\n".join(codes)
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔁 再生成", callback_data="adm_regcode_gen")],
-            [InlineKeyboardButton("🔙 返回", callback_data="admin_regcode")],
-        ])
+        kb = InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton("🔁 再生成", callback_data="adm_regcode_gen")],
+                [InlineKeyboardButton("🔙 返回", callback_data="admin_regcode")],
+            ]
+        )
         await safe_edit_message(query.message, text, reply_markup=kb)
 
     @require_admin
@@ -371,10 +393,12 @@ def register(bot):
             if len(codes) > 15:
                 lines.append(f"\n... 还有 {len(codes) - 15} 个")
             text = "\n".join(lines)
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🆕 生成", callback_data="adm_regcode_gen")],
-            [InlineKeyboardButton("🔙 返回", callback_data="admin_regcode")],
-        ])
+        kb = InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton("🆕 生成", callback_data="adm_regcode_gen")],
+                [InlineKeyboardButton("🔙 返回", callback_data="admin_regcode")],
+            ]
+        )
         await safe_edit_message(query.message, text, reply_markup=kb)
 
     # ======================== 统计 ========================
@@ -392,11 +416,7 @@ def register(bot):
 
         try:
             emby_status = await EmbyService.get_server_status()
-            emby_info = (
-                f"🎬 **Emby**\n"
-                f"• 状态: ✅ 在线\n"
-                f"• 版本: {emby_status.get('version', '未知')}"
-            )
+            emby_info = f"🎬 **Emby**\n" f"• 状态: ✅ 在线\n" f"• 版本: {emby_status.get('version', '未知')}"
         except Exception:
             emby_info = "🎬 **Emby**\n• 状态: ❌ 离线"
 
@@ -406,10 +426,12 @@ def register(bot):
             f"🎫 **注册码**: {len(all_codes)} (可用: {len(active_codes_list)})\n\n"
             f"{emby_info}"
         )
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔄 刷新", callback_data="admin_stats")],
-            [InlineKeyboardButton("🔙 管理面板", callback_data="panel_admin")],
-        ])
+        kb = InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton("🔄 刷新", callback_data="admin_stats")],
+                [InlineKeyboardButton("🔙 管理面板", callback_data="panel_admin")],
+            ]
+        )
         await safe_edit_message(query.message, text, reply_markup=kb)
 
     # ======================== Emby 管理 ========================
@@ -419,17 +441,19 @@ def register(bot):
         """Emby 管理面板"""
         query = update.callback_query
         await answer_callback_safe(query)
-        kb = InlineKeyboardMarkup([
+        kb = InlineKeyboardMarkup(
             [
-                InlineKeyboardButton("🔌 连接测试", callback_data="adm_emby_test"),
-                InlineKeyboardButton("📺 活跃会话", callback_data="adm_emby_sessions"),
-            ],
-            [
-                InlineKeyboardButton("👥 Emby 用户", callback_data="adm_emby_users"),
-                InlineKeyboardButton("🧹 清理孤儿", callback_data="adm_emby_cleanup"),
-            ],
-            [InlineKeyboardButton("🔙 管理面板", callback_data="panel_admin")],
-        ])
+                [
+                    InlineKeyboardButton("🔌 连接测试", callback_data="adm_emby_test"),
+                    InlineKeyboardButton("📺 活跃会话", callback_data="adm_emby_sessions"),
+                ],
+                [
+                    InlineKeyboardButton("👥 Emby 用户", callback_data="adm_emby_users"),
+                    InlineKeyboardButton("🧹 清理孤儿", callback_data="adm_emby_cleanup"),
+                ],
+                [InlineKeyboardButton("🔙 管理面板", callback_data="panel_admin")],
+            ]
+        )
         await safe_edit_message(query.message, "🎬 **Emby 管理**\n\n请选择操作：", reply_markup=kb)
 
     @require_admin
@@ -461,9 +485,9 @@ def register(bot):
             else:
                 lines = [f"📺 **活跃会话** ({len(sessions)} 个)\n"]
                 for s in sessions[:10]:
-                    name = s.get('user_name', '未知')
-                    dev = s.get('device_name', '?')
-                    np = s.get('now_playing', {})
+                    name = s.get("user_name", "未知")
+                    dev = s.get("device_name", "?")
+                    np = s.get("now_playing", {})
                     if np:
                         lines.append(f"• **{name}** @ {dev}\n  ▶️ {np.get('name', '?')}")
                     else:
@@ -471,10 +495,12 @@ def register(bot):
                 text = "\n".join(lines)
         except Exception as e:
             text = f"❌ 获取失败: {e}"
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔄 刷新", callback_data="adm_emby_sessions")],
-            [InlineKeyboardButton("🔙 返回", callback_data="admin_emby")],
-        ])
+        kb = InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton("🔄 刷新", callback_data="adm_emby_sessions")],
+                [InlineKeyboardButton("🔙 返回", callback_data="admin_emby")],
+            ]
+        )
         await safe_edit_message(query.message, text, reply_markup=kb)
 
     @require_admin
@@ -504,13 +530,19 @@ def register(bot):
         """清理确认"""
         query = update.callback_query
         await answer_callback_safe(query)
-        kb = InlineKeyboardMarkup([
+        kb = InlineKeyboardMarkup(
             [
-                InlineKeyboardButton("⚠️ 确认清理", callback_data="adm_emby_cleanup_confirm"),
-                InlineKeyboardButton("🔙 取消", callback_data="admin_emby"),
+                [
+                    InlineKeyboardButton("⚠️ 确认清理", callback_data="adm_emby_cleanup_confirm"),
+                    InlineKeyboardButton("🔙 取消", callback_data="admin_emby"),
+                ]
             ]
-        ])
-        await safe_edit_message(query.message, "🧹 **清理孤儿用户**\n\n将删除 Emby 中存在但系统中无记录的用户。\n确认执行？", reply_markup=kb)
+        )
+        await safe_edit_message(
+            query.message,
+            "🧹 **清理孤儿用户**\n\n将删除 Emby 中存在但系统中无记录的用户。\n确认执行？",
+            reply_markup=kb,
+        )
 
     @require_admin
     async def cb_adm_emby_cleanup_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -546,7 +578,9 @@ def register(bot):
         uid = update.effective_user.id
         _set_admin_state(uid, {"action": "broadcast"})
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("❌ 取消", callback_data="panel_admin")]])
-        await safe_edit_message(query.message, "📢 **广播消息**\n\n请发送要广播的内容：\n💡 发送 /cancel 可取消", reply_markup=kb)
+        await safe_edit_message(
+            query.message, "📢 **广播消息**\n\n请发送要广播的内容：\n💡 发送 /cancel 可取消", reply_markup=kb
+        )
 
     # ======================== 文本消息路由（admin 状态机）========================
 
@@ -571,7 +605,9 @@ def register(bot):
         if action == "query_user":
             user = await UserOperate.get_user_by_username(text)
             if not user:
-                await update.message.reply_text(f"❌ 用户 `{text}` 不存在\n请重新输入，或发送 /cancel 取消", parse_mode="Markdown")
+                await update.message.reply_text(
+                    f"❌ 用户 `{text}` 不存在\n请重新输入，或发送 /cancel 取消", parse_mode="Markdown"
+                )
                 return
             info = f"📋 **用户详情**\n\n{format_user_info(user)}"
             kb = _user_action_kb(user)
@@ -581,7 +617,9 @@ def register(bot):
         elif action == "add_user":
             parts = text.split()
             if not parts:
-                await update.message.reply_text("❌ 输入格式错误，请发送: `用户名 天数`\n示例: `test 30`", parse_mode="Markdown")
+                await update.message.reply_text(
+                    "❌ 输入格式错误，请发送: `用户名 天数`\n示例: `test 30`", parse_mode="Markdown"
+                )
                 return
             username = parts[0]
             try:
@@ -595,9 +633,7 @@ def register(bot):
             if await UserOperate.get_user_by_username(username):
                 await update.message.reply_text("❌ 用户名已存在，请换一个用户名")
                 return
-            resp = await UserService._create_emby_user(
-                telegram_id=None, username=username, email=None, days=days
-            )
+            resp = await UserService._create_emby_user(telegram_id=None, username=username, email=None, days=days)
             if resp.result == RegisterResult.SUCCESS:
                 await update.message.reply_text(
                     f"✅ **用户创建成功**\n\n"
@@ -613,7 +649,9 @@ def register(bot):
         elif action == "ban_user":
             user = await UserOperate.get_user_by_username(text)
             if not user:
-                await update.message.reply_text(f"❌ 用户 `{text}` 不存在\n请重新输入，或发送 /cancel 取消", parse_mode="Markdown")
+                await update.message.reply_text(
+                    f"❌ 用户 `{text}` 不存在\n请重新输入，或发送 /cancel 取消", parse_mode="Markdown"
+                )
                 return
             if user.ACTIVE_STATUS:
                 if user.EMBYID:
@@ -662,6 +700,7 @@ def register(bot):
         elif action == "broadcast":
             from src.db.user import UsersSessionFactory, UserModel
             from sqlalchemy import select
+
             async with UsersSessionFactory() as session:
                 result = await session.execute(
                     select(UserModel.TELEGRAM_ID).where(
@@ -705,9 +744,7 @@ def register(bot):
         if await UserOperate.get_user_by_username(username):
             await update.message.reply_text("❌ 用户名已存在")
             return
-        resp = await UserService._create_emby_user(
-            telegram_id=None, username=username, email=None, days=days
-        )
+        resp = await UserService._create_emby_user(telegram_id=None, username=username, email=None, days=days)
         if resp.result == RegisterResult.SUCCESS:
             await update.message.reply_text(
                 f"✅ 创建成功\n👤 `{username}`\n🔑 `{resp.emby_password}`\n⏰ {days}天",
@@ -720,7 +757,9 @@ def register(bot):
     @require_admin
     async def cmd_regcode(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not context.args:
-            await update.message.reply_text("用法: `/regcode new [天数] [数量]` | `/regcode list`", parse_mode="Markdown")
+            await update.message.reply_text(
+                "用法: `/regcode new [天数] [数量]` | `/regcode list`", parse_mode="Markdown"
+            )
             return
         action = context.args[0].lower()
         if action == "new":
@@ -754,6 +793,7 @@ def register(bot):
         _admin_states.pop(update.effective_user.id, None)  # clear
         from src.db.user import UsersSessionFactory, UserModel
         from sqlalchemy import select
+
         async with UsersSessionFactory() as session:
             r = await session.execute(
                 select(UserModel.TELEGRAM_ID).where(UserModel.TELEGRAM_ID != None, UserModel.ACTIVE_STATUS == True)
@@ -838,26 +878,31 @@ def register(bot):
     app.add_handler(CallbackQueryHandler(lambda u, c: answer_callback_safe(u.callback_query), pattern="^noop$"))
 
     # 文本消息（admin 状态机）- 优先级较低
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, handle_admin_text), group=1)
+    app.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, handle_admin_text), group=1
+    )
 
 
 # ======================== 辅助函数 ========================
 
+
 def _admin_menu_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
+    return InlineKeyboardMarkup(
         [
-            InlineKeyboardButton("👥 用户管理", callback_data="admin_users"),
-            InlineKeyboardButton("🎫 注册码", callback_data="admin_regcode"),
-        ],
-        [
-            InlineKeyboardButton("📊 统计", callback_data="admin_stats"),
-            InlineKeyboardButton("🎬 Emby", callback_data="admin_emby"),
-        ],
-        [
-            InlineKeyboardButton("📢 广播", callback_data="admin_broadcast"),
-        ],
-        [InlineKeyboardButton("♻️ 主菜单", callback_data="back_start")],
-    ])
+            [
+                InlineKeyboardButton("👥 用户管理", callback_data="admin_users"),
+                InlineKeyboardButton("🎫 注册码", callback_data="admin_regcode"),
+            ],
+            [
+                InlineKeyboardButton("📊 统计", callback_data="admin_stats"),
+                InlineKeyboardButton("🎬 Emby", callback_data="admin_emby"),
+            ],
+            [
+                InlineKeyboardButton("📢 广播", callback_data="admin_broadcast"),
+            ],
+            [InlineKeyboardButton("♻️ 主菜单", callback_data="back_start")],
+        ]
+    )
 
 
 def _user_action_kb(user) -> InlineKeyboardMarkup:
@@ -868,10 +913,12 @@ def _user_action_kb(user) -> InlineKeyboardMarkup:
         buttons.append([InlineKeyboardButton("🚫 禁用", callback_data=f"adm_act:ban:{username}")])
     else:
         buttons.append([InlineKeyboardButton("✅ 解禁", callback_data=f"adm_act:unban:{username}")])
-    buttons.append([
-        InlineKeyboardButton("🔄 续期", callback_data=f"adm_renew:{username}"),
-        InlineKeyboardButton("🗑️ 删除", callback_data=f"adm_act:del_confirm:{username}"),
-    ])
+    buttons.append(
+        [
+            InlineKeyboardButton("🔄 续期", callback_data=f"adm_renew:{username}"),
+            InlineKeyboardButton("🗑️ 删除", callback_data=f"adm_act:del_confirm:{username}"),
+        ]
+    )
     buttons.append([InlineKeyboardButton("🔙 用户管理", callback_data="admin_users")])
     return InlineKeyboardMarkup(buttons)
 

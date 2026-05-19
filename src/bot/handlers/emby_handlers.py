@@ -6,14 +6,22 @@ Emby 服务 + Inline 面板处理器
 
 注意：密码重置等敏感操作已移至网页端；线路/服务地址信息不在 TG Bot 中展示，请前往网页端查看。
 """
+
 import logging
 
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes, CommandHandler, CallbackQueryHandler
 
 from src.bot.handlers.common import (
-    require_registered, require_subscribe, require_admin, require_private,
-    require_panel, safe_edit_message, answer_callback_safe, back_button, close_button,
+    require_registered,
+    require_subscribe,
+    require_admin,
+    require_private,
+    require_panel,
+    safe_edit_message,
+    answer_callback_safe,
+    back_button,
+    close_button,
 )
 from src.db.user import UserOperate, Role
 from src.services.emby_service import EmbyService
@@ -61,13 +69,14 @@ def register(bot):
         """重置密码 - 引导到网页端"""
         query = update.callback_query
         await answer_callback_safe(query)
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔙 返回", callback_data="panel_emby")],
-        ])
+        kb = InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton("🔙 返回", callback_data="panel_emby")],
+            ]
+        )
         await safe_edit_message(
             query.message,
-            "🔒 **密码重置已移至网页端**\n\n"
-            "出于安全考虑，密码重置等敏感操作请在网页端「个人设置」中进行。",
+            "🔒 **密码重置已移至网页端**\n\n" "出于安全考虑，密码重置等敏感操作请在网页端「个人设置」中进行。",
             reply_markup=kb,
         )
 
@@ -96,10 +105,12 @@ def register(bot):
                 f"• 次数: {stats['today']['play_count']} 次"
             )
 
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔄 刷新", callback_data="emby_playinfo")],
-            [InlineKeyboardButton("🔙 返回", callback_data="panel_emby")],
-        ])
+        kb = InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton("🔄 刷新", callback_data="emby_playinfo")],
+                [InlineKeyboardButton("🔙 返回", callback_data="panel_emby")],
+            ]
+        )
         await safe_edit_message(query.message, text, reply_markup=kb)
 
     # ======================== 传统命令（兼容） ========================
@@ -128,8 +139,7 @@ def register(bot):
     async def cmd_resetpwd(update: Update, context: ContextTypes.DEFAULT_TYPE, user=None):
         """重置密码 - 引导到网页端"""
         await update.message.reply_text(
-            "\ud83d\udd12 **密码重置已移至网页端**\n\n"
-            "出于安全考虑，请在网页端「个人设置」中进行密码重置。",
+            "\ud83d\udd12 **密码重置已移至网页端**\n\n" "出于安全考虑，请在网页端「个人设置」中进行密码重置。",
             parse_mode="Markdown",
         )
 
@@ -161,9 +171,9 @@ def register(bot):
                 return
             lines = [f"📺 **活跃会话** ({len(sessions)} 个)\n"]
             for s in sessions[:10]:
-                name = s.get('user_name', '未知')
-                dev = s.get('device_name', '?')
-                np = s.get('now_playing', {})
+                name = s.get("user_name", "未知")
+                dev = s.get("device_name", "?")
+                np = s.get("now_playing", {})
                 if np:
                     lines.append(f"• **{name}** @ {dev}\n  ▶️ {np.get('name', '?')}")
                 else:
@@ -206,12 +216,13 @@ def register(bot):
 
 # ======================== 辅助函数 ========================
 
+
 def _emby_menu_kb() -> InlineKeyboardMarkup:
     """Emby 面板键盘（不再展示服务器线路，请在网页端查看）"""
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📊 播放统计", callback_data="emby_playinfo")],
-        [InlineKeyboardButton("🔒 密码说明", callback_data="emby_resetpwd")],
-        [InlineKeyboardButton("♻️ 主菜单", callback_data="back_start")],
-    ])
-
-
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("📊 播放统计", callback_data="emby_playinfo")],
+            [InlineKeyboardButton("🔒 密码说明", callback_data="emby_resetpwd")],
+            [InlineKeyboardButton("♻️ 主菜单", callback_data="back_start")],
+        ]
+    )

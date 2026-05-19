@@ -22,8 +22,7 @@ Twilight 当前主前端位于 `webui/`，技术栈为 Next.js + TypeScript + Ta
 
 ```bash
 cd webui
-pnpm install
-# 或 npm install
+pnpm install --frozen-lockfile
 ```
 
 ### 2) 配置环境变量
@@ -39,7 +38,6 @@ NEXT_PUBLIC_SITE_NAME=Twilight
 
 ```bash
 pnpm dev
-# 或 npm run dev
 ```
 
 默认访问：`http://localhost:3000`
@@ -65,12 +63,7 @@ pnpm build
 pnpm start
 ```
 
-若使用 npm：
-
-```bash
-npm run build
-npm run start
-```
+本项目只维护 `pnpm-lock.yaml`，不要混用 npm/yarn 生成另一套 lockfile。
 
 ## 常见问题
 

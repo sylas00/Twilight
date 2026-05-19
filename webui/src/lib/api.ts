@@ -1,5 +1,5 @@
 // 后端 API 地址
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000";
+const API_BASE = (process.env.NEXT_PUBLIC_API_URL || "").replace(/\/$/, "");
 
 interface ApiResponse<T = unknown> {
   success: boolean;
@@ -798,6 +798,55 @@ class ApiClient {
     }>("/admin/users/bulk-expire", {
       method: "POST",
       body: JSON.stringify({ ...payload, confirm: "BULK_EXPIRE_OK" }),
+    });
+  }
+
+  /** 按当前筛选或指定 UID 批量启用已禁用账号。 */
+  async adminBulkEnableDisabledUsers(payload: {
+    uids?: number[];
+    filter?: {
+      role?: number;
+      active?: boolean;
+      emby?: "bound" | "unbound";
+      search?: string;
+    };
+    include_admin?: boolean;
+    include_whitelist?: boolean;
+  }) {
+    return this.request<{
+      matched: number;
+      eligible: number;
+      enabled: number;
+      failed: Array<{ uid: number; username?: string | null; reason: string }>;
+      skipped: Array<{ uid: number; reason: string }>;
+      skipped_admins: number;
+      skipped_whitelist: number;
+      skipped_unrecognized: number;
+      skipped_active: number;
+      enabled_users: Array<{ uid: number; username?: string | null }>;
+    }>("/admin/users/bulk-enable-disabled", {
+      method: "POST",
+      body: JSON.stringify({ ...payload, confirm: "BULK_ENABLE_DISABLED_OK" }),
+    });
+  }
+
+  /** 重新校验并启用已经回到 Telegram 群聊的禁用用户。 */
+  async enableRejoinedTelegramUsers(maxPerRun = 500) {
+    return this.request<{
+      scanned: number;
+      valid_telegram_users: number;
+      invalid_telegram_id: number;
+      candidates: number;
+      eligible: number;
+      enabled: number;
+      failed: Array<{ uid: number; username?: string | null; reason: string }>;
+      skipped: Array<{ uid: number; username?: string | null; reason: string }>;
+      enabled_users: Array<{ uid: number; username?: string | null; telegram_id: number }>;
+      max_per_run: number;
+      limited: boolean;
+    }>("/admin/telegram/rejoined-users/enable", {
+      method: "POST",
+      body: JSON.stringify({ confirm: "ENABLE_REJOINED_OK", max_per_run: maxPerRun }),
     });
   }
 
@@ -1884,4 +1933,3 @@ export interface SigninHistoryRecord {
   streak: number;
   created_at: number;
 }
-

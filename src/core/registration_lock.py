@@ -3,6 +3,7 @@
 
 为高并发注册场景提供分布式锁和短期缓存支持，防止重复用户名/Telegram 注册、用户数超限
 """
+
 import asyncio
 import logging
 import time
@@ -65,8 +66,7 @@ async def release_lock(key: str, token: str) -> None:
     if redis_client is not None:
         try:
             script = (
-                "if redis.call('get', KEYS[1]) == ARGV[1] then "
-                "return redis.call('del', KEYS[1]) else return 0 end"
+                "if redis.call('get', KEYS[1]) == ARGV[1] then " "return redis.call('del', KEYS[1]) else return 0 end"
             )
             await redis_client.eval(script, 1, key, token)
         except Exception as exc:  # pragma: no cover

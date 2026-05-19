@@ -15,6 +15,7 @@
     ``asyncio.run_coroutine_threadsafe`` 投递到这个独立 loop 上执行，
     完全脱离任何请求的生命周期。
 """
+
 from __future__ import annotations
 
 import asyncio

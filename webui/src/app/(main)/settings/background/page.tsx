@@ -54,6 +54,15 @@ const gradientPresets = [
   },
 ];
 
+function normalizeBgImage(raw: string): string {
+  const value = (raw || "").trim();
+  if (!value) return "";
+  if (/^(url|linear-gradient|radial-gradient|conic-gradient|repeating-|image-set)\s*\(/i.test(value)) {
+    return value;
+  }
+  return `url("${value.replace(/"/g, '\\"')}")`;
+}
+
 export default function BackgroundSettingsPage() {
   const { user } = useAuthStore();
   const { toast } = useToast();
@@ -65,6 +74,16 @@ export default function BackgroundSettingsPage() {
   const [darkBgImage, setDarkBgImage] = useState("");
   const [lightPreview, setLightPreview] = useState("");
   const [darkPreview, setDarkPreview] = useState("");
+
+  const updatePreview = useCallback((css: string, img: string, type: "light" | "dark") => {
+    const combined = normalizeBgImage(img) || css;
+
+    if (type === "light") {
+      setLightPreview(combined);
+    } else {
+      setDarkPreview(combined);
+    }
+  }, []);
 
   const loadBackgroundResource = useCallback(async () => {
     if (!user?.uid) return true;
@@ -79,32 +98,13 @@ export default function BackgroundSettingsPage() {
       updatePreview(config.darkBg || "", config.darkBgImage || "", "dark");
     }
     return true;
-  }, [user?.uid]);
+  }, [user?.uid, updatePreview]);
 
   const {
     isLoading: pageLoading,
     error,
     execute: loadBackgroundConfig,
   } = useAsyncResource(loadBackgroundResource, { immediate: true });
-
-  const normalizeBgImage = (raw: string): string => {
-    const value = (raw || "").trim();
-    if (!value) return "";
-    if (/^(url|linear-gradient|radial-gradient|conic-gradient|repeating-|image-set)\s*\(/i.test(value)) {
-      return value;
-    }
-    return `url("${value.replace(/"/g, '\\"')}")`;
-  };
-
-  const updatePreview = (css: string, img: string, type: "light" | "dark") => {
-    const combined = normalizeBgImage(img) || css;
-
-    if (type === "light") {
-      setLightPreview(combined);
-    } else {
-      setDarkPreview(combined);
-    }
-  };
 
   const handleLightBgChange = (value: string) => {
     setLightBg(value);

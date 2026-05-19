@@ -3,6 +3,7 @@
 
 存储用户播放记录及日常统计数据
 """
+
 import time
 from typing import Optional, List
 from sqlalchemy import select, func, String, Integer, Boolean, desc
@@ -19,6 +20,7 @@ class PlaybackDatabaseModel(AsyncAttrs, DeclarativeBase):
 
 class PlaybackModel(PlaybackDatabaseModel):
     """播放记录"""
+
     __tablename__ = "playback"
     ID: Mapped[int] = mapped_column(Integer, primary_key=True, index=True, autoincrement=True)
     UID: Mapped[int] = mapped_column(Integer, index=True, nullable=False)  # 本地用户 UID
@@ -41,6 +43,7 @@ class PlaybackModel(PlaybackDatabaseModel):
 
 class DailyStatsModel(PlaybackDatabaseModel):
     """每日统计"""
+
     __tablename__ = "daily_stats"
     ID: Mapped[int] = mapped_column(Integer, primary_key=True, index=True, autoincrement=True)
     DATE: Mapped[str] = mapped_column(String, index=True, nullable=False)  # 日期 YYYY-MM-DD
@@ -58,34 +61,30 @@ PlaybackSessionFactory = async_sessionmaker(bind=ENGINE, expire_on_commit=False)
 
 class PlaybackOperate:
     """播放记录操作"""
-    
+
     @staticmethod
     async def add_playback(record: PlaybackModel) -> None:
         """添加播放记录"""
         async with PlaybackSessionFactory() as session:
             async with session.begin():
                 session.add(record)
-    
+
     @staticmethod
     async def update_playback(record_id: int, **kwargs) -> bool:
         """更新播放记录"""
         from sqlalchemy import update
+
         async with PlaybackSessionFactory() as session:
             async with session.begin():
-                await session.execute(
-                    update(PlaybackModel).where(PlaybackModel.ID == record_id).values(**kwargs)
-                )
+                await session.execute(update(PlaybackModel).where(PlaybackModel.ID == record_id).values(**kwargs))
                 return True
-    
+
     @staticmethod
     async def get_user_playback(uid: int, limit: int = 50) -> List[PlaybackModel]:
         """获取用户播放记录"""
         async with PlaybackSessionFactory() as session:
             result = await session.execute(
-                select(PlaybackModel)
-                .filter_by(UID=uid)
-                .order_by(desc(PlaybackModel.START_TIME))
-                .limit(limit)
+                select(PlaybackModel).filter_by(UID=uid).order_by(desc(PlaybackModel.START_TIME)).limit(limit)
             )
             return list(result.scalars().all())
 
@@ -93,9 +92,7 @@ class PlaybackOperate:
     async def get_user_last_play_time(uid: int) -> Optional[int]:
         """获取用户最后一次播放时间戳"""
         async with PlaybackSessionFactory() as session:
-            result = await session.execute(
-                select(func.max(PlaybackModel.START_TIME)).filter_by(UID=uid)
-            )
+            result = await session.execute(select(func.max(PlaybackModel.START_TIME)).filter_by(UID=uid))
             return result.scalar_one_or_none()
 
     @staticmethod
@@ -109,42 +106,35 @@ class PlaybackOperate:
                 .limit(1)
             )
             return result.scalar_one_or_none()
-    
+
     @staticmethod
     async def get_user_total_duration(uid: int) -> int:
         """获取用户总播放时长"""
         async with PlaybackSessionFactory() as session:
-            result = await session.execute(
-                select(func.sum(PlaybackModel.DURATION))
-                .filter_by(UID=uid)
-            )
+            result = await session.execute(select(func.sum(PlaybackModel.DURATION)).filter_by(UID=uid))
             return result.scalar_one() or 0
-    
+
     @staticmethod
     async def get_user_play_count(uid: int) -> int:
         """获取用户播放次数"""
         async with PlaybackSessionFactory() as session:
-            result = await session.execute(
-                select(func.count())
-                .select_from(PlaybackModel)
-                .filter_by(UID=uid)
-            )
+            result = await session.execute(select(func.count()).select_from(PlaybackModel).filter_by(UID=uid))
             return result.scalar_one() or 0
-    
+
+
 class DailyStatsOperate:
     """每日统计操作"""
-    
+
     @staticmethod
     async def update_daily_stats(date: str, uid: int, play_count: int, duration: int, items: int) -> None:
         """更新每日统计"""
         from sqlalchemy import update
+
         async with PlaybackSessionFactory() as session:
             # 检查是否存在
-            result = await session.execute(
-                select(DailyStatsModel).filter_by(DATE=date, UID=uid)
-            )
+            result = await session.execute(select(DailyStatsModel).filter_by(DATE=date, UID=uid))
             existing = result.scalar_one_or_none()
-            
+
             if existing:
                 async with session.begin():
                     await session.execute(
@@ -153,16 +143,13 @@ class DailyStatsOperate:
                         .values(
                             PLAY_COUNT=DailyStatsModel.PLAY_COUNT + play_count,
                             PLAY_DURATION=DailyStatsModel.PLAY_DURATION + duration,
-                            UNIQUE_ITEMS=items
+                            UNIQUE_ITEMS=items,
                         )
                     )
             else:
                 async with session.begin():
-                    session.add(DailyStatsModel(
-                        DATE=date,
-                        UID=uid,
-                        PLAY_COUNT=play_count,
-                        PLAY_DURATION=duration,
-                        UNIQUE_ITEMS=items
-                    ))
-    
+                    session.add(
+                        DailyStatsModel(
+                            DATE=date, UID=uid, PLAY_COUNT=play_count, PLAY_DURATION=duration, UNIQUE_ITEMS=items
+                        )
+                    )

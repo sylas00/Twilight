@@ -88,6 +88,15 @@ const gradientPresets = [
   },
 ];
 
+function normalizeBgImage(raw: string): string {
+  const value = (raw || "").trim();
+  if (!value) return "";
+  if (/^(url|linear-gradient|radial-gradient|conic-gradient|repeating-|image-set)\s*\(/i.test(value)) {
+    return value;
+  }
+  return `url("${value.replace(/"/g, '\\"')}")`;
+}
+
 export default function AppearanceSettingsPage() {
   const { user } = useAuthStore();
   const { toast } = useToast();
@@ -122,6 +131,16 @@ export default function AppearanceSettingsPage() {
   // 分发标签页
   const [activeTab, setActiveTab] = useState<"background" | "avatar">("background");
 
+  const updatePreview = useCallback((css: string, img: string, type: "light" | "dark") => {
+    const combined = normalizeBgImage(img) || css;
+
+    if (type === "light") {
+      setLightPreview(combined);
+    } else {
+      setDarkPreview(combined);
+    }
+  }, []);
+
   const loadAppearanceResource = useCallback(async () => {
     if (!user?.uid) return true;
 
@@ -153,33 +172,13 @@ export default function AppearanceSettingsPage() {
     }
 
     return true;
-  }, [user?.uid]);
+  }, [user?.uid, updatePreview]);
 
   const {
     isLoading: loading,
     error,
     execute: loadAppearanceConfig,
   } = useAsyncResource(loadAppearanceResource, { immediate: true });
-
-  // 把可能是裸 URL 的图片值规范化成合法的 CSS background-image 值
-  const normalizeBgImage = (raw: string): string => {
-    const value = (raw || "").trim();
-    if (!value) return "";
-    if (/^(url|linear-gradient|radial-gradient|conic-gradient|repeating-|image-set)\s*\(/i.test(value)) {
-      return value;
-    }
-    return `url("${value.replace(/"/g, '\\"')}")`;
-  };
-
-  const updatePreview = (css: string, img: string, type: "light" | "dark") => {
-    const combined = normalizeBgImage(img) || css;
-
-    if (type === "light") {
-      setLightPreview(combined);
-    } else {
-      setDarkPreview(combined);
-    }
-  };
 
   const handleBgChange = (field: keyof BackgroundConfig, value: string) => {
     const newConfig = { ...bgConfig, [field]: value };

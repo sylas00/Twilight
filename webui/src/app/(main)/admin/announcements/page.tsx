@@ -315,7 +315,7 @@ export default function AdminAnnouncementsPage() {
             <Megaphone className="h-10 w-10 mx-auto text-muted-foreground mb-2 opacity-40" />
             <p className="font-medium">暂无公告</p>
             <p className="text-xs text-muted-foreground mt-1">
-              点击右上角"新建公告"发布第一条公告
+              点击右上角“新建公告”发布第一条公告
             </p>
           </CardContent>
         </Card>

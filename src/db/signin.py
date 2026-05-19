@@ -3,6 +3,7 @@
 
 存储用户签到记录与积分余额。积分仅装饰用途，不影响系统权限。
 """
+
 import time
 from typing import Optional, List
 
@@ -19,6 +20,7 @@ class SigninDatabaseModel(AsyncAttrs, DeclarativeBase):
 
 class UserPointsModel(SigninDatabaseModel):
     """用户积分余额"""
+
     __tablename__ = "user_points"
     UID: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     CURRENT_POINTS: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -31,6 +33,7 @@ class UserPointsModel(SigninDatabaseModel):
 
 class SigninRecordModel(SigninDatabaseModel):
     """签到记录"""
+
     __tablename__ = "signin_record"
     ID: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     UID: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
@@ -50,29 +53,20 @@ class SigninOperate:
     @staticmethod
     async def get_user_points(uid: int) -> Optional[UserPointsModel]:
         async with SigninSessionFactory() as session:
-            scalar = await session.execute(
-                select(UserPointsModel).filter_by(UID=uid).limit(1)
-            )
+            scalar = await session.execute(select(UserPointsModel).filter_by(UID=uid).limit(1))
             return scalar.scalar_one_or_none()
 
     @staticmethod
     async def get_today_record(uid: int, date_str: str) -> Optional[SigninRecordModel]:
         async with SigninSessionFactory() as session:
-            scalar = await session.execute(
-                select(SigninRecordModel)
-                .filter_by(UID=uid, SIGNIN_DATE=date_str)
-                .limit(1)
-            )
+            scalar = await session.execute(select(SigninRecordModel).filter_by(UID=uid, SIGNIN_DATE=date_str).limit(1))
             return scalar.scalar_one_or_none()
 
     @staticmethod
     async def list_history(uid: int, limit: int = 30) -> List[SigninRecordModel]:
         async with SigninSessionFactory() as session:
             result = await session.execute(
-                select(SigninRecordModel)
-                .filter_by(UID=uid)
-                .order_by(desc(SigninRecordModel.SIGNIN_DATE))
-                .limit(limit)
+                select(SigninRecordModel).filter_by(UID=uid).order_by(desc(SigninRecordModel.SIGNIN_DATE)).limit(limit)
             )
             return list(result.scalars().all())
 
@@ -110,18 +104,18 @@ class SigninOperate:
                     points.LAST_SIGNIN_DATE = date_str
                     points.UPDATED_AT = now
 
-                session.add(SigninRecordModel(
-                    UID=uid,
-                    SIGNIN_DATE=date_str,
-                    DAILY_POINTS=daily_points,
-                    BONUS_POINTS=bonus_points,
-                    STREAK_AT_TIME=new_streak,
-                    CREATED_AT=now,
-                ))
+                session.add(
+                    SigninRecordModel(
+                        UID=uid,
+                        SIGNIN_DATE=date_str,
+                        DAILY_POINTS=daily_points,
+                        BONUS_POINTS=bonus_points,
+                        STREAK_AT_TIME=new_streak,
+                        CREATED_AT=now,
+                    )
+                )
             # session.begin() commit 后再次读取，避免分离对象访问
-            scalar = await session.execute(
-                select(UserPointsModel).filter_by(UID=uid).limit(1)
-            )
+            scalar = await session.execute(select(UserPointsModel).filter_by(UID=uid).limit(1))
             refreshed = scalar.scalar_one_or_none()
             return refreshed or points
 

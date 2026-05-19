@@ -4,11 +4,18 @@
 公告由管理员在面板创建/编辑，未登录用户也可读取（用于登录页等场景）。
 支持多条同时存在，按置顶 > 发布时间倒序排列。
 """
+
 import time
 from typing import Optional, List
 
 from sqlalchemy import (
-    select, update, delete, func, String, Integer, Boolean,
+    select,
+    update,
+    delete,
+    func,
+    String,
+    Integer,
+    Boolean,
 )
 from sqlalchemy.ext.asyncio import AsyncAttrs
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -21,55 +28,51 @@ class AnnouncementsDatabaseModel(AsyncAttrs, DeclarativeBase):
 
 
 class AnnouncementModel(AnnouncementsDatabaseModel):
-    __tablename__ = 'announcements'
+    __tablename__ = "announcements"
 
     ID: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    TITLE: Mapped[Optional[str]] = mapped_column(String, default='', nullable=True)
-    CONTENT: Mapped[str] = mapped_column(String, default='', nullable=False)
+    TITLE: Mapped[Optional[str]] = mapped_column(String, default="", nullable=True)
+    CONTENT: Mapped[str] = mapped_column(String, default="", nullable=False)
     # 级别：info / notice / warning / critical
-    LEVEL: Mapped[str] = mapped_column(String(16), default='info', nullable=False, index=True)
+    LEVEL: Mapped[str] = mapped_column(String(16), default="info", nullable=False, index=True)
     # 渲染方式：plain / markdown / bbcode
-    RENDER_MODE: Mapped[str] = mapped_column(String(16), default='plain', nullable=False)
+    RENDER_MODE: Mapped[str] = mapped_column(String(16), default="plain", nullable=False)
     PINNED: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
     VISIBLE: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
     # -1 表示永不过期
     EXPIRES_AT: Mapped[int] = mapped_column(Integer, default=-1, nullable=False)
-    CREATED_AT: Mapped[int] = mapped_column(
-        Integer, default=lambda: int(time.time()), nullable=False, index=True
-    )
-    UPDATED_AT: Mapped[int] = mapped_column(
-        Integer, default=lambda: int(time.time()), nullable=False
-    )
+    CREATED_AT: Mapped[int] = mapped_column(Integer, default=lambda: int(time.time()), nullable=False, index=True)
+    UPDATED_AT: Mapped[int] = mapped_column(Integer, default=lambda: int(time.time()), nullable=False)
     CREATED_BY_UID: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
 
 _, AnnouncementsSessionFactory = init_async_db("announcements", AnnouncementsDatabaseModel)
 
 
-ALLOWED_LEVELS = {'info', 'notice', 'warning', 'critical'}
-ALLOWED_RENDER_MODES = {'plain', 'markdown', 'bbcode'}
+ALLOWED_LEVELS = {"info", "notice", "warning", "critical"}
+ALLOWED_RENDER_MODES = {"plain", "markdown", "bbcode"}
 
 
 def normalize_level(level: Optional[str]) -> str:
-    raw = (level or 'info').strip().lower()
-    return raw if raw in ALLOWED_LEVELS else 'info'
+    raw = (level or "info").strip().lower()
+    return raw if raw in ALLOWED_LEVELS else "info"
 
 
 def normalize_render_mode(mode: Optional[str]) -> str:
-    raw = (mode or 'plain').strip().lower()
+    raw = (mode or "plain").strip().lower()
     # 兼容别名：text -> plain
-    if raw in ('text', 'plaintext', 'txt'):
-        raw = 'plain'
-    if raw in ('md',):
-        raw = 'markdown'
-    if raw in ('bb',):
-        raw = 'bbcode'
-    return raw if raw in ALLOWED_RENDER_MODES else 'plain'
+    if raw in ("text", "plaintext", "txt"):
+        raw = "plain"
+    if raw in ("md",):
+        raw = "markdown"
+    if raw in ("bb",):
+        raw = "bbcode"
+    return raw if raw in ALLOWED_RENDER_MODES else "plain"
 
 
 def _column_exists(conn, table: str, column: str) -> bool:
     rows = list(conn.exec_driver_sql(f"PRAGMA table_info({table})"))
-    return any((row[1] or '').upper() == column.upper() for row in rows)
+    return any((row[1] or "").upper() == column.upper() for row in rows)
 
 
 def _ensure_render_mode_column() -> None:
@@ -83,10 +86,9 @@ def _ensure_render_mode_column() -> None:
     engine = create_engine(f"sqlite:///{db_path.as_posix()}")
     try:
         with engine.begin() as conn:
-            if not _column_exists(conn, 'announcements', 'RENDER_MODE'):
+            if not _column_exists(conn, "announcements", "RENDER_MODE"):
                 conn.exec_driver_sql(
-                    "ALTER TABLE announcements ADD COLUMN RENDER_MODE VARCHAR(16) "
-                    "NOT NULL DEFAULT 'plain'"
+                    "ALTER TABLE announcements ADD COLUMN RENDER_MODE VARCHAR(16) " "NOT NULL DEFAULT 'plain'"
                 )
     finally:
         engine.dispose()
@@ -132,9 +134,7 @@ class AnnouncementOperate:
             if not include_invisible:
                 conditions.append(AnnouncementModel.VISIBLE == True)  # noqa: E712
             if not include_expired:
-                conditions.append(
-                    (AnnouncementModel.EXPIRES_AT == -1) | (AnnouncementModel.EXPIRES_AT > now)
-                )
+                conditions.append((AnnouncementModel.EXPIRES_AT == -1) | (AnnouncementModel.EXPIRES_AT > now))
 
             count_query = select(func.count()).select_from(AnnouncementModel)
             if conditions:
@@ -167,17 +167,17 @@ class AnnouncementOperate:
     async def create(
         title: Optional[str],
         content: str,
-        level: str = 'info',
+        level: str = "info",
         pinned: bool = False,
         visible: bool = True,
         expires_at: int = -1,
         created_by_uid: Optional[int] = None,
-        render_mode: str = 'plain',
+        render_mode: str = "plain",
     ) -> AnnouncementModel:
         now = int(time.time())
         item = AnnouncementModel(
-            TITLE=(title or '').strip() or None,
-            CONTENT=(content or '').strip(),
+            TITLE=(title or "").strip() or None,
+            CONTENT=(content or "").strip(),
             LEVEL=normalize_level(level),
             RENDER_MODE=normalize_render_mode(render_mode),
             PINNED=bool(pinned),
@@ -219,30 +219,28 @@ class AnnouncementOperate:
     ) -> Optional[AnnouncementModel]:
         values: dict = {}
         if title is not None:
-            values['TITLE'] = title.strip() or None
+            values["TITLE"] = title.strip() or None
         if content is not None:
-            values['CONTENT'] = content.strip()
+            values["CONTENT"] = content.strip()
         if level is not None:
-            values['LEVEL'] = normalize_level(level)
+            values["LEVEL"] = normalize_level(level)
         if render_mode is not None:
-            values['RENDER_MODE'] = normalize_render_mode(render_mode)
+            values["RENDER_MODE"] = normalize_render_mode(render_mode)
         if pinned is not None:
-            values['PINNED'] = bool(pinned)
+            values["PINNED"] = bool(pinned)
         if visible is not None:
-            values['VISIBLE'] = bool(visible)
+            values["VISIBLE"] = bool(visible)
         if expires_at is not None:
-            values['EXPIRES_AT'] = int(expires_at)
+            values["EXPIRES_AT"] = int(expires_at)
         if not values:
             return await AnnouncementOperate.get_by_id(announcement_id)
 
-        values['UPDATED_AT'] = int(time.time())
+        values["UPDATED_AT"] = int(time.time())
 
         async with AnnouncementsSessionFactory() as session:
             async with session.begin():
                 await session.execute(
-                    update(AnnouncementModel)
-                    .where(AnnouncementModel.ID == int(announcement_id))
-                    .values(**values)
+                    update(AnnouncementModel).where(AnnouncementModel.ID == int(announcement_id)).values(**values)
                 )
 
         return await AnnouncementOperate.get_by_id(announcement_id)

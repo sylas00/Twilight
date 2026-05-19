@@ -9,6 +9,7 @@
     - ok=True 表示满足所有必需群组（或不需要校验）
     - missing 是结构化数组，方便给到 Bot/前端做友好提示
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -65,9 +66,7 @@ class TelegramMembershipService:
     @staticmethod
     def enforcement_enabled() -> bool:
         """`TelegramConfig.REQUIRE_GROUP_MEMBERSHIP` 开启 + 至少配置了一个群组时返回 True。"""
-        return bool(getattr(TelegramConfig, "REQUIRE_GROUP_MEMBERSHIP", False)) and bool(
-            _normalize_group_ids()
-        )
+        return bool(getattr(TelegramConfig, "REQUIRE_GROUP_MEMBERSHIP", False)) and bool(_normalize_group_ids())
 
     @staticmethod
     def is_bot_available() -> bool:
@@ -96,7 +95,9 @@ class TelegramMembershipService:
             return False, []
 
         result = await TelegramMembershipService.check_users_in_groups(
-            [telegram_id], strict=strict, sync_roster=sync_roster,
+            [telegram_id],
+            strict=strict,
+            sync_roster=sync_roster,
         )
         missing = result.get(int(telegram_id), [])
         return (len(missing) == 0), missing
@@ -158,6 +159,7 @@ class TelegramMembershipService:
             if sync_roster:
                 try:
                     from src.db.telegram_roster import TelegramRosterOperate as _Roster
+
                     roster_writer = _Roster
                 except Exception as exc:  # pragma: no cover - import safety
                     logger.warning(f"加载 TelegramRosterOperate 失败，跳过花名册同步: {exc}")
@@ -186,7 +188,8 @@ class TelegramMembershipService:
                         if roster_writer is not None:
                             try:
                                 await roster_writer.upsert_member(
-                                    gid, tg_id,
+                                    gid,
+                                    tg_id,
                                     status=status or "member",
                                     is_bot=is_bot,
                                 )
@@ -206,9 +209,7 @@ class TelegramMembershipService:
                                 title=getattr(chat, "title", None) if chat else None,
                                 url=_build_invite_url(gid, chat),
                             )
-                        logger.warning(
-                            f"检查群组 {gid} 成员资格 BadRequest (tg_id={tg_id}): {exc}"
-                        )
+                        logger.warning(f"检查群组 {gid} 成员资格 BadRequest (tg_id={tg_id}): {exc}")
                         if strict:
                             return MissingGroup(
                                 id=str(gid),
@@ -217,15 +218,17 @@ class TelegramMembershipService:
                             )
                         return None
                     except Forbidden as exc:
-                        logger.warning(
-                            f"Bot 缺少群 {gid} 的查看权限 (tg_id={tg_id}): {exc}"
-                        )
-                        # Bot 没权限就别拦人，否则一旦群里失权就全员被踢
+                        logger.warning(f"Bot 缺少群 {gid} 的查看权限 (tg_id={tg_id}): {exc}")
+                        # 非严格巡检不因 Bot 失权误封；严格调用方需要把未知视为不通过。
+                        if strict:
+                            return MissingGroup(
+                                id=str(gid),
+                                title=getattr(chat, "title", None) if chat else None,
+                                url=_build_invite_url(gid, chat),
+                            )
                         return None
                     except TelegramError as exc:
-                        logger.warning(
-                            f"检查群组 {gid} Telegram 异常 (tg_id={tg_id}): {exc}"
-                        )
+                        logger.warning(f"检查群组 {gid} Telegram 异常 (tg_id={tg_id}): {exc}")
                         if strict:
                             return MissingGroup(
                                 id=str(gid),
@@ -234,9 +237,7 @@ class TelegramMembershipService:
                             )
                         return None
                     except Exception as exc:  # pragma: no cover - safety net
-                        logger.warning(
-                            f"检查群组 {gid} 未知异常 (tg_id={tg_id}): {exc}"
-                        )
+                        logger.warning(f"检查群组 {gid} 未知异常 (tg_id={tg_id}): {exc}")
                         if strict:
                             return MissingGroup(
                                 id=str(gid),
@@ -312,27 +313,29 @@ class TelegramMembershipService:
         from src.config import TelegramConfig
         from src.db.telegram_roster import TelegramRosterOperate
         from src.db.user import (
-            Role, UserModel, UsersSessionFactory,
+            Role,
+            UserModel,
+            UsersSessionFactory,
         )
 
         plan: Dict[str, object] = {
-            'chat_id': str(chat_id),
-            'roster_size': 0,
-            'bots_in_roster': 0,
-            'targets': [],
-            'excluded_ids': set(),
-            'reasons': {},
-            'preserved_bound': 0,
-            'group_admin_ids': set(),
+            "chat_id": str(chat_id),
+            "roster_size": 0,
+            "bots_in_roster": 0,
+            "targets": [],
+            "excluded_ids": set(),
+            "reasons": {},
+            "preserved_bound": 0,
+            "group_admin_ids": set(),
         }
 
         roster_rows = await TelegramRosterOperate.list_active_telegram_ids(chat_id)
-        plan['roster_size'] = len(roster_rows)
+        plan["roster_size"] = len(roster_rows)
         roster_human_ids: set[int] = set()
         excluded_ids: set[int] = set()
         for tg_int, is_bot in roster_rows:
             if is_bot:
-                plan['bots_in_roster'] = int(plan['bots_in_roster']) + 1
+                plan["bots_in_roster"] = int(plan["bots_in_roster"]) + 1
                 excluded_ids.add(tg_int)
                 continue
             roster_human_ids.add(tg_int)
@@ -341,9 +344,11 @@ class TelegramMembershipService:
         user_map: Dict[int, UserModel] = {}
         if roster_human_ids:
             async with UsersSessionFactory() as session:
-                rows = (await session.execute(
-                    _select(UserModel).where(UserModel.TELEGRAM_ID.in_(list(roster_human_ids)))
-                )).scalars().all()
+                rows = (
+                    (await session.execute(_select(UserModel).where(UserModel.TELEGRAM_ID.in_(list(roster_human_ids)))))
+                    .scalars()
+                    .all()
+                )
                 for u in rows:
                     try:
                         user_map[int(u.TELEGRAM_ID)] = u
@@ -355,17 +360,17 @@ class TelegramMembershipService:
         for tg_id in roster_human_ids:
             user = user_map.get(tg_id)
             if user is None or user.ROLE == Role.UNRECOGNIZED.value:
-                reasons[tg_id] = 'no_account'
+                reasons[tg_id] = "no_account"
                 continue
             if user.ROLE in (Role.ADMIN.value, Role.WHITE_LIST.value):
                 excluded_ids.add(tg_id)
                 preserved_bound += 1
                 continue
             if not bool(user.ACTIVE_STATUS):
-                reasons[tg_id] = 'disabled'
+                reasons[tg_id] = "disabled"
                 continue
             if not user.EMBYID:
-                reasons[tg_id] = 'no_emby'
+                reasons[tg_id] = "no_emby"
                 continue
             # 系统账号正常 + 已绑 Emby → 留人
             excluded_ids.add(tg_id)
@@ -389,11 +394,11 @@ class TelegramMembershipService:
             reasons.pop(aid, None)
 
         targets = sorted(tid for tid in reasons.keys() if tid not in excluded_ids)
-        plan['excluded_ids'] = excluded_ids
-        plan['group_admin_ids'] = group_admin_ids
-        plan['reasons'] = reasons
-        plan['preserved_bound'] = preserved_bound
-        plan['targets'] = targets
+        plan["excluded_ids"] = excluded_ids
+        plan["group_admin_ids"] = group_admin_ids
+        plan["reasons"] = reasons
+        plan["preserved_bound"] = preserved_bound
+        plan["targets"] = targets
         return plan
 
     @staticmethod
@@ -507,9 +512,7 @@ class TelegramMembershipService:
                         return
                     except (Forbidden, TelegramError) as exc:
                         local_result["failed"] = int(local_result["failed"]) + 1
-                        local_result["details"].append(
-                            {"tg_id": tg_id, "error": f"查询成员失败: {exc}"}
-                        )
+                        local_result["details"].append({"tg_id": tg_id, "error": f"查询成员失败: {exc}"})
                         return
 
                     status = str(getattr(member, "status", "") or "").lower()
@@ -528,9 +531,7 @@ class TelegramMembershipService:
                         await bot.ban_chat_member(chat_id, tg_id)
                     except (BadRequest, Forbidden, TelegramError) as exc:
                         local_result["failed"] = int(local_result["failed"]) + 1
-                        local_result["details"].append(
-                            {"tg_id": tg_id, "error": f"踢出失败: {exc}"}
-                        )
+                        local_result["details"].append({"tg_id": tg_id, "error": f"踢出失败: {exc}"})
                         return
                     try:
                         await bot.unban_chat_member(chat_id, tg_id, only_if_banned=True)
@@ -583,9 +584,7 @@ class TelegramMembershipService:
             return out
 
         if not has_telegram_api_access():
-            out["failed_groups"] = [
-                {"id": str(g), "error": "telegram_unavailable"} for g in group_ids
-            ]
+            out["failed_groups"] = [{"id": str(g), "error": "telegram_unavailable"} for g in group_ids]
             return out
 
         try:
@@ -629,20 +628,22 @@ class TelegramMembershipService:
         try:
             result = await run_bot_operation(_do, timeout=60)
         except Exception as exc:
-            logger.warning(
-                f"永封 TG {tg_id} 异常 (reason={reason}): {exc}"
-            )
+            logger.warning(f"永封 TG {tg_id} 异常 (reason={reason}): {exc}")
             out["failed_groups"] = [{"id": str(g), "error": str(exc)} for g in group_ids]
             return out
 
         if result.get("banned_groups"):
             logger.warning(
                 "🚫 TG %d 已被永久封禁于群组 %s (reason=%s)",
-                tg_id, ", ".join(result["banned_groups"]), reason,
+                tg_id,
+                ", ".join(result["banned_groups"]),
+                reason,
             )
         if result.get("failed_groups"):
             logger.warning(
                 "永封 TG %d 在部分群失败 (reason=%s): %s",
-                tg_id, reason, result["failed_groups"],
+                tg_id,
+                reason,
+                result["failed_groups"],
             )
         return result

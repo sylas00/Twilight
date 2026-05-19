@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
@@ -10,8 +10,17 @@ echo "=========================================="
 
 # 启动后端
 echo "Starting Backend (All Services)..."
-source ./.venv/bin/activate
-python main.py all &
+if [[ -x ".venv/bin/python" ]]; then
+  PYTHON=".venv/bin/python"
+elif [[ -x "venv/bin/python" ]]; then
+  PYTHON="venv/bin/python"
+elif command -v python3 >/dev/null 2>&1; then
+  PYTHON="python3"
+else
+  PYTHON="python"
+fi
+
+"$PYTHON" main.py all &
 BACKEND_PID=$!
 
 # 等待后端初始化
@@ -19,6 +28,12 @@ sleep 2
 
 # 启动前端（生产模式）
 echo "Starting Frontend..."
+if ! command -v pnpm >/dev/null 2>&1; then
+  echo "pnpm not found. On NixOS, run 'nix develop' first." >&2
+  kill "$BACKEND_PID" 2>/dev/null || true
+  exit 1
+fi
+
 cd webui && pnpm start -p 3000 &
 FRONTEND_PID=$!
 cd "$SCRIPT_DIR"

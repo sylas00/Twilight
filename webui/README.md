@@ -37,9 +37,7 @@
 
 ```bash
 cd webui
-pnpm install
-# 或
-npm install
+pnpm install --frozen-lockfile
 ```
 
 ### 配置环境
@@ -47,8 +45,8 @@ npm install
 创建 `.env.local` 文件：
 
 ```env
-# API 后端地址
-NEXT_PUBLIC_API_URL=http://localhost:5000
+# API 后端地址；本地开发可留空，走 next.config.mjs 的 /api rewrite
+NEXT_PUBLIC_API_URL=
 
 # 站点名称（用于页面信息 fallback）
 NEXT_PUBLIC_SITE_NAME=Twilight
@@ -67,19 +65,18 @@ NEXT_PUBLIC_SITE_ICON=/favicon.ico
 
 | 变量名 | 必填 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| NEXT_PUBLIC_API_URL | 是 | [http://localhost:5000](http://localhost:5000) | 前端请求后端 API 的基地址 |
+| NEXT_PUBLIC_API_URL | 否 | 空（同源 `/api`） | 前端请求后端 API 的基地址；生产分离部署时填写后端 URL |
 | NEXT_PUBLIC_SITE_NAME | 否 | Twilight | 站点名称，用于登录/注册/首页等页面信息 fallback |
 | NEXT_PUBLIC_SITE_TITLE | 否 | ${NEXT_PUBLIC_SITE_NAME} - Emby 管理系统 | 浏览器标签标题（title） |
 | NEXT_PUBLIC_SITE_DESCRIPTION | 否 | ${NEXT_PUBLIC_SITE_NAME} 的 Emby/Jellyfin 管理系统 | 页面描述（meta description） |
 | NEXT_PUBLIC_SITE_ICON | 否 | 空 | 浏览器图标 URL，会写入 metadata icons |
 
-修改 `.env.local` 后请重启开发服务器（`pnpm dev` 或 `npm run dev`）使其生效。
+修改 `.env.local` 后请重启开发服务器（`pnpm dev`）使其生效。
 
 ### 开发模式
 
 ```bash
 pnpm dev
-# 或 npm run dev
 ```
 
 访问 <http://localhost:3000>
@@ -89,7 +86,6 @@ pnpm dev
 ```bash
 pnpm build
 pnpm start
-# 或 npm run build && npm run start
 ```
 
 ## 目录结构

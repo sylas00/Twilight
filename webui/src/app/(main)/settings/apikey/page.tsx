@@ -255,7 +255,7 @@ export default function ApiKeyPage() {
             <CardContent className="p-8 text-center">
               <Key className="h-10 w-10 mx-auto text-muted-foreground mb-2 opacity-40" />
               <p className="font-medium">暂无 API Keys</p>
-              <p className="text-xs text-muted-foreground mt-1">点击右上角"新建"按钮来创建你的第一个 API Key</p>
+              <p className="text-xs text-muted-foreground mt-1">点击右上角“新建”按钮来创建你的第一个 API Key</p>
             </CardContent>
           </Card>
         ) : (

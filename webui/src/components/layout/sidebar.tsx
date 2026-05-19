@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { flushSync } from "react-dom";
 import type { ComponentType } from "react";
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { motion } from "framer-motion";
@@ -191,11 +192,13 @@ export function Sidebar() {
       <div className="sidebar-surface h-full">
         <div className="sidebar-brand">
           {safeSystemIcon ? (
-            <img
+            <Image
               src={safeSystemIcon}
               alt={displaySiteName}
+              width={40}
+              height={40}
               className="h-10 w-10 rounded-xl object-cover"
-              loading="lazy"
+              unoptimized
               referrerPolicy="no-referrer"
             />
           ) : (
@@ -278,4 +281,3 @@ export function Sidebar() {
     </aside>
   );
 }
-

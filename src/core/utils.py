@@ -3,6 +3,7 @@
 
 提供通用的工具函数和装饰器
 """
+
 import hashlib
 import hmac
 import string
@@ -15,17 +16,18 @@ from functools import wraps
 
 logger = logging.getLogger(__name__)
 
+
 def generate_random_string(length: int = 16, include_special: bool = False) -> str:
     """
     生成随机字符串 (加密安全)
-    
+
     :param length: 字符串长度
     :param include_special: 是否包含特殊字符
     """
     chars = string.ascii_letters + string.digits
     if include_special:
         chars += "!@#$%^&*"
-    return ''.join(secrets.choice(chars) for _ in range(length))
+    return "".join(secrets.choice(chars) for _ in range(length))
 
 
 def generate_password(length: int = 12) -> str:
@@ -34,7 +36,7 @@ def generate_password(length: int = 12) -> str:
     uppercase = string.ascii_uppercase
     lowercase = string.ascii_lowercase
     digits = string.digits
-    
+
     password = [
         secrets.choice(uppercase),
         secrets.choice(lowercase),
@@ -43,16 +45,16 @@ def generate_password(length: int = 12) -> str:
     # 填充剩余长度
     all_chars = uppercase + lowercase + digits
     password.extend(secrets.choice(all_chars) for _ in range(length - 3))
-    
+
     # 打乱顺序
     secrets.SystemRandom().shuffle(password)
-    return ''.join(password)
+    return "".join(password)
 
 
 def hash_password(password: str, salt: Optional[str] = None, iterations: int = 100000) -> str:
     """
     对密码进行哈希处理 (使用 PBKDF2-SHA256)
-    
+
     :param password: 原始密码
     :param salt: 盐值，为空则自动生成
     :param iterations: 迭代次数
@@ -61,26 +63,26 @@ def hash_password(password: str, salt: Optional[str] = None, iterations: int = 1
     if salt is None:
         salt = generate_random_string(16)
     # 该哈希格式兼容 verify_password 的新旧密码校验逻辑
-    
+
     # PBKDF2 哈希
-    dk = hashlib.pbkdf2_hmac('sha256', password.encode(), salt.encode(), iterations)
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), iterations)
     hashed = dk.hex()
     return f"{salt}${iterations}${hashed}"
 
 
 def verify_password(password: str, hashed: str) -> bool:
     """验证密码是否正确 (兼容旧格式)"""
-    if '$' not in hashed:
+    if "$" not in hashed:
         return False
-        
-    parts = hashed.split('$')
-    
+
+    parts = hashed.split("$")
+
     # 旧格式: salt$hash (SHA256)
     if len(parts) == 2:
         salt, _ = parts
         expected = f"{salt}${hashlib.sha256(f'{salt}{password}'.encode()).hexdigest()}"
         return hmac.compare_digest(expected, hashed)
-        
+
     # 新格式: salt$iterations$hash (PBKDF2)
     if len(parts) == 3:
         salt, iterations_str, _ = parts
@@ -89,7 +91,7 @@ def verify_password(password: str, hashed: str) -> bool:
             return hmac.compare_digest(hash_password(password, salt, iterations), hashed)
         except ValueError:
             return False
-            
+
     return False
 
 
@@ -100,29 +102,46 @@ def is_valid_email(email: str) -> bool:
     # RFC 5321: 本地部分 ≤ 64，完整地址 ≤ 254
     if len(email) > 254:
         return False
-    local, _, _domain = email.partition('@')
+    local, _, _domain = email.partition("@")
     if len(local) > 64:
         return False
-    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+    pattern = r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"
     return bool(re.match(pattern, email))
+
+
+def parse_bool(value: Any, default: bool = False) -> bool:
+    """把 JSON/form 中常见的布尔表示解析成 bool，避免字符串 "false" 被 bool() 当成 True。"""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "y", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off", ""}:
+            return False
+    return default
 
 
 def is_valid_username(username: str, min_length: int = 3, max_length: int = 20) -> bool:
     """
     验证用户名格式
-    
+
     允许字母、数字、下划线，不能以数字开头
     """
     if not username or len(username) < min_length or len(username) > max_length:
         return False
-    pattern = r'^[a-zA-Z_][a-zA-Z0-9_]*$'
+    pattern = r"^[a-zA-Z_][a-zA-Z0-9_]*$"
     return bool(re.match(pattern, username))
 
 
-def mask_string(s: str, show_chars: int = 4, mask_char: str = '*') -> str:
+def mask_string(s: str, show_chars: int = 4, mask_char: str = "*") -> str:
     """
     遮罩字符串
-    
+
     例如: "1234567890" -> "1234******"
     """
     if len(s) <= show_chars:
@@ -133,18 +152,19 @@ def mask_string(s: str, show_chars: int = 4, mask_char: str = '*') -> str:
 def mask_email(email: str) -> str:
     """
     遮罩邮箱
-    
+
     例如: "test@example.com" -> "te**@example.com"
     """
-    if '@' not in email:
+    if "@" not in email:
         return mask_string(email)
-    local, domain = email.rsplit('@', 1)
+    local, domain = email.rsplit("@", 1)
     if len(local) <= 2:
         return f"{local[0]}*@{domain}"
     return f"{local[:2]}{'*' * (len(local) - 2)}@{domain}"
 
 
 # ==================== 时间工具 ====================
+
 
 def timestamp() -> int:
     """获取当前时间戳（秒）"""
@@ -181,16 +201,16 @@ def is_expired(expire_timestamp: int) -> bool:
 def format_duration(seconds: int) -> str:
     """
     格式化时长
-    
+
     :return: 如 "3天5小时20分钟"
     """
     if seconds < 0:
         return "永久"
-    
+
     days, remainder = divmod(seconds, 86400)
     hours, remainder = divmod(remainder, 3600)
     minutes, _ = divmod(remainder, 60)
-    
+
     parts = []
     if days > 0:
         parts.append(f"{days}天")
@@ -198,8 +218,8 @@ def format_duration(seconds: int) -> str:
         parts.append(f"{hours}小时")
     if minutes > 0 or not parts:
         parts.append(f"{minutes}分钟")
-    
-    return ''.join(parts)
+
+    return "".join(parts)
 
 
 def format_expire_time(expire_timestamp: int) -> str:
@@ -223,6 +243,7 @@ def format_expire_time(expire_timestamp: int) -> str:
 
 # ==================== 数值工具 ====================
 
+
 def clamp(value: int, min_val: int, max_val: int) -> int:
     """将数值限制在指定范围内"""
     return max(min_val, min(max_val, value))
@@ -238,14 +259,16 @@ def safe_int(value: Any, default: int = 0) -> int:
 
 # ==================== 装饰器 ====================
 
+
 def retry(max_attempts: int = 3, delay: float = 1.0, exceptions: tuple = (Exception,)):
     """
     重试装饰器
-    
+
     :param max_attempts: 最大重试次数
     :param delay: 重试间隔（秒）
     :param exceptions: 需要重试的异常类型
     """
+
     # 该装饰器支持同步与异步函数，适用于网络请求、外部接口、数据库等不稳定操作
     def decorator(func: Callable) -> Callable:
         @wraps(func)
@@ -258,9 +281,9 @@ def retry(max_attempts: int = 3, delay: float = 1.0, exceptions: tuple = (Except
                     last_exception = e
                     logger.warning(f"{func.__name__} 失败 (尝试 {attempt + 1}/{max_attempts}): {e}")
                     if attempt < max_attempts - 1:
-                        await __import__('asyncio').sleep(delay)
+                        await __import__("asyncio").sleep(delay)
             raise last_exception
-        
+
         @wraps(func)
         def sync_wrapper(*args, **kwargs):
             last_exception = None
@@ -273,25 +296,26 @@ def retry(max_attempts: int = 3, delay: float = 1.0, exceptions: tuple = (Except
                     if attempt < max_attempts - 1:
                         time.sleep(delay)
             raise last_exception
-        
+
         import asyncio
+
         if asyncio.iscoroutinefunction(func):
             return async_wrapper
         return sync_wrapper
-    
+
     return decorator
 
 
 def singleton(cls):
     """单例模式装饰器"""
     instances = {}
-    
+
     @wraps(cls)
     def get_instance(*args, **kwargs):
         if cls not in instances:
             instances[cls] = cls(*args, **kwargs)
         return instances[cls]
-    
+
     return get_instance
 
 
@@ -368,9 +392,9 @@ def rate_limit_reset(namespace: str, key: str) -> None:
 
 # ==================== 日志工具 ====================
 
+
 def setup_logging(
-    level: int = logging.INFO,
-    format_string: str = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level: int = logging.INFO, format_string: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 ) -> None:
     """配置日志"""
     logging.basicConfig(
@@ -378,6 +402,5 @@ def setup_logging(
         format=format_string,
         handlers=[
             logging.StreamHandler(),
-        ]
+        ],
     )
-

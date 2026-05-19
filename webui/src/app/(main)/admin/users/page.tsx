@@ -17,6 +17,7 @@ import {
   Link2,
   AlertTriangle,
   UserPlus,
+  UserCheck,
   CalendarClock,
   Send,
 } from "lucide-react";
@@ -139,6 +140,13 @@ export default function AdminUsersPage() {
   const [bulkExpireIncludeWhitelist, setBulkExpireIncludeWhitelist] = useState(false);
   const [bulkExpireConfirmText, setBulkExpireConfirmText] = useState("");
   const [bulkExpireLoading, setBulkExpireLoading] = useState(false);
+
+  // 批量启用已禁用账号（按当前筛选条件）
+  const [bulkEnableOpen, setBulkEnableOpen] = useState(false);
+  const [bulkEnableIncludeAdmin, setBulkEnableIncludeAdmin] = useState(false);
+  const [bulkEnableIncludeWhitelist, setBulkEnableIncludeWhitelist] = useState(false);
+  const [bulkEnableConfirmText, setBulkEnableConfirmText] = useState("");
+  const [bulkEnableLoading, setBulkEnableLoading] = useState(false);
 
   // 一键踢出 TG 群里未绑账号的成员
   type KickPreview = NonNullable<Awaited<ReturnType<typeof api.kickUnboundGroupMembers>>["data"]>;
@@ -616,6 +624,50 @@ export default function AdminUsersPage() {
     }
   };
 
+  const handleBulkEnableDisabled = async () => {
+    if (activeFilter === "true") {
+      toast({ title: "当前筛选仅包含已启用账号", description: "请切换为全部状态或仅已禁用后再执行", variant: "destructive" });
+      return;
+    }
+    if (bulkEnableConfirmText.trim() !== "确认") {
+      toast({ title: "需要在文本框输入「确认」二字以继续", variant: "destructive" });
+      return;
+    }
+    const filter: NonNullable<Parameters<typeof api.adminBulkEnableDisabledUsers>[0]["filter"]> = {};
+    if (roleFilter !== "all") filter.role = Number(roleFilter);
+    if (activeFilter !== "all") filter.active = activeFilter === "true";
+    if (embyFilter === "bound") filter.emby = "bound";
+    else if (embyFilter === "unbound") filter.emby = "unbound";
+    if (search.trim()) filter.search = search.trim();
+
+    setBulkEnableLoading(true);
+    try {
+      const res = await api.adminBulkEnableDisabledUsers({
+        filter,
+        include_admin: bulkEnableIncludeAdmin,
+        include_whitelist: bulkEnableIncludeWhitelist,
+      });
+      if (res.success && res.data) {
+        const d = res.data;
+        toast({
+          title: `已启用 ${d.enabled} 个禁用账号`,
+          description: `匹配 ${d.matched}；跳过：管理员 ${d.skipped_admins}，白名单 ${d.skipped_whitelist}，未识别 ${d.skipped_unrecognized}`,
+          variant: d.failed.length ? "default" : "success",
+        });
+        invalidateUsersCache();
+        await loadUsers();
+        setBulkEnableOpen(false);
+        setBulkEnableConfirmText("");
+      } else {
+        toast({ title: "批量启用失败", description: res.message, variant: "destructive" });
+      }
+    } catch (err: any) {
+      toast({ title: "批量启用失败", description: err.message || "网络异常", variant: "destructive" });
+    } finally {
+      setBulkEnableLoading(false);
+    }
+  };
+
   // ============== 一键踢出 TG 群里未绑账号的成员 ==============
   const openKickDialog = async () => {
     setKickOpen(true);
@@ -853,6 +905,8 @@ export default function AdminUsersPage() {
     </DropdownMenu>
   );
 
+  const bulkEnableBlocked = activeFilter === "true";
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -899,6 +953,20 @@ export default function AdminUsersPage() {
           >
             <CalendarClock className="mr-2 h-4 w-4" />
             批量到期调控
+          </Button>
+          <Button
+            variant="outline"
+            disabled={bulkEnableBlocked}
+            title={bulkEnableBlocked ? "当前状态筛选为仅已启用，无法批量启用禁用账号" : undefined}
+            onClick={() => {
+              setBulkEnableIncludeAdmin(false);
+              setBulkEnableIncludeWhitelist(false);
+              setBulkEnableConfirmText("");
+              setBulkEnableOpen(true);
+            }}
+          >
+            <UserCheck className="mr-2 h-4 w-4" />
+            批量启用禁用账号
           </Button>
           <Button
             variant="outline"
@@ -2076,7 +2144,7 @@ export default function AdminUsersPage() {
                 disabled={bindSubmitting}
               />
               <p className="text-xs text-muted-foreground">
-                若该 Emby 已被其他系统账号占用，将出现确认按钮以"夺取"绑定。
+                若该 Emby 已被其他系统账号占用，将出现确认按钮以“夺取”绑定。
               </p>
             </div>
 
@@ -2092,7 +2160,7 @@ export default function AdminUsersPage() {
                   （UID {bindConflict.conflict_uid}）。
                 </p>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  确认"夺取"将清空旧账号的 EMBYID，旧账号会被标记为"待重新绑定 Emby"状态。
+                  确认“夺取”将清空旧账号的 EMBYID，旧账号会被标记为“待重新绑定 Emby”状态。
                 </p>
               </div>
             )}
@@ -2130,8 +2198,8 @@ export default function AdminUsersPage() {
               一键踢出未绑 Web 账号的 TG 成员
             </DialogTitle>
             <DialogDescription>
-              Bot API 没法主动枚举群成员，本功能依赖 Bot 长期被动累积的"花名册"
-              （chat_member 事件 + 群消息观察）。Bot 必须在群里是有"封禁成员"权限的管理员。
+              Bot API 没法主动枚举群成员，本功能依赖 Bot 长期被动累积的“花名册”
+              （chat_member 事件 + 群消息观察）。Bot 必须在群里是有“封禁成员”权限的管理员。
               群管理员、Bot、配置中的 ADMIN_ID 与所有持有 Web 账号的人都会被自动排除；
               踢出策略是 ban + 立即 unban（临时移除，仍可重新加入）。
             </DialogDescription>
@@ -2303,7 +2371,7 @@ export default function AdminUsersPage() {
                     className="mt-0.5 h-4 w-4 rounded"
                   />
                   <span>
-                    包含管理员账号（默认跳过；包含后<strong>仍不会改你自己</strong>，除非把"永久"选项手动改成具体天数前请慎重）
+                    包含管理员账号（默认跳过；包含后<strong>仍不会改你自己</strong>，除非把“永久”选项手动改成具体天数前请慎重）
                   </span>
                 </label>
                 <label className="flex items-start gap-2 text-xs cursor-pointer">
@@ -2313,7 +2381,7 @@ export default function AdminUsersPage() {
                     onChange={(e) => setBulkExpireIncludeWhitelist(e.target.checked)}
                     className="mt-0.5 h-4 w-4 rounded"
                   />
-                  <span>包含白名单用户（一旦取消勾选，白名单的"永久"标签将被覆盖）</span>
+                  <span>包含白名单用户（一旦取消勾选，白名单的“永久”标签将被覆盖）</span>
                 </label>
                 <p className="rounded-md border border-muted-foreground/20 bg-muted/40 px-3 py-2 text-[11px] text-muted-foreground">
                   ⚠ 未绑定 Emby 的账号一律强制跳过，「未开通」sentinel（EXPIRED_AT=0）由系统保护，无法通过批量操作覆盖。
@@ -2348,6 +2416,88 @@ export default function AdminUsersPage() {
             >
               {bulkExpireLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               执行批量调控
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 批量启用已禁用账号 */}
+      <Dialog open={bulkEnableOpen} onOpenChange={setBulkEnableOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <UserCheck className="h-5 w-5" />
+              批量启用已禁用账号
+            </DialogTitle>
+            <DialogDescription>
+              将按当前搜索、角色、状态与 Emby 筛选查找已禁用账号，并同步启用对应 Emby 账户。
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 text-sm">
+            <div className="rounded-md border bg-muted/30 p-3 space-y-2">
+              <p className="text-xs font-medium">作用范围（当前筛选条件）</p>
+              <div className="text-xs text-muted-foreground space-y-0.5">
+                <p>搜索：{search.trim() || "无"}</p>
+                <p>角色：{roleFilter === "all" ? "全部" : roleFilter === "0" ? "管理员" : roleFilter === "1" ? "普通用户" : "白名单"}</p>
+                <p>启用状态：{activeFilter === "all" ? "全部（实际只处理已禁用）" : activeFilter === "true" ? "仅已启用（不会匹配禁用账号）" : "仅已禁用"}</p>
+                <p>Emby 绑定：{embyFilter === "all" ? "全部" : embyFilter === "bound" ? "已绑定" : "未绑定"}</p>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label className="text-xs uppercase tracking-wider text-muted-foreground">额外选项</Label>
+              <div className="space-y-1.5">
+                <label className="flex items-start gap-2 text-xs cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={bulkEnableIncludeAdmin}
+                    onChange={(e) => setBulkEnableIncludeAdmin(e.target.checked)}
+                    className="mt-0.5 h-4 w-4 rounded"
+                  />
+                  <span>包含管理员账号（默认跳过，避免误恢复管理员访问权限）</span>
+                </label>
+                <label className="flex items-start gap-2 text-xs cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={bulkEnableIncludeWhitelist}
+                    onChange={(e) => setBulkEnableIncludeWhitelist(e.target.checked)}
+                    className="mt-0.5 h-4 w-4 rounded"
+                  />
+                  <span>包含白名单用户（默认跳过）</span>
+                </label>
+                <p className="rounded-md border border-muted-foreground/20 bg-muted/40 px-3 py-2 text-[11px] text-muted-foreground">
+                  未识别角色会被后端强制跳过；单次最多启用 5000 个账号。
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-1.5 rounded-md border border-amber-500/40 bg-amber-500/5 p-3">
+              <Label className="text-xs uppercase tracking-wider text-amber-700 dark:text-amber-300">
+                二次确认
+              </Label>
+              <p className="text-xs text-muted-foreground">
+                请在下方输入 <span className="font-mono text-foreground">确认</span> 二字以继续：
+              </p>
+              <Input
+                value={bulkEnableConfirmText}
+                onChange={(e) => setBulkEnableConfirmText(e.target.value)}
+                placeholder="确认"
+                className="h-9"
+              />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setBulkEnableOpen(false)} disabled={bulkEnableLoading}>
+              取消
+            </Button>
+            <Button
+              onClick={handleBulkEnableDisabled}
+              disabled={bulkEnableLoading || bulkEnableConfirmText.trim() !== "确认" || bulkEnableBlocked}
+            >
+              {bulkEnableLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              执行批量启用
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -2418,4 +2568,3 @@ export default function AdminUsersPage() {
     </div>
   );
 }
-

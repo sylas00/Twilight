@@ -21,6 +21,7 @@ Emby 自由注册队列服务
       总量 + ``UserService.check_emby_user_capacity``）兜底。这一层只是把单 worker 内的
       并发收敛。
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -47,6 +48,7 @@ class _QueueTask:
     里按 ``request_id`` 索引；放队列对象里会让"队列已 dequeue 但 worker 还在跑"的
     阶段拿不到 Event，引发等不到完成的竞态。
     """
+
     request_id: str
     status_token: str
     uid: int
@@ -120,7 +122,8 @@ class EmbyRegisterQueueService:
             cls._started = True
             logger.info(
                 "Emby 注册队列已启动 workers=%s max_queue=%s",
-                worker_count, cls._queue_max_size(),
+                worker_count,
+                cls._queue_max_size(),
             )
 
     @classmethod
@@ -206,7 +209,7 @@ class EmbyRegisterQueueService:
         if cls._queue is None:
             return None, "注册队列尚未就绪"
 
-        emby_username = (emby_username or '').strip()
+        emby_username = (emby_username or "").strip()
         if not emby_username:
             return None, "Emby 用户名不能为空"
         username_key = emby_username.lower()
@@ -438,7 +441,7 @@ class EmbyRegisterQueueService:
                     await cls._mark_already_done(task, fresh_user)
                     continue
 
-                if not getattr(fresh_user, 'PENDING_EMBY', False):
+                if not getattr(fresh_user, "PENDING_EMBY", False):
                     await cls._mark_failed(
                         task,
                         "该账号不在待补建 Emby 状态，无法继续",
@@ -454,7 +457,11 @@ class EmbyRegisterQueueService:
 
                 if result.result == RegisterResult.SUCCESS:
                     await cls._mark_success(task, result)
-                elif result.result in (RegisterResult.USER_LIMIT_REACHED, RegisterResult.EMBY_EXISTS, RegisterResult.USER_EXISTS):
+                elif result.result in (
+                    RegisterResult.USER_LIMIT_REACHED,
+                    RegisterResult.EMBY_EXISTS,
+                    RegisterResult.USER_EXISTS,
+                ):
                     # 业务侧已经返回明确不可恢复的错误（容量满、用户名冲突等），按失败终态记
                     await cls._mark_failed(task, result.message, terminal=True)
                 else:

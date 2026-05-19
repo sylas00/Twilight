@@ -6,6 +6,7 @@
 /bind  - 绑定 TG
 /me    - 个人信息
 """
+
 import asyncio
 import logging
 from typing import Any
@@ -14,11 +15,23 @@ from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 
 from src.bot.handlers.common import (
-    require_registered, require_subscribe, require_private, require_panel,
-    format_user_info, escape_markdown, is_admin, is_panel_enabled,
-    safe_edit_message, answer_callback_safe, main_menu_keyboard,
-    back_button, close_button, redirect_to_private, is_group,
-    safe_delete_message, GROUP_MSG_DELETE_DELAY,
+    require_registered,
+    require_subscribe,
+    require_private,
+    require_panel,
+    format_user_info,
+    escape_markdown,
+    is_admin,
+    is_panel_enabled,
+    safe_edit_message,
+    answer_callback_safe,
+    main_menu_keyboard,
+    back_button,
+    close_button,
+    redirect_to_private,
+    is_group,
+    safe_delete_message,
+    GROUP_MSG_DELETE_DELAY,
 )
 from src.db.user import UserOperate, Role
 from src.config import Config, TelegramConfig
@@ -34,9 +47,9 @@ def _render_custom_text(template: str) -> str:
     模板为空时返回空串，调用方据此决定是否插入对应段落。
     """
     if not template:
-        return ''
+        return ""
     try:
-        return template.format(server_name=Config.SERVER_NAME or 'Twilight')
+        return template.format(server_name=Config.SERVER_NAME or "Twilight")
     except (KeyError, IndexError, ValueError):
         # 模板里出现未支持的占位符时不要崩，直接原样返回
         return template
@@ -47,8 +60,8 @@ def register(bot):
     app = bot.application
 
     def _build_help_text(panel_on: bool, admin_mode: bool) -> str:
-        custom_header = _render_custom_text(TelegramConfig.BOT_HELP_HEADER or '')
-        custom_footer = _render_custom_text(TelegramConfig.BOT_HELP_FOOTER or '')
+        custom_header = _render_custom_text(TelegramConfig.BOT_HELP_HEADER or "")
+        custom_footer = _render_custom_text(TelegramConfig.BOT_HELP_FOOTER or "")
 
         lines: list[str] = []
         if custom_header:
@@ -97,10 +110,9 @@ def register(bot):
         """主菜单（群组中简短提示，私聊显示 inline 面板）"""
         if is_group(update):
             import asyncio
+
             bot_username = context.bot.username or ""
-            kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("📨 前往私聊", url=f"https://t.me/{bot_username}")]
-            ])
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("📨 前往私聊", url=f"https://t.me/{bot_username}")]])
             reply = await update.message.reply_text("🌙 请在私聊中使用 Bot", reply_markup=kb)
             asyncio.create_task(safe_delete_message(update.message, GROUP_MSG_DELETE_DELAY))
             asyncio.create_task(safe_delete_message(reply, GROUP_MSG_DELETE_DELAY))
@@ -110,11 +122,12 @@ def register(bot):
         user_name = update.effective_user.first_name if update.effective_user else "用户"
         # 顺手刷新 Telegram username 缓存（仅在用户已绑定的情况下），admin 列表会用
         try:
-            tg_username = getattr(update.effective_user, 'username', None) if update.effective_user else None
+            tg_username = getattr(update.effective_user, "username", None) if update.effective_user else None
             if user_id and tg_username:
                 bound_user = await UserOperate.get_user_by_telegram_id(user_id)
                 if bound_user:
                     from src.services import UserService
+
                     await UserService.cache_telegram_username(bound_user, tg_username)
         except Exception as exc:  # pragma: no cover
             logger.debug(f"刷新 Telegram username 缓存失败: {exc}")
@@ -123,8 +136,8 @@ def register(bot):
         panel_on = is_panel_enabled()
         admin_mode = is_admin(user_id)
 
-        custom_title = _render_custom_text(TelegramConfig.BOT_START_TITLE or '')
-        custom_intro = _render_custom_text(TelegramConfig.BOT_START_INTRO or '')
+        custom_title = _render_custom_text(TelegramConfig.BOT_START_TITLE or "")
+        custom_intro = _render_custom_text(TelegramConfig.BOT_START_INTRO or "")
         title_line = custom_title or f"🌙 **{server_name} 控制中心**"
         intro_line = custom_intro or "欢迎使用 Emby 管理机器人"
 
@@ -168,14 +181,10 @@ def register(bot):
         user_name = update.effective_user.first_name if update.effective_user else "用户"
         server_name = Config.SERVER_NAME or "Twilight"
 
-        custom_title = _render_custom_text(TelegramConfig.BOT_START_TITLE or '')
+        custom_title = _render_custom_text(TelegramConfig.BOT_START_TITLE or "")
         title_line = custom_title or f"🌙 **{server_name}**"
 
-        text = (
-            f"{title_line}\n\n"
-            f"你好，**{escape_markdown(user_name)}**！\n"
-            f"请选择功能："
-        )
+        text = f"{title_line}\n\n" f"你好，**{escape_markdown(user_name)}**！\n" f"请选择功能："
         await safe_edit_message(query.message, text, reply_markup=main_menu_keyboard(user_id))
 
     async def cb_close_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -224,18 +233,17 @@ def register(bot):
         query = update.callback_query
         await answer_callback_safe(query)
 
-        text = (
-            f"👤 **个人中心**\n\n"
-            f"{format_user_info(user)}"
-        )
+        text = f"👤 **个人中心**\n\n" f"{format_user_info(user)}"
 
         panel_on = is_panel_enabled()
         buttons = []
 
         # TG 绑定信息按钮（始终可用）
-        buttons.append([
-            InlineKeyboardButton("📱 TG 绑定", callback_data="user_tg_info"),
-        ])
+        buttons.append(
+            [
+                InlineKeyboardButton("📱 TG 绑定", callback_data="user_tg_info"),
+            ]
+        )
 
         # 播放统计仅在面板开启时可用
         if panel_on and user.EMBYID:
@@ -249,10 +257,7 @@ def register(bot):
     @require_registered
     async def cmd_me(update: Update, context: ContextTypes.DEFAULT_TYPE, user=None, **kwargs):
         """查看个人信息（命令版，始终可用）"""
-        text = (
-            f"👤 **个人中心**\n\n"
-            f"{format_user_info(user)}"
-        )
+        text = f"👤 **个人中心**\n\n" f"{format_user_info(user)}"
         user_id = update.effective_user.id if update.effective_user else 0
         panel_on = is_panel_enabled()
         if panel_on:
@@ -275,10 +280,7 @@ def register(bot):
         panel_on = is_panel_enabled()
 
         if user.TELEGRAM_ID:
-            text = (
-                f"📱 **Telegram 绑定信息**\n\n"
-                f"✅ 已绑定 (ID: `{user.TELEGRAM_ID}`)\n"
-            )
+            text = f"📱 **Telegram 绑定信息**\n\n" f"✅ 已绑定 (ID: `{user.TELEGRAM_ID}`)\n"
             buttons = []
             # 仅面板开启且未强制绑定时允许解绑
             if panel_on and not Config.FORCE_BIND_TELEGRAM:
@@ -321,6 +323,7 @@ def register(bot):
         await answer_callback_safe(query)
 
         from src.services.stats_service import StatsService
+
         stats = await StatsService.get_user_stats(user.UID)
         if not stats:
             text = "📊 暂无播放记录"
@@ -345,22 +348,24 @@ def register(bot):
         import requests
         from src.config import SecurityConfig, APIConfig, TelegramConfig
 
-        bot_secret = (SecurityConfig.BOT_INTERNAL_SECRET or '').strip()
+        bot_secret = (SecurityConfig.BOT_INTERNAL_SECRET or "").strip()
         if not bot_secret:
             return False, "Bot 内部密钥未配置，无法通过 API 回调确认绑定", None, True
 
         api_urls = []
-        custom_url = (TelegramConfig.BIND_CONFIRM_API_URL or '').strip()
+        custom_url = (TelegramConfig.BIND_CONFIRM_API_URL or "").strip()
         if custom_url:
-            if custom_url.endswith('/api/v1/users/me/telegram/bind-confirm'):
+            if custom_url.endswith("/api/v1/users/me/telegram/bind-confirm"):
                 api_urls.append(custom_url)
             else:
                 api_urls.append(f"{custom_url.rstrip('/')}/api/v1/users/me/telegram/bind-confirm")
 
-        api_urls.extend([
-            f"http://127.0.0.1:{APIConfig.PORT}/api/v1/users/me/telegram/bind-confirm",
-            f"http://localhost:{APIConfig.PORT}/api/v1/users/me/telegram/bind-confirm",
-        ])
+        api_urls.extend(
+            [
+                f"http://127.0.0.1:{APIConfig.PORT}/api/v1/users/me/telegram/bind-confirm",
+                f"http://localhost:{APIConfig.PORT}/api/v1/users/me/telegram/bind-confirm",
+            ]
+        )
 
         last_err = ""
         for api_url in api_urls:
@@ -369,18 +374,18 @@ def register(bot):
                     requests.post,
                     api_url,
                     json={
-                        'bind_code': bind_code,
-                        'telegram_id': telegram_id,
-                        'bot_secret': bot_secret,
+                        "bind_code": bind_code,
+                        "telegram_id": telegram_id,
+                        "bot_secret": bot_secret,
                     },
                     timeout=8,
                 )
                 result = resp.json() if resp.content else {}
 
                 if isinstance(result, dict):
-                    ok = bool(result.get('success'))
-                    message = str(result.get('message') or ("绑定成功" if ok else "绑定失败"))
-                    data = result.get('data') if isinstance(result.get('data'), dict) else {}
+                    ok = bool(result.get("success"))
+                    message = str(result.get("message") or ("绑定成功" if ok else "绑定失败"))
+                    data = result.get("data") if isinstance(result.get("data"), dict) else {}
                     # API 已给出业务结果时，不再回退内部逻辑，避免重复处理
                     return ok, message, data, False
 
@@ -405,6 +410,7 @@ def register(bot):
         if should_fallback_internal:
             try:
                 from src.api.v1.users import confirm_tg_bind_internal
+
                 ok, message, d, _ = await confirm_tg_bind_internal(bind_code, telegram_id)
             except Exception as exc:
                 logger.error("TG 绑定内部回退失败: %s", exc)
@@ -417,20 +423,19 @@ def register(bot):
             # 顺手把 Telegram username 缓存进 user.OTHER，admin 列表后续可以
             # 直接读，不必每次都打 bot.get_chat()（既慢也容易触发限流）。
             try:
-                tg_username = getattr(update.effective_user, 'username', None)
+                tg_username = getattr(update.effective_user, "username", None)
                 if tg_username:
                     bound_user = await UserOperate.get_user_by_telegram_id(telegram_id)
                     if bound_user:
                         from src.services import UserService
+
                         await UserService.cache_telegram_username(bound_user, tg_username)
             except Exception as exc:  # pragma: no cover
                 logger.warning(f"缓存 Telegram username 失败: {exc}")
 
             # 注册绑定码验证成功时仅返回 telegram_id，这里给出更友好提示
-            if not d.get('username'):
-                await update.message.reply_text(
-                    "✅ Telegram 绑定码验证成功！\n\n请返回网页继续提交注册。"
-                )
+            if not d.get("username"):
+                await update.message.reply_text("✅ Telegram 绑定码验证成功！\n\n请返回网页继续提交注册。")
                 return True
 
             info_lines = [
@@ -453,13 +458,13 @@ def register(bot):
                 "仍失败请重新生成绑定码。\n\n"
                 "你可以重新发送绑定码，或发送 /cancel 取消。"
             )
-        elif d.get('reason') == 'not_in_required_group':
-            missing = d.get('missing_groups') or []
+        elif d.get("reason") == "not_in_required_group":
+            missing = d.get("missing_groups") or []
             buttons = []
             for g in missing:
-                if g.get('url'):
-                    label = g.get('title') or g.get('id') or '加入群组'
-                    buttons.append([InlineKeyboardButton(f"👥 加入 {label}", url=g['url'])])
+                if g.get("url"):
+                    label = g.get("title") or g.get("id") or "加入群组"
+                    buttons.append([InlineKeyboardButton(f"👥 加入 {label}", url=g["url"])])
             reply_markup = InlineKeyboardMarkup(buttons) if buttons else None
             await update.message.reply_text(
                 f"❌ 绑定失败: 你尚未加入必需群组\n\n{message or ''}\n\n"
@@ -485,6 +490,7 @@ def register(bot):
 
         try:
             from src.bot.handlers.admin_handlers import _clear_admin_state  # type: ignore
+
             if _clear_admin_state(uid):
                 cancelled.append("管理员输入流程")
         except Exception:
@@ -505,8 +511,7 @@ def register(bot):
         existing = await UserOperate.get_user_by_telegram_id(telegram_id)
         if existing:
             await update.message.reply_text(
-                f"⚠️ 您已绑定账号: `{existing.USERNAME}`\n"
-                "如需更换，请在网页端操作",
+                f"⚠️ 您已绑定账号: `{existing.USERNAME}`\n" "如需更换，请在网页端操作",
                 parse_mode="Markdown",
             )
             return
@@ -514,9 +519,7 @@ def register(bot):
         if not context.args or len(context.args) < 1:
             context.user_data[BIND_STATE_KEY] = True
             await update.message.reply_text(
-                "📨 请输入 8 位绑定码以完成绑定\n\n"
-                "💡 获取方式: 网页端个人中心/注册页\n"
-                "💡 取消流程: /cancel",
+                "📨 请输入 8 位绑定码以完成绑定\n\n" "💡 获取方式: 网页端个人中心/注册页\n" "💡 取消流程: /cancel",
                 parse_mode="Markdown",
             )
             return
@@ -535,7 +538,9 @@ def register(bot):
         except Exception as e:
             logger.error(f"TG 绑定回调失败: {e}")
             context.user_data[BIND_STATE_KEY] = True
-            await update.message.reply_text("❌ 绑定失败，请稍后重试或联系管理员。你也可以重新发送绑定码，或发送 /cancel 取消")
+            await update.message.reply_text(
+                "❌ 绑定失败，请稍后重试或联系管理员。你也可以重新发送绑定码，或发送 /cancel 取消"
+            )
 
     @require_private
     async def handle_bind_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -547,11 +552,11 @@ def register(bot):
         if not context.user_data.get(BIND_STATE_KEY):
             return
 
-        text = (update.message.text or '').strip()
+        text = (update.message.text or "").strip()
         if not text:
             return
 
-        if text.lower() in {'/cancel', 'cancel', '取消', '返回'}:
+        if text.lower() in {"/cancel", "cancel", "取消", "返回"}:
             context.user_data.pop(BIND_STATE_KEY, None)
             await update.message.reply_text("✅ 已取消绑定流程")
             return
@@ -560,16 +565,15 @@ def register(bot):
         if existing:
             context.user_data.pop(BIND_STATE_KEY, None)
             await update.message.reply_text(
-                f"⚠️ 您已绑定账号: `{existing.USERNAME}`\n"
-                "如需更换，请在网页端操作",
+                f"⚠️ 您已绑定账号: `{existing.USERNAME}`\n" "如需更换，请在网页端操作",
                 parse_mode="Markdown",
             )
             return
 
         bind_code = text.upper()
-        if bind_code.startswith('/BIND'):
+        if bind_code.startswith("/BIND"):
             parts = bind_code.split()
-            bind_code = parts[1].strip().upper() if len(parts) > 1 else ''
+            bind_code = parts[1].strip().upper() if len(parts) > 1 else ""
 
         if len(bind_code) != 8 or not bind_code.isalnum():
             await update.message.reply_text("❌ 绑定码格式不正确，请发送 8 位字母数字绑定码，或发送 /cancel 取消")
@@ -580,7 +584,9 @@ def register(bot):
                 context.user_data.pop(BIND_STATE_KEY, None)
         except Exception as e:
             logger.error(f"TG 绑定处理失败: {e}")
-            await update.message.reply_text("❌ 绑定失败，请稍后重试或联系管理员。你也可以重新发送绑定码，或发送 /cancel 取消")
+            await update.message.reply_text(
+                "❌ 绑定失败，请稍后重试或联系管理员。你也可以重新发送绑定码，或发送 /cancel 取消"
+            )
 
     # ======================== 注册处理器 ========================
 
@@ -602,5 +608,6 @@ def register(bot):
     app.add_handler(CallbackQueryHandler(cb_user_playinfo, pattern="^user_playinfo$"))
 
     # 文本消息（bind 状态机）- 在 admin 文本处理之后执行
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, handle_bind_text), group=2)
-
+    app.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, handle_bind_text), group=2
+    )

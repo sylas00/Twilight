@@ -12,25 +12,31 @@ from src.config import Config
 from src.db.utils import create_database
 
 logging.basicConfig(level=logging.INFO)
+
+
 class RequireDatabaseModel(AsyncAttrs, DeclarativeBase):
     pass
+
+
 class Status(Enum):
     """请求状态"""
-    UNHANDLED = 0   # 未处理
-    ACCEPTED = 1    # 已接受
-    REJECTED = 2    # 已拒绝
-    COMPLETED = 3   # 已完成
+
+    UNHANDLED = 0  # 未处理
+    ACCEPTED = 1  # 已接受
+    REJECTED = 2  # 已拒绝
+    COMPLETED = 3  # 已完成
 
 
 class Type(Enum):
     """请求类型"""
+
     NEW = 1  # 新增
     SUB = 2  # 字幕
     RES = 3  # 画质
 
 
 class RequireModel(RequireDatabaseModel):
-    __tablename__ = 'require'
+    __tablename__ = "require"
     REQUIRE_ID: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     TYPE: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     UID: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
@@ -60,7 +66,7 @@ class RequireOperate:
         yyyyyy为随机生成的6位大小写字母
         """
         uid_random = random.randint(100000, 999999)
-        letters = ''.join(random.choices("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz", k=6))
+        letters = "".join(random.choices("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz", k=6))
         return f"req-{uid_random:06d}-{letters}"
 
     @staticmethod
@@ -90,7 +96,7 @@ class RequireOperate:
                         session.add(require)
                         return True
                     logging.warning(f"Key {key} already exists, generating a new one.")
-                
+
                 logging.error("Failed to generate unique key after max attempts")
                 return False
 

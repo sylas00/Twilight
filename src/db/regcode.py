@@ -14,9 +14,11 @@ from src.config import Config
 from src.db.utils import create_database, init_async_db
 
 logger = logging.getLogger(__name__)
+
+
 class Type(Enum):
-    REGISTER = 1   # 注册
-    RENEW = 2      # 续期
+    REGISTER = 1  # 注册
+    RENEW = 2  # 续期
     WHITELIST = 3  # 白名单
 
 
@@ -51,11 +53,7 @@ class RegCodeOperate:
 
     @staticmethod
     async def create_regcode(
-        vali_time: int,
-        type_: int,
-        use_count_limit: int = 1,
-        count: int = 1,
-        day: int = 30
+        vali_time: int, type_: int, use_count_limit: int = 1, count: int = 1, day: int = 30
     ) -> Union[str, List[str]]:
         """创建指定数量的注册码并添加到数据库中"""
         try:
@@ -68,11 +66,7 @@ class RegCodeOperate:
             for _ in range(count):
                 code = RegCodeOperate._generate_code(vali_time, use_count_limit, day)
                 reg_code = RegCodeModel(
-                    CODE=code,
-                    VALIDITY_TIME=vali_time,
-                    TYPE=type_,
-                    USE_COUNT_LIMIT=use_count_limit,
-                    DAYS=day
+                    CODE=code, VALIDITY_TIME=vali_time, TYPE=type_, USE_COUNT_LIMIT=use_count_limit, DAYS=day
                 )
                 try:
                     session.add(reg_code)
@@ -98,7 +92,7 @@ class RegCodeOperate:
         async with RegCodeSessionFactory() as session:
             result = await session.execute(select(RegCodeModel).filter_by(TYPE=type_))
             return list(result.scalars().all())
-    
+
     @staticmethod
     async def get_all_regcodes() -> List[RegCodeModel]:
         """获取所有注册码"""
@@ -114,8 +108,7 @@ class RegCodeOperate:
                 stmt = update(RegCodeModel).where(RegCodeModel.CODE == code)
                 if increment > 0:
                     stmt = stmt.where(
-                        (RegCodeModel.USE_COUNT_LIMIT == -1) |
-                        (RegCodeModel.USE_COUNT < RegCodeModel.USE_COUNT_LIMIT)
+                        (RegCodeModel.USE_COUNT_LIMIT == -1) | (RegCodeModel.USE_COUNT < RegCodeModel.USE_COUNT_LIMIT)
                     )
                 stmt = stmt.values(USE_COUNT=RegCodeModel.USE_COUNT + increment)
                 result = await session.execute(stmt)
@@ -154,9 +147,7 @@ class RegCodeOperate:
         """根据UID获取所有注册码"""
         async with RegCodeSessionFactory() as session:
             # UID存储为字符串，需要模糊匹配
-            result = await session.execute(
-                select(RegCodeModel).filter(RegCodeModel.UID.contains(str(uid)))
-            )
+            result = await session.execute(select(RegCodeModel).filter(RegCodeModel.UID.contains(str(uid))))
             return list(result.scalars().all())
 
     @staticmethod
@@ -164,10 +155,9 @@ class RegCodeOperate:
         """获取活跃注册码数量（使用次数未达限制）"""
         async with RegCodeSessionFactory() as session:
             result = await session.execute(
-                select(func.count()).select_from(RegCodeModel).where(
-                    (RegCodeModel.USE_COUNT_LIMIT == -1) |
-                    (RegCodeModel.USE_COUNT < RegCodeModel.USE_COUNT_LIMIT)
-                )
+                select(func.count())
+                .select_from(RegCodeModel)
+                .where((RegCodeModel.USE_COUNT_LIMIT == -1) | (RegCodeModel.USE_COUNT < RegCodeModel.USE_COUNT_LIMIT))
             )
             return result.scalar_one()
 
@@ -175,17 +165,13 @@ class RegCodeOperate:
     async def get_regcode_stats() -> dict:
         """获取注册码统计数据（总数和启用数，仅在数据库层面计数）"""
         async with RegCodeSessionFactory() as session:
-            total_result = await session.execute(
-                select(func.count()).select_from(RegCodeModel)
-            )
+            total_result = await session.execute(select(func.count()).select_from(RegCodeModel))
             active_result = await session.execute(
-                select(func.count()).select_from(RegCodeModel).where(
-                    RegCodeModel.ACTIVE == True
-                )
+                select(func.count()).select_from(RegCodeModel).where(RegCodeModel.ACTIVE == True)
             )
             return {
-                'total': total_result.scalar_one(),
-                'active': active_result.scalar_one(),
+                "total": total_result.scalar_one(),
+                "active": active_result.scalar_one(),
             }
 
     @staticmethod

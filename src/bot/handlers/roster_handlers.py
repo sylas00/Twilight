@@ -11,6 +11,7 @@ Bot API 没有 ``getChatMembers`` —— 没法主动枚举群成员。这里通
 只针对 ``TelegramConfig.GROUP_ID`` 里列出的群组生效；其它群的事件忽略，避免
 把无关群塞进表。
 """
+
 from __future__ import annotations
 
 import logging
@@ -83,7 +84,8 @@ async def _on_chat_member_update(update: Update, context: ContextTypes.DEFAULT_T
             await TelegramRosterOperate.mark_left(matched, int(user.id), status=status)
         else:
             await TelegramRosterOperate.upsert_member(
-                matched, int(user.id),
+                matched,
+                int(user.id),
                 status=status or "member",
                 is_bot=bool(getattr(user, "is_bot", False)),
             )
@@ -101,7 +103,8 @@ async def _on_group_message(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return
     try:
         await TelegramRosterOperate.upsert_member(
-            matched, int(msg.from_user.id),
+            matched,
+            int(msg.from_user.id),
             status="member",  # 能发言至少不是 left/kicked
             is_bot=bool(getattr(msg.from_user, "is_bot", False)),
         )

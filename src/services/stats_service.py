@@ -4,6 +4,7 @@
 播放统计相关功能
 参考: https://github.com/berry8838/Sakura_embyboss
 """
+
 import logging
 from typing import List, Dict, Any
 from datetime import datetime, timedelta
@@ -17,13 +18,13 @@ logger = logging.getLogger(__name__)
 
 class StatsService:
     """统计服务"""
-    
+
     @staticmethod
     def _get_date_str(ts: int = None) -> str:
         """获取日期字符串 YYYY-MM-DD"""
         dt = datetime.fromtimestamp(ts or timestamp())
-        return dt.strftime('%Y-%m-%d')
-    
+        return dt.strftime("%Y-%m-%d")
+
     @staticmethod
     def _get_day_start(offset_days: int = 0) -> int:
         """获取指定天数偏移的当天开始时间戳"""
@@ -31,51 +32,45 @@ class StatsService:
         target = now.replace(hour=0, minute=0, second=0, microsecond=0)
         target = target - timedelta(days=-offset_days)
         return int(target.timestamp())
-    
+
     @classmethod
     async def get_user_stats(cls, uid: int) -> Dict[str, Any]:
         """获取用户统计信息"""
         user = await UserOperate.get_user_by_uid(uid)
         if not user:
             return None
-        
+
         total_duration = await PlaybackOperate.get_user_total_duration(uid)
         play_count = await PlaybackOperate.get_user_play_count(uid)
-        
+
         # 今日统计
         today_start = cls._get_day_start()
         today_records = await PlaybackOperate.get_user_playback(uid, limit=1000)
-        today_duration = sum(
-            r.DURATION for r in today_records 
-            if r.START_TIME >= today_start
-        )
-        today_count = sum(
-            1 for r in today_records 
-            if r.START_TIME >= today_start
-        )
-        
+        today_duration = sum(r.DURATION for r in today_records if r.START_TIME >= today_start)
+        today_count = sum(1 for r in today_records if r.START_TIME >= today_start)
+
         return {
-            'uid': uid,
-            'username': user.USERNAME,
-            'total': {
-                'duration': total_duration,
-                'duration_str': format_duration(total_duration),
-                'play_count': play_count,
+            "uid": uid,
+            "username": user.USERNAME,
+            "total": {
+                "duration": total_duration,
+                "duration_str": format_duration(total_duration),
+                "play_count": play_count,
             },
-            'today': {
-                'duration': today_duration,
-                'duration_str': format_duration(today_duration),
-                'play_count': today_count,
-            }
+            "today": {
+                "duration": today_duration,
+                "duration_str": format_duration(today_duration),
+                "play_count": today_count,
+            },
         }
-    
+
     @classmethod
     async def get_recent_plays(cls, limit: int = 20) -> List[Dict[str, Any]]:
         """获取最近播放记录"""
         # 需要实现一个全局的播放记录查询
         # 暂时返回空列表
         return []
-    
+
     @classmethod
     async def record_play_start(
         cls,
@@ -89,11 +84,11 @@ class StatsService:
         play_method: str = None,
         series_name: str = None,
         season_name: str = None,
-        ip_address: str = None
+        ip_address: str = None,
     ) -> int:
         """
         记录播放开始
-        
+
         :return: 记录 ID
         """
         record = PlaybackModel(
@@ -110,67 +105,45 @@ class StatsService:
             START_TIME=timestamp(),
             IP_ADDRESS=ip_address,
         )
-        
+
         await PlaybackOperate.add_playback(record)
         logger.info(f"播放开始: {item_name} (用户: {uid})")
-        
+
         return record.ID
-    
+
     @classmethod
-    async def record_play_stop(
-        cls,
-        emby_user_id: str,
-        item_id: str,
-        position_ticks: int = None
-    ) -> bool:
+    async def record_play_stop(cls, emby_user_id: str, item_id: str, position_ticks: int = None) -> bool:
         """记录播放停止"""
         # 查找活跃会话
         record = await PlaybackOperate.get_active_session(emby_user_id, item_id)
         if not record:
             return False
-        
+
         end_time = timestamp()
         duration = end_time - record.START_TIME
-        
+
         await PlaybackOperate.update_playback(
-            record.ID,
-            END_TIME=end_time,
-            DURATION=duration,
-            POSITION_TICKS=position_ticks
+            record.ID, END_TIME=end_time, DURATION=duration, POSITION_TICKS=position_ticks
         )
-        
+
         # 更新每日统计
         date_str = cls._get_date_str(record.START_TIME)
         await DailyStatsOperate.update_daily_stats(
-            date=date_str,
-            uid=record.UID,
-            play_count=1,
-            duration=duration,
-            items=1
+            date=date_str, uid=record.UID, play_count=1, duration=duration, items=1
         )
-        
+
         logger.info(f"播放结束: {record.ITEM_NAME} (时长: {format_duration(duration)})")
         return True
-    
+
     @classmethod
     async def record_play_progress(
-        cls,
-        emby_user_id: str,
-        item_id: str,
-        position_ticks: int,
-        is_paused: bool = False
+        cls, emby_user_id: str, item_id: str, position_ticks: int, is_paused: bool = False
     ) -> bool:
         """记录播放进度"""
         record = await PlaybackOperate.get_active_session(emby_user_id, item_id)
         if not record:
             return False
-        
-        await PlaybackOperate.update_playback(
-            record.ID,
-            POSITION_TICKS=position_ticks,
-            IS_PAUSED=is_paused
-        )
-        
-        return True
-    
 
+        await PlaybackOperate.update_playback(record.ID, POSITION_TICKS=position_ticks, IS_PAUSED=is_paused)
+
+        return True

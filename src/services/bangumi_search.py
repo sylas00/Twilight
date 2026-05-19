@@ -7,6 +7,7 @@ Bangumi 智能搜索模块
 - 置信度评分
 - 多策略搜索
 """
+
 import re
 import logging
 import asyncio
@@ -27,6 +28,7 @@ BASE_URL = "https://api.bgm.tv/v0"
 @dataclass
 class SubjectInfo:
     """Bangumi 条目详细信息"""
+
     id: int
     type: int
     name: str
@@ -52,73 +54,146 @@ class SubjectInfo:
         if self.name_en and self.name_en.isascii():
             return self.name_en.strip()
         return None
-    
+
     @property
     def title(self) -> str:
         """优先返回中文名"""
         return self.name_cn if self.name_cn else self.name
-    
+
     @property
     def cover_url(self) -> Optional[str]:
         if self.image:
-            return self.image.get('large') or self.image.get('common') or self.image.get('medium')
+            return self.image.get("large") or self.image.get("common") or self.image.get("medium")
         return None
-    
+
     @property
     def bgm_url(self) -> str:
         return f"https://bgm.tv/subject/{self.id}"
-    
+
     def to_dict(self) -> dict:
         return {
-            'id': self.id,
-            'title': self.title,
-            'original_title': self.name,
-            'type': self.type,
-            'overview': self.summary[:300] + '...' if len(self.summary) > 300 else self.summary,
-            'release_date': self.date,
-            'year': self.date[:4] if self.date and len(self.date) >= 4 else None,
-            'poster_url': self.cover_url,
-            'vote_average': self.rating_score,
-            'rank': self.rating_rank,
-            'bgm_url': self.bgm_url,
-            'eps': self.eps,
-            'nsfw': self.nsfw,
-            'tags': [t.get('name') for t in self.tags[:5]] if self.tags else [],
-            'source': 'bangumi',
+            "id": self.id,
+            "title": self.title,
+            "original_title": self.name,
+            "type": self.type,
+            "overview": self.summary[:300] + "..." if len(self.summary) > 300 else self.summary,
+            "release_date": self.date,
+            "year": self.date[:4] if self.date and len(self.date) >= 4 else None,
+            "poster_url": self.cover_url,
+            "vote_average": self.rating_score,
+            "rank": self.rating_rank,
+            "bgm_url": self.bgm_url,
+            "eps": self.eps,
+            "nsfw": self.nsfw,
+            "tags": [t.get("name") for t in self.tags[:5]] if self.tags else [],
+            "source": "bangumi",
         }
 
 
 class BangumiSearchAPI:
     """Bangumi 智能搜索 API"""
-    
+
     HEADERS = {
         "User-Agent": "Twilight/1.0 (Emby-Management)",
         "Content-Type": "application/json",
     }
 
     CONFIDENCE_THRESHOLD = 80
-    PLATFORM_SUFFIX_PATTERN = re.compile(
-        r"\s*[（\(](?:僅限.*地區|.*配|.*版|.*語)[）\)]\s*$"
-    )
+    PLATFORM_SUFFIX_PATTERN = re.compile(r"\s*[（\(](?:僅限.*地區|.*配|.*版|.*語)[）\)]\s*$")
     SEASON_KEYWORD_SWAPS = {"第二季": "新系列", "第2季": "新系列"}
 
     SEASON_NUMBER_MAP = {
-        "第一季": 1, "第1季": 1, "season 1": 1, "s1": 1, "1st season": 1, "Ⅰ": 1, "壹": 1, "一期": 1,
-        "第二季": 2, "第2季": 2, "season 2": 2, "s2": 2, "2nd season": 2, "Ⅱ": 2, "贰": 2, "二期": 2,
-        "第三季": 3, "第3季": 3, "season 3": 3, "s3": 3, "3rd season": 3, "Ⅲ": 3, "叁": 3, "三期": 3,
-        "第四季": 4, "第4季": 4, "season 4": 4, "s4": 4, "4th season": 4, "Ⅳ": 4, "肆": 4, "四期": 4,
-        "第五季": 5, "第5季": 5, "season 5": 5, "s5": 5, "5th season": 5, "Ⅴ": 5, "伍": 5, "五期": 5,
-        "第6季": 6, "season 6": 6, "s6": 6, "6th season": 6, "Ⅵ": 6, "陆": 6, "六期": 6,
-        "第7季": 7, "season 7": 7, "s7": 7, "7th season": 7, "Ⅶ": 7, "柒": 7, "七期": 7,
-        "第8季": 8, "season 8": 8, "s8": 8, "8th season": 8, "Ⅷ": 8, "捌": 8, "八期": 8,
-        "第9季": 9, "season 9": 9, "s9": 9, "9th season": 9, "Ⅸ": 9, "玖": 9, "九期": 9,
-        "第10季": 10, "season 10": 10, "s10": 10, "10th season": 10, "Ⅹ": 10, "拾": 10, "十期": 10,
-        "第六季": 6, "第七季": 7, "第八季": 8, "第九季": 9, "第十季": 10,
+        "第一季": 1,
+        "第1季": 1,
+        "season 1": 1,
+        "s1": 1,
+        "1st season": 1,
+        "Ⅰ": 1,
+        "壹": 1,
+        "一期": 1,
+        "第二季": 2,
+        "第2季": 2,
+        "season 2": 2,
+        "s2": 2,
+        "2nd season": 2,
+        "Ⅱ": 2,
+        "贰": 2,
+        "二期": 2,
+        "第三季": 3,
+        "第3季": 3,
+        "season 3": 3,
+        "s3": 3,
+        "3rd season": 3,
+        "Ⅲ": 3,
+        "叁": 3,
+        "三期": 3,
+        "第四季": 4,
+        "第4季": 4,
+        "season 4": 4,
+        "s4": 4,
+        "4th season": 4,
+        "Ⅳ": 4,
+        "肆": 4,
+        "四期": 4,
+        "第五季": 5,
+        "第5季": 5,
+        "season 5": 5,
+        "s5": 5,
+        "5th season": 5,
+        "Ⅴ": 5,
+        "伍": 5,
+        "五期": 5,
+        "第6季": 6,
+        "season 6": 6,
+        "s6": 6,
+        "6th season": 6,
+        "Ⅵ": 6,
+        "陆": 6,
+        "六期": 6,
+        "第7季": 7,
+        "season 7": 7,
+        "s7": 7,
+        "7th season": 7,
+        "Ⅶ": 7,
+        "柒": 7,
+        "七期": 7,
+        "第8季": 8,
+        "season 8": 8,
+        "s8": 8,
+        "8th season": 8,
+        "Ⅷ": 8,
+        "捌": 8,
+        "八期": 8,
+        "第9季": 9,
+        "season 9": 9,
+        "s9": 9,
+        "9th season": 9,
+        "Ⅸ": 9,
+        "玖": 9,
+        "九期": 9,
+        "第10季": 10,
+        "season 10": 10,
+        "s10": 10,
+        "10th season": 10,
+        "Ⅹ": 10,
+        "拾": 10,
+        "十期": 10,
+        "第六季": 6,
+        "第七季": 7,
+        "第八季": 8,
+        "第九季": 9,
+        "第十季": 10,
     }
 
     NON_NUMERIC_SEASON_KEYWORDS = [
-        "新系列", "最终季", "最终章", "final season",
-        "第二部分", "第2部分", "part 2", "part2",
+        "新系列",
+        "最终季",
+        "最终章",
+        "final season",
+        "第二部分",
+        "第2部分",
+        "part 2",
+        "part2",
     ]
 
     SEASON_PATTERNS = list(SEASON_NUMBER_MAP.keys()) + NON_NUMERIC_SEASON_KEYWORDS
@@ -130,9 +205,7 @@ class BangumiSearchAPI:
         async with httpx.AsyncClient() as client:
             for attempt in range(retries):
                 try:
-                    response = await client.get(
-                        url, headers=BangumiSearchAPI.HEADERS, timeout=30
-                    )
+                    response = await client.get(url, headers=BangumiSearchAPI.HEADERS, timeout=30)
                     response.raise_for_status()
                     return response.json()
                 except httpx.RequestError as e:
@@ -143,16 +216,12 @@ class BangumiSearchAPI:
             return None
 
     @staticmethod
-    async def _post(
-            endpoint: str, data: dict, retries: int = 3, delay: int = 2
-    ) -> Optional[dict]:
+    async def _post(endpoint: str, data: dict, retries: int = 3, delay: int = 2) -> Optional[dict]:
         url = f"{BASE_URL}{endpoint}"
         async with httpx.AsyncClient() as client:
             for attempt in range(retries):
                 try:
-                    response = await client.post(
-                        url, json=data, headers=BangumiSearchAPI.HEADERS, timeout=30
-                    )
+                    response = await client.post(url, json=data, headers=BangumiSearchAPI.HEADERS, timeout=30)
                     response.raise_for_status()
                     return response.json()
                 except httpx.RequestError as e:
@@ -168,7 +237,7 @@ class BangumiSearchAPI:
         data = await cls._get(f"/subjects/{subject_id}")
         if not data:
             return None
-        
+
         aliases = []
         infobox = data.get("infobox", [])
         if isinstance(infobox, list):
@@ -176,16 +245,12 @@ class BangumiSearchAPI:
                 if item.get("key") == "别名":
                     value = item.get("value")
                     if isinstance(value, str):
-                        aliases.extend([
-                            alias.strip()
-                            for alias in re.split(r"[、/]", value)
-                            if alias.strip()
-                        ])
+                        aliases.extend([alias.strip() for alias in re.split(r"[、/]", value) if alias.strip()])
                     elif isinstance(value, list):
                         for alias_obj in value:
                             if isinstance(alias_obj, dict) and "v" in alias_obj:
                                 aliases.append(alias_obj["v"])
-        
+
         return SubjectInfo(
             id=data.get("id"),
             type=data.get("type"),
@@ -259,12 +324,10 @@ class BangumiSearchAPI:
 
     # --- 核心搜索与匹配逻辑 ---
     @classmethod
-    async def search_subject(
-            cls, name: str, subject_type: int = 2, episode_to_sync: int = 0
-    ) -> Optional[SubjectInfo]:
+    async def search_subject(cls, name: str, subject_type: int = 2, episode_to_sync: int = 0) -> Optional[SubjectInfo]:
         """
         智能搜索条目
-        
+
         :param name: 搜索名称
         :param subject_type: 条目类型 (2=动画, 6=三次元)
         :param episode_to_sync: 需要同步的集数（用于分割放送检测）
@@ -276,13 +339,11 @@ class BangumiSearchAPI:
         logger.info(f"开始搜索: '{initial_clean_name}', 类型: {subject_type}")
 
         strategies = [(initial_clean_name, "直接搜索")]
-        
+
         # 关键词替换策略
         for orig, new in cls.SEASON_KEYWORD_SWAPS.items():
             if orig in initial_clean_name:
-                strategies.append(
-                    (initial_clean_name.replace(orig, new), "关键词替换搜索")
-                )
+                strategies.append((initial_clean_name.replace(orig, new), "关键词替换搜索"))
 
         # 基础名称搜索策略
         base_name = cls._normalize_title_for_comparison(initial_clean_name)
@@ -292,9 +353,7 @@ class BangumiSearchAPI:
         for term, s_name in strategies:
             logger.debug(f"--- {s_name}: '{term}' ---")
             results = await cls.search_subject_list(term, subject_type, 10)
-            match_subject = await cls._find_match_in_results(
-                results, initial_clean_name, None, episode_to_sync
-            )
+            match_subject = await cls._find_match_in_results(results, initial_clean_name, None, episode_to_sync)
             if match_subject:
                 return match_subject
 
@@ -318,13 +377,11 @@ class BangumiSearchAPI:
             return 0
         cleaned_title = cls.PLATFORM_SUFFIX_PATTERN.sub("", title).strip()
         title_lower = cleaned_title.lower()
-        
-        for keyword, number in sorted(
-                cls.SEASON_NUMBER_MAP.items(), key=lambda item: len(item[0]), reverse=True
-        ):
+
+        for keyword, number in sorted(cls.SEASON_NUMBER_MAP.items(), key=lambda item: len(item[0]), reverse=True):
             if keyword in title_lower:
                 return number
-        
+
         match = re.search(r"\s+(\d+)$", cleaned_title)
         if match:
             season_num = int(match.group(1))
@@ -340,8 +397,12 @@ class BangumiSearchAPI:
         normalized = cls.PLATFORM_SUFFIX_PATTERN.sub("", title).strip()
         normalized = normalized.lower()
         # 移除所有标点符号和空格（包括中文标点）
-        normalized = re.sub(r'[\s!"#$%&\'()*+,\-./:;<=>?@\[\\\]^_`{|}~\u00b7\u2018\u2019\u201c\u201d\uff0c\u3002\uff1f\uff01\u300a\u300b\u2014\u2026\uffe5\u3001\uff08\uff09\u3010\u3011\u300c\u300d]', '', normalized)
-        
+        normalized = re.sub(
+            r'[\s!"#$%&\'()*+,\-./:;<=>?@\[\\\]^_`{|}~\u00b7\u2018\u2019\u201c\u201d\uff0c\u3002\uff1f\uff01\u300a\u300b\u2014\u2026\uffe5\u3001\uff08\uff09\u3010\u3011\u300c\u300d]',
+            "",
+            normalized,
+        )
+
         # 移除季数关键词
         all_patterns = [p for p in cls.SEASON_PATTERNS if not p.startswith("\\b")]
         for p in sorted(all_patterns, key=len, reverse=True):
@@ -368,11 +429,11 @@ class BangumiSearchAPI:
 
     @classmethod
     def _calculate_confidence_score(
-            cls,
-            subject: SubjectInfo,
-            search_name: str,
-            search_date: Optional[datetime],
-            rank: int,
+        cls,
+        subject: SubjectInfo,
+        search_name: str,
+        search_date: Optional[datetime],
+        rank: int,
     ) -> Tuple[int, List[str]]:
         """计算置信度分数"""
         score, details = 0, []
@@ -390,7 +451,7 @@ class BangumiSearchAPI:
             if sim > max_sim:
                 max_sim = sim
                 best_match_name = name
-        
+
         name_score = int(max_sim * 100)
         score += name_score
         details.append(f"名称相似度({max_sim:.2f}): {name_score}分")
@@ -398,12 +459,15 @@ class BangumiSearchAPI:
         # 2. 季数匹配度
         search_season_num = cls._extract_season_number(search_name)
         search_has_non_numeric = any(
-            keyword.lower() in search_name.lower() for keyword in cls.NON_NUMERIC_SEASON_KEYWORDS)
+            keyword.lower() in search_name.lower() for keyword in cls.NON_NUMERIC_SEASON_KEYWORDS
+        )
 
         result_season_num = cls._extract_season_number(best_match_name) if best_match_name else 0
-        result_has_non_numeric = any(
-            keyword.lower() in best_match_name.lower() for keyword in cls.NON_NUMERIC_SEASON_KEYWORDS
-        ) if best_match_name else False
+        result_has_non_numeric = (
+            any(keyword.lower() in best_match_name.lower() for keyword in cls.NON_NUMERIC_SEASON_KEYWORDS)
+            if best_match_name
+            else False
+        )
 
         has_search_season_info = search_season_num > 0 or search_has_non_numeric
         has_result_season_info = result_season_num > 0 or result_has_non_numeric
@@ -459,12 +523,12 @@ class BangumiSearchAPI:
 
     @classmethod
     async def _find_match_in_results(
-            cls,
-            results_list: List[dict],
-            original_search_name: str,
-            search_date: Optional[datetime],
-            episode_to_sync: int = 0,
-            is_3d_search: bool = False,
+        cls,
+        results_list: List[dict],
+        original_search_name: str,
+        search_date: Optional[datetime],
+        episode_to_sync: int = 0,
+        is_3d_search: bool = False,
     ) -> Optional[SubjectInfo]:
         """在搜索结果中找到最佳匹配"""
         if not results_list:
@@ -475,16 +539,14 @@ class BangumiSearchAPI:
             subject = await cls.get_subject_info(result["id"])
             if not subject or (0 < subject.eps < 6 and not is_3d_search):
                 continue
-            
-            score, details = cls._calculate_confidence_score(
-                subject, original_search_name, search_date, i
-            )
+
+            score, details = cls._calculate_confidence_score(subject, original_search_name, search_date, i)
             result_name = subject.name_cn or subject.name
             logger.debug(
                 f"评估: '{result_name}' (ID: {subject.id}, 集数: {subject.eps}) | 总分: {score} | "
                 + " | ".join(details)
             )
-            
+
             if score >= cls.CONFIDENCE_THRESHOLD:
                 candidates.append((score, subject))
             elif not is_3d_search:
@@ -505,7 +567,7 @@ class BangumiSearchAPI:
                 continue
 
             result_name = current_subject.name_cn or current_subject.name
-            
+
             # 检查是否为分割放送的第一部分
             is_potential_part1 = False
             if current_subject.eps > 0 and episode_to_sync > current_subject.eps:
@@ -546,7 +608,9 @@ class BangumiSearchAPI:
                         break
 
             # 直接匹配
-            if (current_subject.eps == 0 or episode_to_sync <= current_subject.eps) and score >= cls.CONFIDENCE_THRESHOLD:
+            if (
+                current_subject.eps == 0 or episode_to_sync <= current_subject.eps
+            ) and score >= cls.CONFIDENCE_THRESHOLD:
                 search_season_num = cls._extract_season_number(original_search_name)
                 result_season_num = cls._extract_season_number(result_name)
                 if search_season_num > 0 and 0 < result_season_num != search_season_num:
@@ -561,11 +625,9 @@ class BangumiSearchAPI:
         return None
 
     @classmethod
-    async def search_subject_list(
-            cls, name: str, subject_type: int = 2, limit: int = 5
-    ) -> List[dict]:
+    async def search_subject_list(cls, name: str, subject_type: int = 2, limit: int = 5) -> List[dict]:
         """搜索条目列表"""
-        sanitized_name = re.sub(r'[,?!()\[\]"\'。，、？！（）【】「」]', ' ', name).strip()
+        sanitized_name = re.sub(r'[,?!()\[\]"\'。，、？！（）【】「」]', " ", name).strip()
 
         data = await cls._post(
             "/search/subjects",
@@ -575,7 +637,7 @@ class BangumiSearchAPI:
                 "filter": {"type": [subject_type], "nsfw": True},
             },
         )
-        
+
         if data and "data" in data and data["data"]:
             results = cls._process_subjects(data["data"], limit)
             logger.debug(f"使用关键词 '{sanitized_name}' 找到 {len(results)} 个结果")
@@ -592,13 +654,13 @@ class BangumiSearchAPI:
             if id_ and name:
                 results.append({"name": name, "id": id_})
         return results
-    
+
     # --- 简单搜索方法（供外部调用）---
     @classmethod
     async def search(cls, keyword: str, subject_type: int = 2, limit: int = 20) -> List[SubjectInfo]:
         """
         简单搜索（返回所有匹配结果）
-        
+
         :param keyword: 搜索关键词
         :param subject_type: 条目类型 (2=动画, 6=三次元)
         :param limit: 返回数量限制
@@ -606,18 +668,17 @@ class BangumiSearchAPI:
         results = await cls.search_subject_list(keyword, subject_type, limit)
         subjects = []
         for r in results:
-            subject = await cls.get_subject_info(r['id'])
+            subject = await cls.get_subject_info(r["id"])
             if subject:
                 subjects.append(subject)
         return subjects
-    
+
     @classmethod
     async def smart_search(cls, keyword: str, subject_type: int = 2) -> Optional[SubjectInfo]:
         """
         智能搜索（返回最佳匹配）
-        
+
         :param keyword: 搜索关键词
         :param subject_type: 条目类型 (2=动画, 6=三次元)
         """
         return await cls.search_subject(keyword, subject_type)
-

@@ -8,6 +8,7 @@ Twilight - Emby 用户管理系统
 # 导致 SQLAlchemy 等依赖 platform 模块的库无法导入。
 # 此补丁禁用 WMI 查询，使 platform 回退到注册表方式获取系统信息。
 import platform as _platform
+
 _platform._wmi = None
 
 import argparse
@@ -27,10 +28,11 @@ logger = logging.getLogger(__name__)
 # main.py 仅作为命令行入口，无论是单独启动 API、Bot、调度器，还是全功能模式，
 # 这里的任务都负责协调各项服务的生命周期。
 
-def run_api_server(host: str = '0.0.0.0', port: int = 5000, debug: bool = False):
+
+def run_api_server(host: str = "0.0.0.0", port: int = 5000, debug: bool = False):
     """启动 API 服务器"""
     from src.api import create_app
-    
+
     app = create_app()
     print(f"🌙 Twilight API Server v{__version__}")
     print(f"📡 Running on http://{host}:{port}")
@@ -74,10 +76,10 @@ async def run_scheduler():
         lock_path.write_text(str(current_pid), encoding="utf-8")
     except OSError as exc:
         logger.warning(f"写入 Scheduler 锁文件失败: {exc}")
-    
+
     # 启动调度器服务，它会在后台处理定时任务，如自动续期、定时同步等
     await SchedulerService.start()
-    
+
     # 保持运行，直到外部终止
     try:
         while True:
@@ -98,24 +100,24 @@ async def run_bot():
         logger.error("❌ Telegram 模式未启用")
         logger.error("请在配置文件中设置 telegram_mode = true")
         return
-    
+
     if not TelegramConfig.BOT_TOKEN:
         logger.error("❌ 未配置 BOT_TOKEN")
         logger.error("请在配置文件中设置 bot_token")
         return
-    
+
     from src.bot import start_bot, stop_bot
-    
+
     logger.info("=" * 50)
     logger.info(f"🤖 Twilight Telegram Bot v{__version__}")
     logger.info("=" * 50)
-    
+
     bot = await start_bot()
-    
+
     if not bot:
         logger.error("❌ Bot 启动失败")
         return
-    
+
     # 保持运行
     try:
         while True:
@@ -130,29 +132,32 @@ async def run_all():
     """同时运行 API、Bot 和调度器"""
     import threading
     from src.services.scheduler_service import SchedulerService
-    
+
     logger.info("=" * 50)
     logger.info(f"🌙 Twilight v{__version__} - 全功能模式")
     logger.info("=" * 50)
-    
+
     # 1. 在单独线程中运行 API
     #    这样可以让当前协程继续执行 Bot 和调度器逻辑，避免事件循环阻塞。
     def run_api_in_thread():
         from src.api import create_app
+
+        os.environ["TWILIGHT_API_AUTOSTART_SCHEDULER"] = "0"
         app = create_app()
         # 全功能模式下关闭 debug 以避免两次初始化
         app.run(host=APIConfig.HOST, port=APIConfig.PORT, debug=False, use_reloader=False)
-    
+
     api_thread = threading.Thread(target=run_api_in_thread, daemon=True)
     api_thread.start()
     logger.info(f"✅ API 服务器已在后台启动 (端口 {APIConfig.PORT})")
-    
+
     # 2. 启动 Bot（如果启用）
     bot_thread = None
     bot_stop_event = threading.Event()
 
     def run_bot_in_thread():
         """在独立线程中运行 Bot，使用单独事件循环。"""
+
         async def _bot_worker():
             from src.bot import start_bot, stop_bot
 
@@ -186,14 +191,14 @@ async def run_all():
         logger.info("✅ Telegram Bot 线程已启动")
     else:
         logger.info("ℹ️ Telegram Bot 未启用")
-    
+
     # 3. 启动调度器
     await SchedulerService.start()
-    
+
     logger.info("=" * 50)
     logger.info("🎉 所有服务已启动")
     logger.info("=" * 50)
-    
+
     # 保持运行
     try:
         while True:
@@ -214,9 +219,9 @@ async def run_all():
 def main():
     """主入口"""
     parser = argparse.ArgumentParser(
-        description='Twilight - Emby 用户管理系统 v{}'.format(__version__),
+        description="Twilight - Emby 用户管理系统 v{}".format(__version__),
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog='''
+        epilog="""
 快速开始:
   python main.py api                    # 启动 API 服务器（开发）
   python main.py api --debug            # 调试模式
@@ -240,50 +245,46 @@ def main():
   3. （可选）编辑 config.toml 进行高级配置
 
 更多信息: https://github.com/Prejudice-Studio/Twilight
-        '''
+        """,
     )
-    
-    parser.add_argument(
-        '--version', '-v',
-        action='version',
-        version=f'Twilight v{__version__}'
-    )
-    
-    subparsers = parser.add_subparsers(dest='command', help='可用命令')
-    
+
+    parser.add_argument("--version", "-v", action="version", version=f"Twilight v{__version__}")
+
+    subparsers = parser.add_subparsers(dest="command", help="可用命令")
+
     # API 服务器命令
-    api_parser = subparsers.add_parser('api', help='(仅开发用) 启动 API 服务器')
-    api_parser.add_argument('--host', default='0.0.0.0', help='监听地址')
-    api_parser.add_argument('--port', type=int, default=5000, help='监听端口')
-    api_parser.add_argument('--debug', action='store_true', help='调试模式')
-    
+    api_parser = subparsers.add_parser("api", help="(仅开发用) 启动 API 服务器")
+    api_parser.add_argument("--host", default="0.0.0.0", help="监听地址")
+    api_parser.add_argument("--port", type=int, default=5000, help="监听端口")
+    api_parser.add_argument("--debug", action="store_true", help="调试模式")
+
     # Telegram Bot 命令
-    bot_parser = subparsers.add_parser('bot', help='启动 Telegram Bot (需先启用)')
-    
+    bot_parser = subparsers.add_parser("bot", help="启动 Telegram Bot (需先启用)")
+
     # 定时任务命令
-    scheduler_parser = subparsers.add_parser('scheduler', help='启动定时任务')
-    
+    scheduler_parser = subparsers.add_parser("scheduler", help="启动定时任务")
+
     # 全部启动命令
-    all_parser = subparsers.add_parser('all', help='启动所有服务')
-    
+    all_parser = subparsers.add_parser("all", help="启动所有服务")
+
     args = parser.parse_args()
-    
+
     # 配置日志
     if Config.LOGGING:
         setup_logging(level=Config.LOG_LEVEL)
-    
-    if args.command == 'api':
+
+    if args.command == "api":
         run_api_server(args.host, args.port, args.debug)
-    elif args.command == 'bot':
+    elif args.command == "bot":
         asyncio.run(run_bot())
-    elif args.command == 'scheduler':
+    elif args.command == "scheduler":
         asyncio.run(run_scheduler())
-    elif args.command == 'all':
+    elif args.command == "all":
         asyncio.run(run_all())
     else:
         parser.print_help()
         sys.exit(1)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

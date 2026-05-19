@@ -3,6 +3,7 @@
 
 提供数据库创建等工具函数，避免循环导入
 """
+
 import os
 import logging
 from pathlib import Path
@@ -28,14 +29,14 @@ def _add_missing_columns(engine, model: Type[DeclarativeBase]) -> None:
         for table_name, table in model.metadata.tables.items():
             if not inspector.has_table(table_name):
                 continue
-            existing_cols = {col['name'] for col in inspector.get_columns(table_name)}
+            existing_cols = {col["name"] for col in inspector.get_columns(table_name)}
             for column in table.columns:
                 if column.name in existing_cols:
                     continue
                 col_type = column.type.compile(dialect=engine.dialect)
                 nullable = "" if column.nullable else " NOT NULL"
                 default_sql = ""
-                if column.default is not None and getattr(column.default, 'is_scalar', False):
+                if column.default is not None and getattr(column.default, "is_scalar", False):
                     val = column.default.arg
                     if isinstance(val, bool):
                         default_sql = f" DEFAULT {1 if val else 0}"
@@ -62,7 +63,7 @@ def create_database(database_name: str, model: Type[DeclarativeBase]) -> None:
     """
     os.makedirs(Config.DATABASES_DIR, exist_ok=True)
 
-    db_path = Path(Config.DATABASES_DIR) / f'{database_name}.db'
+    db_path = Path(Config.DATABASES_DIR) / f"{database_name}.db"
     database_url = f"sqlite:///{db_path.as_posix()}"
 
     engine = create_engine(database_url)
@@ -75,7 +76,7 @@ def create_database(database_name: str, model: Type[DeclarativeBase]) -> None:
 
     # 启用WAL模式以提高并发性能
     with engine.connect() as connection:
-        connection.execute(text('PRAGMA journal_mode = WAL'))
+        connection.execute(text("PRAGMA journal_mode = WAL"))
         connection.commit()
 
     logger.debug(f"数据库 {database_name} 初始化完成: {db_path}")
@@ -84,7 +85,7 @@ def create_database(database_name: str, model: Type[DeclarativeBase]) -> None:
 def get_database_path(database_name: str) -> Path:
     """
     获取数据库文件路径
-    
+
     :param database_name: 数据库名称
     :return: 数据库文件完整路径
     """
@@ -94,14 +95,15 @@ def get_database_path(database_name: str) -> Path:
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlalchemy.pool import NullPool
 
+
 def get_async_database_url(database_name: str) -> str:
     """
     获取异步数据库连接URL
-    
+
     :param database_name: 数据库名称（不含.db后缀）
     :return: 异步数据库连接URL
     """
-    return f'sqlite+aiosqlite:///{get_database_path(database_name).as_posix()}'
+    return f"sqlite+aiosqlite:///{get_database_path(database_name).as_posix()}"
 
 
 def init_async_db(database_name: str, model: Type[DeclarativeBase]):
@@ -113,4 +115,3 @@ def init_async_db(database_name: str, model: Type[DeclarativeBase]):
     engine = create_async_engine(url, echo=Config.SQLALCHEMY_LOG, poolclass=NullPool)
     session_factory = async_sessionmaker(bind=engine, expire_on_commit=False)
     return engine, session_factory
-

@@ -15,6 +15,7 @@
 - ``delete_user_keep_subtree(uid)``：仅删除该用户，子节点全部晋升为新树根。
 - ``delete_user_with_subtree(uid, depth)``：以该用户为根做 BFS，仅 depth 层级及以下被一并删除。
 """
+
 from __future__ import annotations
 
 import logging
@@ -119,7 +120,7 @@ class InviteService:
     async def ensure_can_invite(inviter: UserModel) -> tuple[bool, str]:
         if not InviteService.is_enabled():
             return False, "邀请系统未启用"
-        if not inviter or not getattr(inviter, 'UID', None):
+        if not inviter or not getattr(inviter, "UID", None):
             return False, "无效的邀请人"
         if not inviter.ACTIVE_STATUS:
             return False, "账户已被禁用，无法生成邀请码"
@@ -164,11 +165,11 @@ class InviteService:
             return False, "邀请码已被使用或已过期", None
 
         await InviteRelationOperate.add_relation(
-            parent_uid=inviter_uid, child_uid=invitee_uid, code=code,
+            parent_uid=inviter_uid,
+            child_uid=invitee_uid,
+            code=code,
         )
-        logger.info(
-            f"邀请关系建立: inviter={inviter_uid} child={invitee_uid} code={code}"
-        )
+        logger.info(f"邀请关系建立: inviter={inviter_uid} child={invitee_uid} code={code}")
         return True, "邀请关系已建立", inviter_uid
 
     # -------------------- 删除 --------------------
@@ -197,7 +198,6 @@ class InviteService:
         if depth_levels <= 0:
             return [uid]
         return await InviteService.collect_subtree_uids(uid, max_levels=depth_levels)
-
 
     # -------------------- 视图 --------------------
     @staticmethod
@@ -230,6 +230,7 @@ class InviteService:
             # 一次性扫描所有邀请码以补全孤立节点
             from src.db.invite import InviteSessionFactory, InviteCodeModel
             from sqlalchemy import select as _select
+
             async with InviteSessionFactory() as session:
                 rows = await session.execute(_select(InviteCodeModel.INVITER_UID).distinct())
                 return {row[0] for row in rows.all()}
@@ -242,27 +243,29 @@ class InviteService:
             user = await UserOperate.get_user_by_uid(uid)
             if not user:
                 continue
-            nodes.append({
-                'uid': user.UID,
-                'username': user.USERNAME,
-                'role': user.ROLE,
-                'emby_id': user.EMBYID or None,
-                'active': bool(user.ACTIVE_STATUS),
-                'telegram_id': user.TELEGRAM_ID,
-                'register_time': user.REGISTER_TIME,
-                'expired_at': user.EXPIRED_AT,
-                'is_root': uid not in parent_of,
-            })
+            nodes.append(
+                {
+                    "uid": user.UID,
+                    "username": user.USERNAME,
+                    "role": user.ROLE,
+                    "emby_id": user.EMBYID or None,
+                    "active": bool(user.ACTIVE_STATUS),
+                    "telegram_id": user.TELEGRAM_ID,
+                    "register_time": user.REGISTER_TIME,
+                    "expired_at": user.EXPIRED_AT,
+                    "is_root": uid not in parent_of,
+                }
+            )
 
         edges = [
             {
-                'parent': parent_uid,
-                'child': child_uid,
+                "parent": parent_uid,
+                "child": child_uid,
             }
             for parent_uid, child_uid in rels
         ]
 
-        roots = [n['uid'] for n in nodes if n['is_root']]
+        roots = [n["uid"] for n in nodes if n["is_root"]]
         # 整体最大深度
         global_depth = 0
         for r in roots:
@@ -272,14 +275,14 @@ class InviteService:
             )
 
         return {
-            'nodes': nodes,
-            'edges': edges,
-            'roots': roots,
-            'max_depth': global_depth,
-            'config': {
-                'enabled': InviteService.is_enabled(),
-                'max_depth': InviteService.max_depth(),
-                'invite_limit': RegisterConfig.INVITE_LIMIT,
-                'require_emby': bool(RegisterConfig.INVITE_REQUIRE_EMBY),
+            "nodes": nodes,
+            "edges": edges,
+            "roots": roots,
+            "max_depth": global_depth,
+            "config": {
+                "enabled": InviteService.is_enabled(),
+                "max_depth": InviteService.max_depth(),
+                "invite_limit": RegisterConfig.INVITE_LIMIT,
+                "require_emby": bool(RegisterConfig.INVITE_REQUIRE_EMBY),
             },
         }

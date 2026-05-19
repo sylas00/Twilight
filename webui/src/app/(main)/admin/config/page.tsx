@@ -698,12 +698,12 @@ export default function AdminConfigPage() {
 
   // 初始化时展开所有 sections
   useEffect(() => {
-    if (schema) {
-      setExpandedSections(new Set(schema.sections.map((s) => s.key)));
-      if (schema.sections.length > 0 && !activeSection) {
-        setActiveSection(schema.sections[0].key);
-      }
+    if (!schema) {
+      return;
     }
+
+    setExpandedSections(new Set(schema.sections.map((s) => s.key)));
+    setActiveSection((current) => current || schema.sections[0]?.key || "");
   }, [schema]);
 
   const hasSchemaChanges = useMemo(() => {
@@ -898,7 +898,7 @@ export default function AdminConfigPage() {
         setOriginalValues(JSON.parse(JSON.stringify(editedValues)));
         toast({
           title: "保存成功",
-          description: "配置已热重载，Bot 和调度器已自动刷新",
+          description: "配置已热重载，调度器会自动刷新任务",
           variant: "success",
         });
       } else {
@@ -934,7 +934,7 @@ export default function AdminConfigPage() {
         setHasChanges(false);
         toast({
           title: "保存成功",
-          description: "配置已热重载，Bot 和调度器已自动刷新",
+          description: "配置已热重载，调度器会自动刷新任务",
           variant: "success",
         });
       } else {
@@ -1377,4 +1377,3 @@ export default function AdminConfigPage() {
     </TooltipProvider>
   );
 }
-

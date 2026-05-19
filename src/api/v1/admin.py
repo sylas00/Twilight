@@ -3,22 +3,25 @@
 
 提供管理员专用的操作接口
 """
+
 import logging
 from flask import Blueprint, request, g
 
 from src.api.v1.auth import require_auth, require_admin, api_response
 from src.db.user import UserOperate, UserModel, Role
 from src.db.regcode import RegCodeOperate
+from src.core.utils import parse_bool
 from src.services import UserService, EmbyService
 from src.services.emby import get_emby_client, EmbyError, EmbyConnectionError
 
 logger = logging.getLogger(__name__)
-admin_bp = Blueprint('admin', __name__, url_prefix='/admin')
+admin_bp = Blueprint("admin", __name__, url_prefix="/admin")
 
 
 # ==================== 用户管理 ====================
 
-@admin_bp.route('/users', methods=['GET'])
+
+@admin_bp.route("/users", methods=["GET"])
 @require_auth
 @require_admin
 async def list_users():
@@ -35,27 +38,27 @@ async def list_users():
                     ``register_time_desc`` / ``expired_at_asc`` / ``role_asc``
                     / ``active_desc`` / ``last_login_time_desc``
     """
-    page = max(1, request.args.get('page', 1, type=int))
-    per_page = min(max(1, request.args.get('per_page', 20, type=int)), 100)
-    role = request.args.get('role', type=int)
-    active = request.args.get('active')
-    emby = (request.args.get('emby') or '').strip().lower()
-    search = request.args.get('search', '').strip()
-    sort_by = (request.args.get('sort') or '').strip() or None
+    page = max(1, request.args.get("page", 1, type=int))
+    per_page = min(max(1, request.args.get("per_page", 20, type=int)), 100)
+    role = request.args.get("role", type=int)
+    active = request.args.get("active")
+    emby = (request.args.get("emby") or "").strip().lower()
+    search = request.args.get("search", "").strip()
+    sort_by = (request.args.get("sort") or "").strip() or None
 
     # 显式三态：true=只看启用，false=只看禁用，省略=全部
     active_status: bool | None = None
     if active is not None:
-        if active.lower() == 'true':
+        if active.lower() == "true":
             active_status = True
-        elif active.lower() == 'false':
+        elif active.lower() == "false":
             active_status = False
 
     # Emby 绑定筛选：bound=只看已绑定，unbound=只看未绑定，省略/其它=全部
     has_emby: bool | None = None
-    if emby == 'bound':
+    if emby == "bound":
         has_emby = True
-    elif emby == 'unbound':
+    elif emby == "unbound":
         has_emby = False
 
     offset = (page - 1) * per_page
@@ -70,7 +73,7 @@ async def list_users():
         sort_by=sort_by,
         has_emby=has_emby,
     )
-    
+
     # Telegram username 优先取 user.OTHER 里缓存的（用户每次 /start /bind 会刷新）。
     # 缓存里没有，且 Bot 在线时，best-effort 拉一次 get_chat 并写回缓存，
     # 但对单次列表请求最多只拉前 `_MAX_LIVE_TG_FETCH` 个用户，避免 Bot API 限流。
@@ -86,6 +89,7 @@ async def list_users():
         # 没缓存 + Bot 在线 + 本次请求还有 live fetch 配额 → 试一次
         if telegram_username is None and user.TELEGRAM_ID and live_fetch_used < _MAX_LIVE_TG_FETCH:
             try:
+
                 async def _resolve_chat(bot):
                     return await bot.get_chat(user.TELEGRAM_ID)
 
@@ -100,49 +104,55 @@ async def list_users():
                 live_fetch_used += 1  # 失败也算一次，免得一直死磕同一个
 
         # 未绑定 Emby 的账号：EXPIRED_AT 仅为 sentinel（0=未开通），UI 应展示"未绑定"
-        emby_bound = bool(user.EMBYID) and not bool(getattr(user, 'PENDING_EMBY', False))
-        user_list.append({
-            'uid': user.UID,
-            'telegram_id': user.TELEGRAM_ID,
-            'telegram_username': telegram_username,
-            'username': user.USERNAME,
-            'email': user.EMAIL,
-            'role': user.ROLE,
-            'role_name': Role(user.ROLE).name if user.ROLE in [r.value for r in Role] else 'UNKNOWN',
-            'active': user.ACTIVE_STATUS,
-            'emby_id': user.EMBYID,
-            'emby_bound': emby_bound,
-            'pending_emby': bool(getattr(user, 'PENDING_EMBY', False)),
-            'expired_at': user.EXPIRED_AT if emby_bound else None,
-            'register_time': user.REGISTER_TIME,
-            'created_at': user.CREATE_AT or user.REGISTER_TIME,
-            'last_login_time': user.LAST_LOGIN_TIME,
-            'bgm_mode': user.BGM_MODE,
-        })
-    
-    return api_response(True, f"共 {len(user_list)} 个用户", {
-        'users': user_list,
-        'total': total,
-        'page': page,
-        'per_page': per_page,
-        'pages': (total + per_page - 1) // per_page,
-    })
+        emby_bound = bool(user.EMBYID) and not bool(getattr(user, "PENDING_EMBY", False))
+        user_list.append(
+            {
+                "uid": user.UID,
+                "telegram_id": user.TELEGRAM_ID,
+                "telegram_username": telegram_username,
+                "username": user.USERNAME,
+                "email": user.EMAIL,
+                "role": user.ROLE,
+                "role_name": Role(user.ROLE).name if user.ROLE in [r.value for r in Role] else "UNKNOWN",
+                "active": user.ACTIVE_STATUS,
+                "emby_id": user.EMBYID,
+                "emby_bound": emby_bound,
+                "pending_emby": bool(getattr(user, "PENDING_EMBY", False)),
+                "expired_at": user.EXPIRED_AT if emby_bound else None,
+                "register_time": user.REGISTER_TIME,
+                "created_at": user.CREATE_AT or user.REGISTER_TIME,
+                "last_login_time": user.LAST_LOGIN_TIME,
+                "bgm_mode": user.BGM_MODE,
+            }
+        )
+
+    return api_response(
+        True,
+        f"共 {len(user_list)} 个用户",
+        {
+            "users": user_list,
+            "total": total,
+            "page": page,
+            "per_page": per_page,
+            "pages": (total + per_page - 1) // per_page,
+        },
+    )
 
 
-@admin_bp.route('/me/update', methods=['PUT'])
+@admin_bp.route("/me/update", methods=["PUT"])
 @require_auth
 @require_admin
 async def update_my_info():
     """
     管理员更新自己的信息
-    
+
     Body:
         暂无可更新字段
     """
     return api_response(False, "没有可更新的字段", code=400)
 
 
-@admin_bp.route('/users/<int:uid>', methods=['GET'])
+@admin_bp.route("/users/<int:uid>", methods=["GET"])
 @require_auth
 @require_admin
 async def get_user(uid: int):
@@ -150,15 +160,15 @@ async def get_user(uid: int):
     user = await UserOperate.get_user_by_uid(uid)
     if not user:
         return api_response(False, "用户不存在", code=404)
-    
+
     user_info = await UserService.get_user_info(user)
     status = await EmbyService.get_user_status(user)
 
-    user_info['emby_status'] = {
-        'is_synced': status.is_synced,
-        'is_active': status.is_active,
-        'active_sessions': status.active_sessions,
-        'message': status.message,
+    user_info["emby_status"] = {
+        "is_synced": status.is_synced,
+        "is_active": status.is_active,
+        "active_sessions": status.active_sessions,
+        "message": status.message,
     }
 
     return api_response(True, "获取成功", user_info)
@@ -183,7 +193,7 @@ async def _cascade_toggle_active(
 
     root_user = await UserOperate.get_user_by_uid(root_uid)
     if not root_user:
-        return False, "用户不存在", {'code': 404}
+        return False, "用户不存在", {"code": 404}
 
     if cascade_depth_raw <= 0 or cascade_depth_raw >= 999:
         cascade_depth: int | None = None
@@ -194,7 +204,8 @@ async def _cascade_toggle_active(
         target_uids = [root_uid]
     else:
         target_uids = await InviteService.collect_uids_to_delete(
-            root_uid, cascade_depth if cascade_depth is not None else 9999,
+            root_uid,
+            cascade_depth if cascade_depth is not None else 9999,
         )
 
     # 保护：除非当前管理员主动操作自己，否则不要把自己卷进去
@@ -214,11 +225,11 @@ async def _cascade_toggle_active(
             continue
         # 不要级联翻动其他管理员
         if target.ROLE == Role.ADMIN.value and target.UID != g.current_user.UID and tid != root_uid:
-            skipped.append({'uid': tid, 'reason': '管理员账户不可被级联启停'})
+            skipped.append({"uid": tid, "reason": "管理员账户不可被级联启停"})
             continue
         # 已是目标状态：跳过但不算失败
         if bool(target.ACTIVE_STATUS) == enable:
-            skipped.append({'uid': tid, 'reason': f"已经处于{'启用' if enable else '禁用'}状态"})
+            skipped.append({"uid": tid, "reason": f"已经处于{'启用' if enable else '禁用'}状态"})
             continue
 
         if enable:
@@ -229,7 +240,7 @@ async def _cascade_toggle_active(
         if ok:
             affected.append(tid)
         else:
-            failed.append({'uid': tid, 'reason': msg})
+            failed.append({"uid": tid, "reason": msg})
 
     action = "启用" if enable else "禁用"
     if len(safe_targets) <= 1:
@@ -237,18 +248,20 @@ async def _cascade_toggle_active(
     else:
         prefix = f"{action}级联完成"
     cascade_display = "整棵子树" if cascade_depth is None else cascade_depth
-    return True, (
-        f"{prefix}：成功 {len(affected)}，跳过 {len(skipped)}，失败 {len(failed)}"
-    ), {
-        'affected': affected,
-        'skipped': skipped,
-        'failed': failed,
-        'cascade_depth': cascade_display,
-        'enable': enable,
-    }
+    return (
+        True,
+        (f"{prefix}：成功 {len(affected)}，跳过 {len(skipped)}，失败 {len(failed)}"),
+        {
+            "affected": affected,
+            "skipped": skipped,
+            "failed": failed,
+            "cascade_depth": cascade_display,
+            "enable": enable,
+        },
+    )
 
 
-@admin_bp.route('/users/<int:uid>/disable', methods=['POST'])
+@admin_bp.route("/users/<int:uid>/disable", methods=["POST"])
 @require_auth
 @require_admin
 async def disable_user(uid: int):
@@ -261,9 +274,9 @@ async def disable_user(uid: int):
             0 或 >= 999 = 整棵子树。
     """
     data = request.get_json(silent=True) or {}
-    reason = data.get('reason', '')
+    reason = data.get("reason", "")
     try:
-        cascade_depth_raw = int(data.get('cascade_depth', request.args.get('cascade_depth', 1)))
+        cascade_depth_raw = int(data.get("cascade_depth", request.args.get("cascade_depth", 1)))
     except (TypeError, ValueError):
         cascade_depth_raw = 1
 
@@ -274,11 +287,11 @@ async def disable_user(uid: int):
         reason=reason,
     )
     if not ok:
-        return api_response(False, message, code=int(payload.get('code', 400)))
+        return api_response(False, message, code=int(payload.get("code", 400)))
     return api_response(True, message, payload)
 
 
-@admin_bp.route('/users/<int:uid>/enable', methods=['POST'])
+@admin_bp.route("/users/<int:uid>/enable", methods=["POST"])
 @require_auth
 @require_admin
 async def enable_user(uid: int):
@@ -289,7 +302,7 @@ async def enable_user(uid: int):
     """
     data = request.get_json(silent=True) or {}
     try:
-        cascade_depth_raw = int(data.get('cascade_depth', request.args.get('cascade_depth', 1)))
+        cascade_depth_raw = int(data.get("cascade_depth", request.args.get("cascade_depth", 1)))
     except (TypeError, ValueError):
         cascade_depth_raw = 1
 
@@ -299,54 +312,54 @@ async def enable_user(uid: int):
         cascade_depth_raw=cascade_depth_raw,
     )
     if not ok:
-        return api_response(False, message, code=int(payload.get('code', 400)))
+        return api_response(False, message, code=int(payload.get("code", 400)))
     return api_response(True, message, payload)
 
 
-@admin_bp.route('/users/<int:uid>', methods=['PUT'])
+@admin_bp.route("/users/<int:uid>", methods=["PUT"])
 @require_auth
 @require_admin
 async def update_user(uid: int):
     """
     更新用户信息
-    
+
     Body:
         role: int - 角色 (0=管理员, 1=普通用户, 2=白名单)
         emby_id: str - Emby ID
         active: bool - 启用状态
     """
     data = request.get_json() or {}
-    
+
     # 获取目标用户
     target_user = await UserOperate.get_user_by_uid(uid)
     if not target_user:
         return api_response(False, "用户不存在", code=404)
-    
+
     # 权限检查：不允许修改其他管理员
     if target_user.ROLE == Role.ADMIN.value and target_user.UID != g.current_user.UID:
         return api_response(False, "不允许修改其他管理员的信息", code=403)
-    
+
     # 权限检查：不允许将其他用户设置为管理员
-    if 'role' in data and data['role'] == Role.ADMIN.value and uid != g.current_user.UID:
+    if "role" in data and data["role"] == Role.ADMIN.value and uid != g.current_user.UID:
         return api_response(False, "不允许将其他用户设置为管理员", code=403)
-    
+
     try:
         # 更新角色
-        if 'role' in data:
-            role = data['role']
+        if "role" in data:
+            role = data["role"]
             if role not in [r.value for r in Role]:
                 return api_response(False, "无效的角色值", code=400)
             target_user.ROLE = role
 
         # 更新 Emby ID
-        if 'emby_id' in data:
-            target_user.EMBYID = data['emby_id'] or None
+        if "emby_id" in data:
+            target_user.EMBYID = data["emby_id"] or None
 
         # 更新启用状态
         active_changed = False
         new_active: bool = target_user.ACTIVE_STATUS
-        if 'active' in data:
-            new_active = bool(data['active'])
+        if "active" in data:
+            new_active = bool(data["active"])
             active_changed = new_active != target_user.ACTIVE_STATUS
             target_user.ACTIVE_STATUS = new_active
 
@@ -372,7 +385,7 @@ async def update_user(uid: int):
         return api_response(False, f"更新失败: {e}", code=500)
 
 
-@admin_bp.route('/users/<int:uid>', methods=['DELETE'])
+@admin_bp.route("/users/<int:uid>", methods=["DELETE"])
 @require_auth
 @require_admin
 async def delete_user(uid: int):
@@ -396,13 +409,13 @@ async def delete_user(uid: int):
     body = request.get_json(silent=True) or {}
 
     # 优先 mode；老调用方仍可用 delete_emby
-    mode = (body.get('mode') or request.args.get('mode') or '').strip().lower()
-    if mode not in ('with_emby', 'local_only', 'emby_only'):
-        raw_delete = body.get('delete_emby', request.args.get('delete_emby', 'true'))
-        mode = 'with_emby' if str(raw_delete).lower() not in ('false', '0', 'no') else 'local_only'
+    mode = (body.get("mode") or request.args.get("mode") or "").strip().lower()
+    if mode not in ("with_emby", "local_only", "emby_only"):
+        raw_delete = body.get("delete_emby", request.args.get("delete_emby", "true"))
+        mode = "with_emby" if str(raw_delete).lower() not in ("false", "0", "no") else "local_only"
 
     try:
-        cascade_depth_raw = int(body.get('cascade_depth', request.args.get('cascade_depth', 1)))
+        cascade_depth_raw = int(body.get("cascade_depth", request.args.get("cascade_depth", 1)))
     except (TypeError, ValueError):
         cascade_depth_raw = 1
     # 0 / 负数 / 极大值 视为「整棵子树」
@@ -419,7 +432,8 @@ async def delete_user(uid: int):
     else:
         # cascade_depth=None → 整棵子树；其它走 BFS 收集到指定层
         target_uids = await InviteService.collect_uids_to_delete(
-            uid, cascade_depth if cascade_depth is not None else 9999,
+            uid,
+            cascade_depth if cascade_depth is not None else 9999,
         )
 
     # 安全保护：不允许把"当前操作管理员自己"被动卷进级联里
@@ -441,13 +455,13 @@ async def delete_user(uid: int):
             continue
         # 非主动操作的下级里若混入其他管理员账号，跳过保护
         if target.ROLE == Role.ADMIN.value and target.UID != g.current_user.UID and tid != uid:
-            skipped.append({'uid': tid, 'reason': '管理员账户不可被级联删除'})
+            skipped.append({"uid": tid, "reason": "管理员账户不可被级联删除"})
             continue
 
-        if mode == 'emby_only':
+        if mode == "emby_only":
             # 仅删 Emby 账号：本地账户与邀请关系完全保留
             if not target.EMBYID:
-                skipped.append({'uid': tid, 'reason': '未绑定 Emby 账户'})
+                skipped.append({"uid": tid, "reason": "未绑定 Emby 账户"})
                 continue
             ok, msg = await UserService.delete_emby_only(target)
         else:
@@ -456,18 +470,18 @@ async def delete_user(uid: int):
                 await InviteService.delete_user_keep_subtree(tid)
             except Exception as exc:  # pragma: no cover
                 logger.warning(f"清理邀请关系失败 uid={tid}: {exc}")
-            ok, msg = await UserService.delete_user(target, delete_emby=(mode == 'with_emby'))
+            ok, msg = await UserService.delete_user(target, delete_emby=(mode == "with_emby"))
 
         if ok:
             deleted.append(tid)
         else:
-            failed.append({'uid': tid, 'reason': msg})
+            failed.append({"uid": tid, "reason": msg})
 
     cascade_display = "整棵子树" if cascade_depth is None else cascade_depth
 
-    if mode == 'emby_only':
+    if mode == "emby_only":
         message_prefix = "Emby 级联删除完成" if len(safe_targets) > 1 else "Emby 删除完成"
-    elif mode == 'local_only':
+    elif mode == "local_only":
         message_prefix = "本地账户级联删除完成" if len(safe_targets) > 1 else "本地账户删除完成"
     else:
         message_prefix = "级联删除完成" if len(safe_targets) > 1 else "删除完成"
@@ -476,16 +490,16 @@ async def delete_user(uid: int):
         len(failed) == 0,
         f"{message_prefix}：成功 {len(deleted)}，跳过 {len(skipped)}，失败 {len(failed)}",
         {
-            'deleted': deleted,
-            'skipped': skipped,
-            'failed': failed,
-            'mode': mode,
-            'cascade_depth': cascade_display,
+            "deleted": deleted,
+            "skipped": skipped,
+            "failed": failed,
+            "mode": mode,
+            "cascade_depth": cascade_display,
         },
     )
 
 
-@admin_bp.route('/users/<int:uid>/emby', methods=['DELETE'])
+@admin_bp.route("/users/<int:uid>/emby", methods=["DELETE"])
 @require_auth
 @require_admin
 async def delete_user_emby(uid: int):
@@ -501,13 +515,13 @@ async def delete_user_emby(uid: int):
     return api_response(success, message, code=200 if success else 400)
 
 
-@admin_bp.route('/users/<int:uid>/renew', methods=['POST'])
+@admin_bp.route("/users/<int:uid>/renew", methods=["POST"])
 @require_auth
 @require_admin
 async def renew_user(uid: int):
     """
     为用户续期
-    
+
     Request:
         {
             "days": 30
@@ -516,18 +530,18 @@ async def renew_user(uid: int):
     user = await UserOperate.get_user_by_uid(uid)
     if not user:
         return api_response(False, "用户不存在", code=404)
-    
+
     data = request.get_json() or {}
-    days = data.get('days', 30)
-    
+    days = data.get("days", 30)
+
     if days <= 0:
         return api_response(False, "天数必须大于0", code=400)
-    
+
     success, message = await UserService.renew_user(user, days)
     return api_response(success, message)
 
 
-@admin_bp.route('/emby/force-set-password', methods=['POST'])
+@admin_bp.route("/emby/force-set-password", methods=["POST"])
 @require_auth
 @require_admin
 async def admin_force_set_emby_password():
@@ -551,8 +565,8 @@ async def admin_force_set_emby_password():
     from src.core.utils import generate_password, hash_password
 
     data = request.get_json() or {}
-    emby_username = (data.get('emby_username') or '').strip()
-    new_password = data.get('new_password')
+    emby_username = (data.get("emby_username") or "").strip()
+    new_password = data.get("new_password")
 
     if not emby_username:
         return api_response(False, "缺少 emby_username", code=400)
@@ -575,7 +589,7 @@ async def admin_force_set_emby_password():
         return api_response(False, f"Emby 中找不到用户「{emby_username}」", code=404)
 
     # 禁止操作 Emby 管理员，避免越权
-    if bool(emby_user.policy.get('IsAdministrator', False)):
+    if bool(emby_user.policy.get("IsAdministrator", False)):
         return api_response(False, "不允许通过此接口重置 Emby 管理员密码", code=403)
 
     try:
@@ -601,15 +615,19 @@ async def admin_force_set_emby_password():
         f"(EMBYID={emby_user.id}{', 本地账号已同步' if local else ', 无本地绑定'})"
     )
 
-    return api_response(True, "Emby 密码已重置", {
-        'emby_id': emby_user.id,
-        'emby_username': emby_user.name,
-        'linked_local_user': bool(local),
-        'new_password': new_password if auto_generated else new_password,
-    })
+    return api_response(
+        True,
+        "Emby 密码已重置",
+        {
+            "emby_id": emby_user.id,
+            "emby_username": emby_user.name,
+            "linked_local_user": bool(local),
+            "new_password": new_password if auto_generated else new_password,
+        },
+    )
 
 
-@admin_bp.route('/users/<int:uid>/reset-password', methods=['POST'])
+@admin_bp.route("/users/<int:uid>/reset-password", methods=["POST"])
 @require_auth
 @require_admin
 async def reset_user_password(uid: int):
@@ -633,34 +651,44 @@ async def reset_user_password(uid: int):
         return api_response(False, "不允许重置其他管理员密码", code=403)
 
     data = request.get_json(silent=True) or {}
-    scope = (data.get('scope') or 'both').strip().lower()
-    if scope not in ('system', 'emby', 'both'):
+    scope = (data.get("scope") or "both").strip().lower()
+    if scope not in ("system", "emby", "both"):
         return api_response(False, "scope 必须是 system / emby / both", code=400)
 
-    custom_password = data.get('password')
+    custom_password = data.get("password")
     if custom_password is not None and not isinstance(custom_password, str):
         return api_response(False, "password 必须是字符串", code=400)
-    custom_password = (custom_password or '').strip() or None
+    custom_password = (custom_password or "").strip() or None
     auto_generated = custom_password is None
 
     success, message, new_password = await UserService.reset_password(
-        user, scope=scope, custom_password=custom_password,
+        user,
+        scope=scope,
+        custom_password=custom_password,
     )
     if not success:
         return api_response(False, message, code=400)
 
     logger.warning(
         "管理员 %s 重置用户密码: uid=%d username=%s scope=%s auto=%s",
-        g.current_user.USERNAME, user.UID, user.USERNAME, scope, auto_generated,
+        g.current_user.USERNAME,
+        user.UID,
+        user.USERNAME,
+        scope,
+        auto_generated,
     )
-    return api_response(True, message, {
-        'scope': scope,
-        'new_password': new_password,
-        'auto_generated': auto_generated,
-    })
+    return api_response(
+        True,
+        message,
+        {
+            "scope": scope,
+            "new_password": new_password,
+            "auto_generated": auto_generated,
+        },
+    )
 
 
-@admin_bp.route('/users/<int:uid>/kick', methods=['POST'])
+@admin_bp.route("/users/<int:uid>/kick", methods=["POST"])
 @require_auth
 @require_admin
 async def kick_user(uid: int):
@@ -668,15 +696,15 @@ async def kick_user(uid: int):
     user = await UserOperate.get_user_by_uid(uid)
     if not user:
         return api_response(False, "用户不存在", code=404)
-    
+
     success, kicked = await EmbyService.kick_user_sessions(user)
-    
+
     if success:
-        return api_response(True, f"已踢出 {kicked} 个会话", {'kicked_count': kicked})
+        return api_response(True, f"已踢出 {kicked} 个会话", {"kicked_count": kicked})
     return api_response(False, "操作失败")
 
 
-@admin_bp.route('/users/<int:uid>/libraries', methods=['GET'])
+@admin_bp.route("/users/<int:uid>/libraries", methods=["GET"])
 @require_auth
 @require_admin
 async def get_user_libraries(uid: int):
@@ -695,33 +723,41 @@ async def get_user_libraries(uid: int):
         return api_response(False, "用户不存在", code=404)
 
     if not user.EMBYID:
-        return api_response(True, "用户尚未绑定 Emby", {
-            'all_libraries': [],
-            'enabled_ids': [],
-            'enable_all': False,
-            'has_emby': False,
-        })
+        return api_response(
+            True,
+            "用户尚未绑定 Emby",
+            {
+                "all_libraries": [],
+                "enabled_ids": [],
+                "enable_all": False,
+                "has_emby": False,
+            },
+        )
 
     all_libraries = await EmbyService.get_libraries_info()
     enabled_ids, enable_all = await EmbyService.get_user_library_access(user)
 
-    return api_response(True, "获取成功", {
-        'all_libraries': all_libraries,
-        'enabled_ids': enabled_ids,
-        'enable_all': enable_all,
-        'has_emby': True,
-    })
+    return api_response(
+        True,
+        "获取成功",
+        {
+            "all_libraries": all_libraries,
+            "enabled_ids": enabled_ids,
+            "enable_all": enable_all,
+            "has_emby": True,
+        },
+    )
 
 
-@admin_bp.route('/users/<int:uid>/libraries', methods=['PUT'])
+@admin_bp.route("/users/<int:uid>/libraries", methods=["PUT"])
 @require_auth
 @require_admin
 async def set_user_libraries(uid: int):
     """
     设置用户媒体库权限
-    
+
     支持按名称或ID设置，优先使用名称。
-    
+
     Request:
         {
             "library_names": ["电影", "电视剧"],   // 按名称（推荐）
@@ -732,32 +768,30 @@ async def set_user_libraries(uid: int):
     user = await UserOperate.get_user_by_uid(uid)
     if not user:
         return api_response(False, "用户不存在", code=404)
-    
+
     data = request.get_json() or {}
-    library_names = data.get('library_names', [])
-    library_ids = data.get('library_ids', [])
-    enable_all = data.get('enable_all', False)
-    
+    library_names = data.get("library_names", [])
+    library_ids = data.get("library_ids", [])
+    enable_all = data.get("enable_all", False)
+
     # 优先使用名称解析
     if library_names:
         resolved_ids, not_found = await EmbyService.resolve_library_names_to_ids(library_names)
         if not_found:
             return api_response(False, f"未找到以下媒体库: {', '.join(not_found)}", code=400)
         library_ids = resolved_ids
-    
+
     success, message = await EmbyService.set_user_library_access(user, library_ids, enable_all)
     return api_response(success, message)
 
 
-
-
-@admin_bp.route('/users/<int:uid>/admin', methods=['PUT'])
+@admin_bp.route("/users/<int:uid>/admin", methods=["PUT"])
 @require_auth
 @require_admin
 async def set_user_admin(uid: int):
     """
     设置/取消管理员权限
-    
+
     Request:
         {
             "is_admin": true
@@ -766,49 +800,53 @@ async def set_user_admin(uid: int):
     user = await UserOperate.get_user_by_uid(uid)
     if not user:
         return api_response(False, "用户不存在", code=404)
-    
+
     data = request.get_json() or {}
-    is_admin = data.get('is_admin', False)
-    
+    is_admin = data.get("is_admin", False)
+
     success, message = await UserService.set_user_admin(user, is_admin)
     return api_response(success, message)
 
 
-@admin_bp.route('/users/<int:uid>/unbind-telegram', methods=['POST'])
+@admin_bp.route("/users/<int:uid>/unbind-telegram", methods=["POST"])
 @require_auth
 @require_admin
 async def unbind_user_telegram(uid: int):
     """
     解绑用户的 Telegram
-    
+
     解绑后用户将无法通过 Telegram 登录，但可以通过 API Key 或其他方式访问。
     解绑后 Telegram ID 会被清空，用户可以重新绑定其他 Telegram 账号。
     """
     user = await UserOperate.get_user_by_uid(uid)
     if not user:
         return api_response(False, "用户不存在", code=404)
-    
+
     if not user.TELEGRAM_ID:
         return api_response(False, "该用户未绑定 Telegram", code=400)
-    
+
     old_telegram_id = user.TELEGRAM_ID
     user.TELEGRAM_ID = None
     await UserOperate.update_user(user)
-    
-    return api_response(True, f"已解绑 Telegram (原 ID: {old_telegram_id})", {
-        'uid': uid,
-        'username': user.USERNAME,
-        'old_telegram_id': old_telegram_id,
-    })
+
+    return api_response(
+        True,
+        f"已解绑 Telegram (原 ID: {old_telegram_id})",
+        {
+            "uid": uid,
+            "username": user.USERNAME,
+            "old_telegram_id": old_telegram_id,
+        },
+    )
 
 
-@admin_bp.route('/users/<int:uid>/bind-telegram', methods=['POST'])
+@admin_bp.route("/users/<int:uid>/bind-telegram", methods=["POST"])
 @require_auth
 @require_admin
 async def bind_user_telegram(uid: int):
     """
     为用户绑定 Telegram
-    
+
     Request:
         {
             "telegram_id": 123456789
@@ -817,86 +855,96 @@ async def bind_user_telegram(uid: int):
     user = await UserOperate.get_user_by_uid(uid)
     if not user:
         return api_response(False, "用户不存在", code=404)
-    
+
     data = request.get_json() or {}
-    telegram_id = data.get('telegram_id')
-    
+    telegram_id = data.get("telegram_id")
+
     if not telegram_id:
         return api_response(False, "缺少 telegram_id", code=400)
-    
+
     if not isinstance(telegram_id, int) or telegram_id <= 0:
         return api_response(False, "telegram_id 格式无效", code=400)
-    
+
     # 检查该 Telegram ID 是否已被其他用户绑定
     existing = await UserOperate.get_user_by_telegram_id(telegram_id)
     if existing and existing.UID != uid:
         return api_response(False, f"该 Telegram ID 已被用户 {existing.USERNAME} 绑定", code=400)
-    
+
     old_telegram_id = user.TELEGRAM_ID
     user.TELEGRAM_ID = telegram_id
     await UserOperate.update_user(user)
-    
-    return api_response(True, "绑定成功", {
-        'uid': uid,
-        'username': user.USERNAME,
-        'telegram_id': telegram_id,
-        'old_telegram_id': old_telegram_id,
-    })
+
+    return api_response(
+        True,
+        "绑定成功",
+        {
+            "uid": uid,
+            "username": user.USERNAME,
+            "telegram_id": telegram_id,
+            "old_telegram_id": old_telegram_id,
+        },
+    )
 
 
-@admin_bp.route('/telegram/rebind-requests', methods=['GET'])
+@admin_bp.route("/telegram/rebind-requests", methods=["GET"])
 @require_auth
 @require_admin
 async def list_telegram_rebind_requests():
     """获取 Telegram 换绑请求列表"""
-    page = request.args.get('page', 1, type=int)
-    per_page = min(request.args.get('per_page', 20, type=int), 100)
-    status = request.args.get('status')
+    page = request.args.get("page", 1, type=int)
+    per_page = min(request.args.get("per_page", 20, type=int), 100)
+    status = request.args.get("status")
 
     requests, total = await UserService.list_telegram_rebind_requests(status=status, page=page, per_page=per_page)
     payload = []
     for req in requests:
         user = await UserOperate.get_user_by_uid(req.UID)
-        payload.append({
-            'id': req.ID,
-            'uid': req.UID,
-            'username': user.USERNAME if user else None,
-            'old_telegram_id': req.OLD_TELEGRAM_ID,
-            'status': req.STATUS,
-            'reason': req.REASON,
-            'admin_note': req.ADMIN_NOTE,
-            'reviewer_uid': req.REVIEWER_UID,
-            'created_at': req.CREATED_AT,
-            'reviewed_at': req.REVIEWED_AT,
-        })
+        payload.append(
+            {
+                "id": req.ID,
+                "uid": req.UID,
+                "username": user.USERNAME if user else None,
+                "old_telegram_id": req.OLD_TELEGRAM_ID,
+                "status": req.STATUS,
+                "reason": req.REASON,
+                "admin_note": req.ADMIN_NOTE,
+                "reviewer_uid": req.REVIEWER_UID,
+                "created_at": req.CREATED_AT,
+                "reviewed_at": req.REVIEWED_AT,
+            }
+        )
 
-    return api_response(True, "获取成功", {
-        'requests': payload,
-        'total': total,
-    })
+    return api_response(
+        True,
+        "获取成功",
+        {
+            "requests": payload,
+            "total": total,
+        },
+    )
 
 
-@admin_bp.route('/telegram/rebind-requests/<int:request_id>/approve', methods=['POST'])
+@admin_bp.route("/telegram/rebind-requests/<int:request_id>/approve", methods=["POST"])
 @require_auth
 @require_admin
 async def approve_telegram_rebind_request(request_id: int):
     data = request.get_json() or {}
-    admin_note = data.get('admin_note')
+    admin_note = data.get("admin_note")
     success, message = await UserService.approve_telegram_rebind_request(request_id, g.current_user.UID, admin_note)
     return api_response(success, message)
 
 
-@admin_bp.route('/telegram/rebind-requests/<int:request_id>/reject', methods=['POST'])
+@admin_bp.route("/telegram/rebind-requests/<int:request_id>/reject", methods=["POST"])
 @require_auth
 @require_admin
 async def reject_telegram_rebind_request(request_id: int):
     data = request.get_json() or {}
-    admin_note = data.get('admin_note')
+    admin_note = data.get("admin_note")
     success, message = await UserService.reject_telegram_rebind_request(request_id, g.current_user.UID, admin_note)
     return api_response(success, message)
 
 
-@admin_bp.route('/users/by-telegram/<int:telegram_id>', methods=['GET'])
+@admin_bp.route("/users/by-telegram/<int:telegram_id>", methods=["GET"])
 @require_auth
 @require_admin
 async def get_user_by_telegram(telegram_id: int):
@@ -904,22 +952,23 @@ async def get_user_by_telegram(telegram_id: int):
     user = await UserOperate.get_user_by_telegram_id(telegram_id)
     if not user:
         return api_response(False, "未找到绑定该 Telegram ID 的用户", code=404)
-    
+
     user_info = await UserService.get_user_info(user)
     return api_response(True, "找到用户", user_info)
 
 
 # ==================== Emby 同步 ====================
 
-@admin_bp.route('/emby/sync', methods=['POST'])
+
+@admin_bp.route("/emby/sync", methods=["POST"])
 @require_auth
 @require_admin
 async def sync_all_emby():
     """
     批量同步所有 Emby 用户数据
-    
+
     检测孤儿记录、同步用户名、同步状态和权限。
-    
+
     Response:
         {
             "success": 5,
@@ -928,73 +977,87 @@ async def sync_all_emby():
         }
     """
     success, failed, errors = await EmbyService.sync_all_users()
-    return api_response(True, f"同步完成: 成功 {success}, 失败 {failed}", {
-        'success': success,
-        'failed': failed,
-        'errors': errors,
-    })
+    return api_response(
+        True,
+        f"同步完成: 成功 {success}, 失败 {failed}",
+        {
+            "success": success,
+            "failed": failed,
+            "errors": errors,
+        },
+    )
+
 
 # ==================== 注册码管理 ====================
 
-@admin_bp.route('/regcodes', methods=['GET'])
+
+@admin_bp.route("/regcodes", methods=["GET"])
 @require_auth
 @require_admin
 async def list_regcodes():
     """
     获取注册码列表
-    
+
     Query:
         page: int - 页码（默认 1）
         type: int - 类型筛选 (1=注册, 2=续期, 3=白名单)
         active: bool - 是否只显示有效的注册码
     """
-    page = request.args.get('page', 1, type=int)
-    code_type = request.args.get('type', type=int)
-    active_only = request.args.get('active', 'false').lower() == 'true'
-    
+    page = request.args.get("page", 1, type=int)
+    code_type = request.args.get("type", type=int)
+    active_only = request.args.get("active", "false").lower() == "true"
+
     if code_type:
         codes = await RegCodeOperate.get_regcodes_by_type(code_type)
     else:
         codes = await RegCodeOperate.get_all_regcodes()
-    
+
     # 过滤有效的
     if active_only:
         codes = [c for c in codes if c.ACTIVE]
-    
+
     # 分页处理
     per_page = 20
     total = len(codes)
     start = (page - 1) * per_page
     end = start + per_page
     paginated_codes = codes[start:end]
-    
-    return api_response(True, f"共 {total} 个注册码", {
-        'regcodes': [{
-            'code': c.CODE,
-            'type': c.TYPE,
-            'type_name': {1: '注册', 2: '续期', 3: '白名单'}.get(c.TYPE, '未知'),
-            'validity_time': c.VALIDITY_TIME,
-            'use_count': c.USE_COUNT,
-            'use_count_limit': c.USE_COUNT_LIMIT,
-            'days': c.DAYS,
-            'active': c.ACTIVE,
-            'created_time': c.CREATED_TIME,
-        } for c in paginated_codes],
-        'total': total,
-        'page': page,
-        'per_page': per_page,
-    })
+
+    return api_response(
+        True,
+        f"共 {total} 个注册码",
+        {
+            "regcodes": [
+                {
+                    "code": c.CODE,
+                    "type": c.TYPE,
+                    "type_name": {1: "注册", 2: "续期", 3: "白名单"}.get(c.TYPE, "未知"),
+                    "validity_time": c.VALIDITY_TIME,
+                    "use_count": c.USE_COUNT,
+                    "use_count_limit": c.USE_COUNT_LIMIT,
+                    "days": c.DAYS,
+                    "active": c.ACTIVE,
+                    "created_time": c.CREATED_TIME,
+                }
+                for c in paginated_codes
+            ],
+            "total": total,
+            "page": page,
+            "per_page": per_page,
+        },
+    )
 
 
 # ==================== 求片管理 ====================
 
-@admin_bp.route('/media-requests', methods=['GET'])
+
+@admin_bp.route("/media-requests", methods=["GET"])
 @require_auth
 @require_admin
 async def list_media_requests():
     """
     获取求片请求列表（管理员）
-    
+
     Query:
         page: int - 页码（默认 1）
         status: str - 状态筛选 (pending/accepted/rejected/completed，默认 pending)
@@ -1002,26 +1065,26 @@ async def list_media_requests():
     from src.services import MediaRequestService
     from src.db.bangumi import BangumiRequireOperate, ReqStatus
     import json
-    
-    page = request.args.get('page', 1, type=int)
-    per_page = min(max(request.args.get('per_page', 20, type=int), 1), 100)
-    status_filter = request.args.get('status', 'pending').lower()
-    
+
+    page = request.args.get("page", 1, type=int)
+    per_page = min(max(request.args.get("per_page", 20, type=int), 1), 100)
+    status_filter = request.args.get("status", "pending").lower()
+
     # 转换状态
     status_map = {
-        'pending': ReqStatus.UNHANDLED,
-        'unhandled': ReqStatus.UNHANDLED,
-        'accepted': ReqStatus.ACCEPTED,
-        'rejected': ReqStatus.REJECTED,
-        'completed': ReqStatus.COMPLETED,
-        'downloading': ReqStatus.DOWNLOADING,
+        "pending": ReqStatus.UNHANDLED,
+        "unhandled": ReqStatus.UNHANDLED,
+        "accepted": ReqStatus.ACCEPTED,
+        "rejected": ReqStatus.REJECTED,
+        "completed": ReqStatus.COMPLETED,
+        "downloading": ReqStatus.DOWNLOADING,
     }
 
     # 获取请求列表
-    if status_filter == 'all':
+    if status_filter == "all":
         # 全部状态
         requests = await BangumiRequireOperate.get_all_requires()
-    elif status_filter == 'pending':
+    elif status_filter == "pending":
         # 待处理：获取所有未处理/已接受/下载中的
         requests = await BangumiRequireOperate.get_all_pending_list()
     elif status_filter in status_map:
@@ -1030,7 +1093,7 @@ async def list_media_requests():
     else:
         # 未识别状态默认 pending
         requests = await BangumiRequireOperate.get_all_pending_list()
-    
+
     telegram_ids = [req.telegram_id for req in requests if req.telegram_id is not None]
     users_map = await UserOperate.get_users_by_telegram_ids(telegram_ids)
 
@@ -1043,67 +1106,77 @@ async def list_media_requests():
                 other = json.loads(req.other_info)
             except:
                 pass
-        
+
         user = users_map.get(req.telegram_id)
-        
+
         status_name = ReqStatus(req.status).name.lower()
-        if status_name == 'unhandled':
-            status_name = 'pending'
-            
+        if status_name == "unhandled":
+            status_name = "pending"
+
         # 整合媒体信息
-        m_info = other.get('media_info', other) if other else {}
-        if not m_info.get('title'):
-            m_info['title'] = req.title
-        if not m_info.get('season'):
-            m_info['season'] = req.season
-        if not m_info.get('media_type'):
-            m_info['media_type'] = req.media_type
-            
-        results.append({
-            'id': req.id,
-            'media_id': getattr(req, 'bangumi_id', getattr(req, 'tmdb_id', None)),
-            'source': 'bangumi' if hasattr(req, 'bangumi_id') else 'tmdb',
-            'status': status_name,
-            'timestamp': req.timestamp,
-            'title': req.title,
-            'season': req.season,
-            'media_type': req.media_type,
-            'require_key': req.require_key,
-            'admin_note': req.admin_note,
-            'media_info': m_info,
-            'user': {
-                'telegram_id': req.telegram_id,
-                'username': user.USERNAME if user else None,
-                'uid': user.UID if user else None,
-            } if user else None,
-        })
-    
+        m_info = other.get("media_info", other) if other else {}
+        if not m_info.get("title"):
+            m_info["title"] = req.title
+        if not m_info.get("season"):
+            m_info["season"] = req.season
+        if not m_info.get("media_type"):
+            m_info["media_type"] = req.media_type
+
+        results.append(
+            {
+                "id": req.id,
+                "media_id": getattr(req, "bangumi_id", getattr(req, "tmdb_id", None)),
+                "source": "bangumi" if hasattr(req, "bangumi_id") else "tmdb",
+                "status": status_name,
+                "timestamp": req.timestamp,
+                "title": req.title,
+                "season": req.season,
+                "media_type": req.media_type,
+                "require_key": req.require_key,
+                "admin_note": req.admin_note,
+                "media_info": m_info,
+                "user": (
+                    {
+                        "telegram_id": req.telegram_id,
+                        "username": user.USERNAME if user else None,
+                        "uid": user.UID if user else None,
+                    }
+                    if user
+                    else None
+                ),
+            }
+        )
+
     # 分页
     total = len(results)
     start = (page - 1) * per_page
     end = start + per_page
     paginated_results = results[start:end]
-    
-    return api_response(True, "获取成功", {
-        'requests': paginated_results,
-        'total': total,
-        'page': page,
-        'per_page': per_page,
-    })
+
+    return api_response(
+        True,
+        "获取成功",
+        {
+            "requests": paginated_results,
+            "total": total,
+            "page": page,
+            "per_page": per_page,
+        },
+    )
 
 
-@admin_bp.route('/media-requests/<int:request_id>', methods=['PUT', 'DELETE'])
+@admin_bp.route("/media-requests/<int:request_id>", methods=["PUT", "DELETE"])
 @require_auth
 @require_admin
 async def update_or_delete_media_request(request_id: int):
     """更新或删除求片请求（管理员，按数值 id；同 id 存在于两个 source 表时建议改用 by-key 接口）"""
     from src.db.bangumi import BangumiRequireOperate
 
-    if request.method == 'DELETE':
+    if request.method == "DELETE":
         req = await BangumiRequireOperate.get_require(request_id)
         if not req:
             return api_response(False, "请求不存在", code=404)
-        source = 'bangumi' if hasattr(req, 'bangumi_id') else 'tmdb'
+        source = "bangumi" if hasattr(req, "bangumi_id") else "tmdb"
         success = await BangumiRequireOperate.delete_require(request_id, source)
         return api_response(success, "请求已删除" if success else "删除失败")
 
@@ -1111,19 +1184,19 @@ async def update_or_delete_media_request(request_id: int):
     from src.db.bangumi import ReqStatus
 
     data = request.get_json() or {}
-    status_str = data.get('status', '').lower()
-    note = (data.get('note') or '').strip()
+    status_str = data.get("status", "").lower()
+    note = (data.get("note") or "").strip()
 
     if len(note) > 1000:
         return api_response(False, "管理员备注过长，最多 1000 字符", code=400)
 
     # 转换状态
     status_map = {
-        'pending': ReqStatus.UNHANDLED,
-        'accepted': ReqStatus.ACCEPTED,
-        'rejected': ReqStatus.REJECTED,
-        'completed': ReqStatus.COMPLETED,
-        'downloading': ReqStatus.DOWNLOADING,
+        "pending": ReqStatus.UNHANDLED,
+        "accepted": ReqStatus.ACCEPTED,
+        "rejected": ReqStatus.REJECTED,
+        "completed": ReqStatus.COMPLETED,
+        "downloading": ReqStatus.DOWNLOADING,
     }
 
     if status_str not in status_map:
@@ -1132,7 +1205,7 @@ async def update_or_delete_media_request(request_id: int):
     target_status = status_map[status_str]
 
     # 尝试从 body 获取 source 或通过 ID 自动寻找
-    source = data.get('source')
+    source = data.get("source")
 
     # 更新状态
     success, message = await MediaRequestService.update_request_status(request_id, target_status, note, source)
@@ -1143,7 +1216,7 @@ async def update_or_delete_media_request(request_id: int):
         return api_response(False, message or "请求不存在", code=404)
 
 
-@admin_bp.route('/media-requests/by-key/<string:require_key>', methods=['PUT', 'DELETE'])
+@admin_bp.route("/media-requests/by-key/<string:require_key>", methods=["PUT", "DELETE"])
 @require_auth
 @require_admin
 async def update_or_delete_media_request_by_key(require_key: str):
@@ -1159,25 +1232,25 @@ async def update_or_delete_media_request_by_key(require_key: str):
     if not require_key or len(require_key) > 64:
         return api_response(False, "require_key 缺失或格式不合法", code=400)
 
-    if request.method == 'DELETE':
+    if request.method == "DELETE":
         success = await BangumiRequireOperate.delete_require_by_key(require_key)
         if success:
             return api_response(True, "请求已删除")
         return api_response(False, "请求不存在", code=404)
 
     data = request.get_json() or {}
-    status_str = data.get('status', '').lower()
-    note = (data.get('note') or '').strip()
+    status_str = data.get("status", "").lower()
+    note = (data.get("note") or "").strip()
 
     if len(note) > 1000:
         return api_response(False, "管理员备注过长，最多 1000 字符", code=400)
 
     status_map = {
-        'pending': ReqStatus.UNHANDLED,
-        'accepted': ReqStatus.ACCEPTED,
-        'rejected': ReqStatus.REJECTED,
-        'completed': ReqStatus.COMPLETED,
-        'downloading': ReqStatus.DOWNLOADING,
+        "pending": ReqStatus.UNHANDLED,
+        "accepted": ReqStatus.ACCEPTED,
+        "rejected": ReqStatus.REJECTED,
+        "completed": ReqStatus.COMPLETED,
+        "downloading": ReqStatus.DOWNLOADING,
     }
     if status_str not in status_map:
         return api_response(False, f"无效状态，支持: {', '.join(status_map.keys())}", code=400)
@@ -1193,13 +1266,13 @@ async def update_or_delete_media_request_by_key(require_key: str):
     return api_response(False, "请求不存在", code=404)
 
 
-@admin_bp.route('/regcodes', methods=['POST'])
+@admin_bp.route("/regcodes", methods=["POST"])
 @require_auth
 @require_admin
 async def create_regcode():
     """
     创建注册码
-    
+
     Request:
         {
             "type": 1,              // 1=注册, 2=续期, 3=白名单
@@ -1212,11 +1285,11 @@ async def create_regcode():
     data = request.get_json() or {}
 
     try:
-        code_type = int(data.get('type', 1))
-        validity_time = int(data.get('validity_time', -1))
-        use_count_limit = int(data.get('use_count_limit', 1))
-        days = int(data.get('days', 30))
-        count = int(data.get('count', 1))
+        code_type = int(data.get("type", 1))
+        validity_time = int(data.get("validity_time", -1))
+        use_count_limit = int(data.get("use_count_limit", 1))
+        days = int(data.get("days", 30))
+        count = int(data.get("count", 1))
     except (TypeError, ValueError):
         return api_response(False, "参数类型错误，请检查 type/validity_time/use_count_limit/days/count", code=400)
 
@@ -1226,27 +1299,29 @@ async def create_regcode():
     # 0 和 -1 都表示永久
     if days <= 0:
         days = -1
-    
+
     if count < 1 or count > 100:
         return api_response(False, "生成数量必须在 1-100 之间", code=400)
-    
-    codes = await RegCodeOperate.create_regcode(
-        validity_time, code_type, use_count_limit, count, days
+
+    codes = await RegCodeOperate.create_regcode(validity_time, code_type, use_count_limit, count, days)
+
+    return api_response(
+        True,
+        "创建成功",
+        {
+            "codes": codes if isinstance(codes, list) else [codes],
+            "count": count,
+        },
     )
-    
-    return api_response(True, "创建成功", {
-        'codes': codes if isinstance(codes, list) else [codes],
-        'count': count,
-    })
 
 
-@admin_bp.route('/regcodes/<code>', methods=['DELETE'])
+@admin_bp.route("/regcodes/<code>", methods=["DELETE"])
 @require_auth
 @require_admin
 async def delete_regcode(code: str):
     """删除注册码"""
     success = await RegCodeOperate.delete_regcode(code)
-    
+
     if success:
         return api_response(True, "删除成功")
     return api_response(False, "注册码不存在或删除失败")
@@ -1254,7 +1329,8 @@ async def delete_regcode(code: str):
 
 # ==================== Emby 管理 ====================
 
-@admin_bp.route('/emby/sessions', methods=['GET'])
+
+@admin_bp.route("/emby/sessions", methods=["GET"])
 @require_auth
 @require_admin
 async def list_sessions():
@@ -1263,30 +1339,30 @@ async def list_sessions():
     return api_response(True, "获取成功", sessions)
 
 
-@admin_bp.route('/emby/activity', methods=['GET'])
+@admin_bp.route("/emby/activity", methods=["GET"])
 @require_auth
 @require_admin
 async def get_activity_log():
     """
     获取活动日志
-    
+
     Query:
         limit: int - 返回数量（默认 50，最大 200）
     """
-    limit = request.args.get('limit', 50, type=int)
+    limit = request.args.get("limit", 50, type=int)
     limit = min(max(limit, 1), 200)
-    
+
     logs = await EmbyService.get_activity_log(limit)
     return api_response(True, "获取成功", logs)
 
 
-@admin_bp.route('/emby/broadcast', methods=['POST'])
+@admin_bp.route("/emby/broadcast", methods=["POST"])
 @require_auth
 @require_admin
 async def broadcast_message():
     """
     广播消息到所有会话
-    
+
     Request:
         {
             "header": "通知",
@@ -1294,25 +1370,26 @@ async def broadcast_message():
         }
     """
     data = request.get_json() or {}
-    header = data.get('header', '通知')
-    text = data.get('text')
-    
+    header = data.get("header", "通知")
+    text = data.get("text")
+
     if not text:
         return api_response(False, "缺少消息内容", code=400)
-    
+
     sent = await EmbyService.broadcast_message(header, text)
-    return api_response(True, f"已发送到 {sent} 个会话", {'sent_count': sent})
+    return api_response(True, f"已发送到 {sent} 个会话", {"sent_count": sent})
 
 
 # ==================== 白名单用户 ====================
 
-@admin_bp.route('/whitelist', methods=['POST'])
+
+@admin_bp.route("/whitelist", methods=["POST"])
 @require_auth
 @require_admin
 async def create_whitelist_user():
     """
     创建白名单用户（永久有效）
-    
+
     Request:
         {
             "telegram_id": 123456789,
@@ -1321,58 +1398,68 @@ async def create_whitelist_user():
         }
     """
     data = request.get_json() or {}
-    
-    telegram_id = data.get('telegram_id')
-    username = data.get('username')
-    email = data.get('email')
-    
+
+    telegram_id = data.get("telegram_id")
+    username = data.get("username")
+    email = data.get("email")
+
     if not telegram_id or not username:
         return api_response(False, "缺少必要参数", code=400)
-    
+
     result = await UserService.create_whitelist_user(telegram_id, username, email)
-    
-    if result.result.value == 'success':
-        return api_response(True, result.message, {
-            'username': result.user.USERNAME if result.user else None,
-            'password': result.emby_password,
-        })
-    
+
+    if result.result.value == "success":
+        return api_response(
+            True,
+            result.message,
+            {
+                "username": result.user.USERNAME if result.user else None,
+                "password": result.emby_password,
+            },
+        )
+
     return api_response(False, result.message, code=400)
 
 
 # ==================== 统计信息 ====================
 
-@admin_bp.route('/stats', methods=['GET'])
+
+@admin_bp.route("/stats", methods=["GET"])
 @require_auth
 @require_admin
 async def get_stats():
     """获取系统统计信息"""
     from src.config import RegisterConfig
-    
+
     registered_count = await UserOperate.get_registered_users_count()
     active_count = await UserOperate.get_active_users_count()
     regcode_count = await RegCodeOperate.get_active_regcodes_count()
     server_status = await EmbyService.get_server_status()
-    
-    return api_response(True, "获取成功", {
-        'users': {
-            'registered': registered_count,
-            'active': active_count,
-            'limit': RegisterConfig.USER_LIMIT,
+
+    return api_response(
+        True,
+        "获取成功",
+        {
+            "users": {
+                "registered": registered_count,
+                "active": active_count,
+                "limit": RegisterConfig.USER_LIMIT,
+            },
+            "regcodes": {
+                "active": regcode_count,
+            },
+            "emby": {
+                "online": server_status.get("online", False),
+                "active_sessions": server_status.get("active_sessions", 0),
+            },
         },
-        'regcodes': {
-            'active': regcode_count,
-        },
-        'emby': {
-            'online': server_status.get('online', False),
-            'active_sessions': server_status.get('active_sessions', 0),
-        },
-    })
+    )
 
 
 # ==================== Emby 管理 ====================
 
-@admin_bp.route('/emby/test', methods=['POST'])
+
+@admin_bp.route("/emby/test", methods=["POST"])
 @require_auth
 @require_admin
 async def test_emby_connectivity():
@@ -1381,9 +1468,9 @@ async def test_emby_connectivity():
     import time as _time
 
     results = {
-        'emby_url': EmbyConfig.EMBY_URL,
-        'tests': [],
-        'overall': True,
+        "emby_url": EmbyConfig.EMBY_URL,
+        "tests": [],
+        "overall": True,
     }
     emby = get_emby_client()
 
@@ -1392,65 +1479,81 @@ async def test_emby_connectivity():
     try:
         ok = await emby.ping()
         latency = round((_time.time() - t0) * 1000)
-        results['tests'].append({
-            'name': '网络连通', 'success': ok, 'latency_ms': latency,
-            'message': f'延迟 {latency}ms' if ok else '无法连接到 Emby 服务器',
-        })
+        results["tests"].append(
+            {
+                "name": "网络连通",
+                "success": ok,
+                "latency_ms": latency,
+                "message": f"延迟 {latency}ms" if ok else "无法连接到 Emby 服务器",
+            }
+        )
         if not ok:
-            results['overall'] = False
+            results["overall"] = False
     except Exception as e:
-        results['tests'].append({'name': '网络连通', 'success': False, 'message': str(e)})
-        results['overall'] = False
+        results["tests"].append({"name": "网络连通", "success": False, "message": str(e)})
+        results["overall"] = False
 
     # Test 2: Server Info (tests API auth)
     t0 = _time.time()
     try:
         info = await emby.get_server_info()
         latency = round((_time.time() - t0) * 1000)
-        results['tests'].append({
-            'name': 'API 认证', 'success': True, 'latency_ms': latency,
-            'message': f"服务器: {info.get('ServerName', '?')}, 版本: {info.get('Version', '?')}",
-        })
-        results['server_info'] = {
-            'name': info.get('ServerName'),
-            'version': info.get('Version'),
-            'os': info.get('OperatingSystemDisplayName'),
-            'id': info.get('Id'),
+        results["tests"].append(
+            {
+                "name": "API 认证",
+                "success": True,
+                "latency_ms": latency,
+                "message": f"服务器: {info.get('ServerName', '?')}, 版本: {info.get('Version', '?')}",
+            }
+        )
+        results["server_info"] = {
+            "name": info.get("ServerName"),
+            "version": info.get("Version"),
+            "os": info.get("OperatingSystemDisplayName"),
+            "id": info.get("Id"),
         }
     except EmbyError as e:
-        results['tests'].append({'name': 'API 认证', 'success': False, 'message': f'认证失败: {e}'})
-        results['overall'] = False
+        results["tests"].append({"name": "API 认证", "success": False, "message": f"认证失败: {e}"})
+        results["overall"] = False
 
     # Test 3: User list
     t0 = _time.time()
     try:
         users = await emby.get_users()
         latency = round((_time.time() - t0) * 1000)
-        results['tests'].append({
-            'name': '用户列表', 'success': True, 'latency_ms': latency,
-            'message': f'共 {len(users)} 个 Emby 用户',
-        })
+        results["tests"].append(
+            {
+                "name": "用户列表",
+                "success": True,
+                "latency_ms": latency,
+                "message": f"共 {len(users)} 个 Emby 用户",
+            }
+        )
     except EmbyError as e:
-        results['tests'].append({'name': '用户列表', 'success': False, 'message': str(e)})
-        results['overall'] = False
+        results["tests"].append({"name": "用户列表", "success": False, "message": str(e)})
+        results["overall"] = False
 
     # Test 4: Libraries
     t0 = _time.time()
     try:
         libs = await emby.get_libraries()
         latency = round((_time.time() - t0) * 1000)
-        results['tests'].append({
-            'name': '媒体库', 'success': True, 'latency_ms': latency,
-            'message': f'共 {len(libs)} 个媒体库',
-        })
+        results["tests"].append(
+            {
+                "name": "媒体库",
+                "success": True,
+                "latency_ms": latency,
+                "message": f"共 {len(libs)} 个媒体库",
+            }
+        )
     except EmbyError as e:
-        results['tests'].append({'name': '媒体库', 'success': False, 'message': str(e)})
-        results['overall'] = False
+        results["tests"].append({"name": "媒体库", "success": False, "message": str(e)})
+        results["overall"] = False
 
     return api_response(True, "测试完成", results)
 
 
-@admin_bp.route('/emby/users', methods=['GET'])
+@admin_bp.route("/emby/users", methods=["GET"])
 @require_auth
 @require_admin
 async def list_emby_users():
@@ -1468,49 +1571,62 @@ async def list_emby_users():
     result = []
     for eu in emby_users:
         local_user = local_by_embyid.get(eu.id)
-        sync_status = 'unlinked'
+        sync_status = "unlinked"
         if local_user:
-            sync_status = 'synced' if local_user.USERNAME == eu.name else 'name_mismatch'
+            sync_status = "synced" if local_user.USERNAME == eu.name else "name_mismatch"
 
-        result.append({
-            'emby_id': eu.id,
-            'emby_name': eu.name,
-            'has_password': eu.has_password,
-            'is_admin': eu.policy.get('IsAdministrator', False),
-            'is_disabled': eu.policy.get('IsDisabled', False),
-            'is_hidden': eu.policy.get('IsHidden', False),
-            'last_login': eu.last_login_date,
-            'last_activity': eu.last_activity_date,
-            'local_user': {
-                'uid': local_user.UID,
-                'username': local_user.USERNAME,
-                'telegram_id': local_user.TELEGRAM_ID,
-                'active': local_user.ACTIVE_STATUS,
-                'role': local_user.ROLE,
-            } if local_user else None,
-            'sync_status': sync_status,
-        })
+        result.append(
+            {
+                "emby_id": eu.id,
+                "emby_name": eu.name,
+                "has_password": eu.has_password,
+                "is_admin": eu.policy.get("IsAdministrator", False),
+                "is_disabled": eu.policy.get("IsDisabled", False),
+                "is_hidden": eu.policy.get("IsHidden", False),
+                "last_login": eu.last_login_date,
+                "last_activity": eu.last_activity_date,
+                "local_user": (
+                    {
+                        "uid": local_user.UID,
+                        "username": local_user.USERNAME,
+                        "telegram_id": local_user.TELEGRAM_ID,
+                        "active": local_user.ACTIVE_STATUS,
+                        "role": local_user.ROLE,
+                    }
+                    if local_user
+                    else None
+                ),
+                "sync_status": sync_status,
+            }
+        )
 
     # 本地有 EMBYID 但 Emby 端不存在的孤儿记录
     emby_id_set = {eu.id for eu in emby_users}
     orphans = [
         {
-            'uid': u.UID, 'username': u.USERNAME,
-            'emby_id': u.EMBYID, 'telegram_id': u.TELEGRAM_ID,
+            "uid": u.UID,
+            "username": u.USERNAME,
+            "emby_id": u.EMBYID,
+            "telegram_id": u.TELEGRAM_ID,
         }
-        for u in local_emby_users if u.EMBYID not in emby_id_set
+        for u in local_emby_users
+        if u.EMBYID not in emby_id_set
     ]
 
-    return api_response(True, "获取成功", {
-        'emby_users': result,
-        'orphans': orphans,
-        'total_emby': len(emby_users),
-        'total_linked': sum(1 for r in result if r['sync_status'] != 'unlinked'),
-        'total_orphans': len(orphans),
-    })
+    return api_response(
+        True,
+        "获取成功",
+        {
+            "emby_users": result,
+            "orphans": orphans,
+            "total_emby": len(emby_users),
+            "total_linked": sum(1 for r in result if r["sync_status"] != "unlinked"),
+            "total_orphans": len(orphans),
+        },
+    )
 
 
-@admin_bp.route('/emby/cleanup-orphans', methods=['POST'])
+@admin_bp.route("/emby/cleanup-orphans", methods=["POST"])
 @require_auth
 @require_admin
 async def cleanup_orphan_emby_ids():
@@ -1531,14 +1647,19 @@ async def cleanup_orphan_emby_ids():
             old_emby_id = user.EMBYID
             user.EMBYID = None
             await UserOperate.update_user(user)
-            cleaned.append({'uid': user.UID, 'username': user.USERNAME, 'old_emby_id': old_emby_id})
+            cleaned.append({"uid": user.UID, "username": user.USERNAME, "old_emby_id": old_emby_id})
 
-    return api_response(True, f"已清理 {len(cleaned)} 条孤儿记录", {
-        'cleaned': cleaned, 'count': len(cleaned),
-    })
+    return api_response(
+        True,
+        f"已清理 {len(cleaned)} 条孤儿记录",
+        {
+            "cleaned": cleaned,
+            "count": len(cleaned),
+        },
+    )
 
 
-@admin_bp.route('/emby/import-users', methods=['POST'])
+@admin_bp.route("/emby/import-users", methods=["POST"])
 @require_auth
 @require_admin
 async def import_emby_users():
@@ -1557,7 +1678,7 @@ async def import_emby_users():
         return api_response(False, f"无法连接 Emby: {e}", code=500)
 
     data = request.get_json() or {}
-    emby_ids = data.get('emby_ids', [])
+    emby_ids = data.get("emby_ids", [])
     if emby_ids and not isinstance(emby_ids, list):
         return api_response(False, "emby_ids 必须为数组", code=400)
     target_ids = {str(i) for i in emby_ids if isinstance(i, (str, int))}
@@ -1569,28 +1690,39 @@ async def import_emby_users():
     unlinked = []
 
     for eu in emby_users:
-        if eu.policy.get('IsAdministrator', False):
-            skipped.append({'emby_id': eu.id, 'name': eu.name, 'reason': '管理员账户'})
+        if eu.policy.get("IsAdministrator", False):
+            skipped.append({"emby_id": eu.id, "name": eu.name, "reason": "管理员账户"})
             continue
         if target_ids and eu.id not in target_ids:
-            skipped.append({'emby_id': eu.id, 'name': eu.name, 'reason': '未在筛选列表中'})
+            skipped.append({"emby_id": eu.id, "name": eu.name, "reason": "未在筛选列表中"})
             continue
         if eu.id in linked_emby_ids:
-            skipped.append({'emby_id': eu.id, 'name': eu.name, 'reason': '已绑定本地用户'})
+            skipped.append({"emby_id": eu.id, "name": eu.name, "reason": "已绑定本地用户"})
             continue
 
         # 不做用户名匹配、不做本地用户创建，仅返回未绑定的 Emby 用户列表
-        unlinked.append({'emby_id': eu.id, 'emby_name': eu.name, 'is_disabled': eu.policy.get('IsDisabled', False), 'is_hidden': eu.policy.get('IsHidden', False)})
+        unlinked.append(
+            {
+                "emby_id": eu.id,
+                "emby_name": eu.name,
+                "is_disabled": eu.policy.get("IsDisabled", False),
+                "is_hidden": eu.policy.get("IsHidden", False),
+            }
+        )
 
-    return api_response(True, f"扫描完成，共 {len(unlinked)} 个未绑定 Emby 用户", {
-        'unlinked': unlinked,
-        'skipped': skipped,
-        'unlinked_count': len(unlinked),
-        'skipped_count': len(skipped),
-    })
+    return api_response(
+        True,
+        f"扫描完成，共 {len(unlinked)} 个未绑定 Emby 用户",
+        {
+            "unlinked": unlinked,
+            "skipped": skipped,
+            "unlinked_count": len(unlinked),
+            "skipped_count": len(skipped),
+        },
+    )
 
 
-@admin_bp.route('/emby/reset-bindings', methods=['POST'])
+@admin_bp.route("/emby/reset-bindings", methods=["POST"])
 @require_auth
 @require_admin
 async def reset_all_emby_bindings():
@@ -1600,7 +1732,7 @@ async def reset_all_emby_bindings():
     Request body: { "confirm": "RESET_ALL_EMBY" }
     """
     data = request.get_json() or {}
-    if data.get('confirm') != 'RESET_ALL_EMBY':
+    if data.get("confirm") != "RESET_ALL_EMBY":
         return api_response(False, "需要提供确认字符串 confirm='RESET_ALL_EMBY'", code=400)
 
     local_emby_users = await UserOperate.get_all_emby_users()
@@ -1610,10 +1742,10 @@ async def reset_all_emby_bindings():
         await UserOperate.update_user(user)
         count += 1
 
-    return api_response(True, f"已重置 {count} 个用户的 Emby 绑定", {'count': count})
+    return api_response(True, f"已重置 {count} 个用户的 Emby 绑定", {"count": count})
 
 
-@admin_bp.route('/emby/delete-unlinked', methods=['POST'])
+@admin_bp.route("/emby/delete-unlinked", methods=["POST"])
 @require_auth
 @require_admin
 async def delete_unlinked_emby_users():
@@ -1627,7 +1759,7 @@ async def delete_unlinked_emby_users():
         }
     """
     data = request.get_json() or {}
-    dry_run = bool(data.get('dry_run', False))
+    dry_run = parse_bool(data.get("dry_run"), default=False)
 
     emby = get_emby_client()
     try:
@@ -1643,16 +1775,16 @@ async def delete_unlinked_emby_users():
     failed = []
 
     for eu in emby_users:
-        if eu.policy.get('IsAdministrator', False):
+        if eu.policy.get("IsAdministrator", False):
             continue
         if eu.id in linked_emby_ids:
             continue
 
         record = {
-            'emby_id': eu.id,
-            'emby_name': eu.name,
-            'is_disabled': eu.policy.get('IsDisabled', False),
-            'is_hidden': eu.policy.get('IsHidden', False),
+            "emby_id": eu.id,
+            "emby_name": eu.name,
+            "is_disabled": eu.policy.get("IsDisabled", False),
+            "is_hidden": eu.policy.get("IsHidden", False),
         }
         candidates.append(record)
 
@@ -1661,21 +1793,26 @@ async def delete_unlinked_emby_users():
             if ok:
                 deleted.append(record)
             else:
-                failed.append({'emby_id': eu.id, 'emby_name': eu.name, 'reason': '删除失败'})
+                failed.append({"emby_id": eu.id, "emby_name": eu.name, "reason": "删除失败"})
 
-    return api_response(True, f"{'预览' if dry_run else '删除'}完成: 共 {len(candidates)} 个未绑定 Emby 用户" + (f"，成功删除 {len(deleted)} 个" if not dry_run else ''), {
-        'candidates': candidates,
-        'deleted': deleted,
-        'failed': failed,
-        'count': len(candidates),
-        'dry_run': dry_run,
-    })
+    return api_response(
+        True,
+        f"{'预览' if dry_run else '删除'}完成: 共 {len(candidates)} 个未绑定 Emby 用户"
+        + (f"，成功删除 {len(deleted)} 个" if not dry_run else ""),
+        {
+            "candidates": candidates,
+            "deleted": deleted,
+            "failed": failed,
+            "count": len(candidates),
+            "dry_run": dry_run,
+        },
+    )
 
 
 # ==================== 批量到期时间调控 ====================
 
 
-@admin_bp.route('/users/bulk-expire', methods=['POST'])
+@admin_bp.route("/users/bulk-expire", methods=["POST"])
 @require_auth
 @require_admin
 async def admin_bulk_set_expire():
@@ -1710,17 +1847,19 @@ async def admin_bulk_set_expire():
         }
     """
     from src.core.utils import (
-        days_to_seconds, rate_limit_check, timestamp,
+        days_to_seconds,
+        rate_limit_check,
+        timestamp,
     )
 
     data = request.get_json(silent=True) or {}
-    confirm = (data.get('confirm') or '').strip()
-    if confirm != 'BULK_EXPIRE_OK':
-        return api_response(False, "需要提供 confirm=\"BULK_EXPIRE_OK\" 以确认本次批量操作", code=400)
+    confirm = (data.get("confirm") or "").strip()
+    if confirm != "BULK_EXPIRE_OK":
+        return api_response(False, '需要提供 confirm="BULK_EXPIRE_OK" 以确认本次批量操作', code=400)
 
     # 解析目标到期时间
-    expired_at_raw = data.get('expired_at')
-    days_raw = data.get('days')
+    expired_at_raw = data.get("expired_at")
+    days_raw = data.get("days")
     expired_at: int
     if expired_at_raw is not None:
         try:
@@ -1749,10 +1888,12 @@ async def admin_bulk_set_expire():
     if expired_at != -1 and expired_at > 253402214400:
         return api_response(False, "expired_at 超出允许范围", code=400)
 
-    # 操作员速率限制：5 分钟内最多 3 次（防误连点）
+    # 操作员速率限制：只防误连点，不阻碍管理员连续调整。
     allowed, retry_after = rate_limit_check(
-        "admin_bulk_expire", str(g.current_user.UID),
-        max_requests=3, window_seconds=300,
+        "admin_bulk_expire",
+        str(g.current_user.UID),
+        max_requests=10,
+        window_seconds=60,
     )
     if not allowed:
         return api_response(
@@ -1761,19 +1902,19 @@ async def admin_bulk_set_expire():
             code=429,
         )
 
-    include_admin = bool(data.get('include_admin', False))
-    include_whitelist = bool(data.get('include_whitelist', False))
+    include_admin = parse_bool(data.get("include_admin"), default=False)
+    include_whitelist = parse_bool(data.get("include_whitelist"), default=False)
     # 未绑定 Emby 的账号一律强制跳过（EXPIRED_AT=0 是 sentinel，不允许批量覆盖）。
     # 兼容旧前端：忽略请求里残留的 include_pending_emby。
     include_pending_emby = False
 
-    filt = data.get('filter') or {}
+    filt = data.get("filter") or {}
     if not isinstance(filt, dict):
         return api_response(False, "filter 必须是对象", code=400)
 
-    role_filter = filt.get('role')
-    active_filter = filt.get('active')
-    emby_filter = (filt.get('emby') or '').strip().lower()
+    role_filter = filt.get("role")
+    active_filter = filt.get("active")
+    emby_filter = (filt.get("emby") or "").strip().lower()
 
     # 角色过滤合法性
     if role_filter is not None:
@@ -1786,9 +1927,9 @@ async def admin_bulk_set_expire():
 
     # 拉一遍全部满足条件的用户
     has_emby_flag: bool | None = None
-    if emby_filter == 'bound':
+    if emby_filter == "bound":
         has_emby_flag = True
-    elif emby_filter == 'unbound':
+    elif emby_filter == "unbound":
         has_emby_flag = False
 
     all_matching, _total = await UserOperate.get_all_users(
@@ -1821,9 +1962,7 @@ async def admin_bulk_set_expire():
             skipped_admins += 1
             continue
         # 未绑定 Emby 的账号默认跳过：它们 EXPIRED_AT=0 是 sentinel，不应该被随意覆盖
-        if not include_pending_emby and (
-            not u.EMBYID or bool(getattr(u, 'PENDING_EMBY', False))
-        ):
+        if not include_pending_emby and (not u.EMBYID or bool(getattr(u, "PENDING_EMBY", False))):
             skipped_pending_emby += 1
             continue
         target_uids.append(int(u.UID))
@@ -1839,15 +1978,19 @@ async def admin_bulk_set_expire():
         )
 
     if not target_uids:
-        return api_response(True, "没有匹配的用户，未做任何更改", {
-            'matched': 0,
-            'updated': 0,
-            'expired_at': expired_at,
-            'skipped_admins': skipped_admins,
-            'skipped_whitelist': skipped_whitelist,
-            'skipped_pending_emby': skipped_pending_emby,
-            'skipped_unrecognized': skipped_unrecognized,
-        })
+        return api_response(
+            True,
+            "没有匹配的用户，未做任何更改",
+            {
+                "matched": 0,
+                "updated": 0,
+                "expired_at": expired_at,
+                "skipped_admins": skipped_admins,
+                "skipped_whitelist": skipped_whitelist,
+                "skipped_pending_emby": skipped_pending_emby,
+                "skipped_unrecognized": skipped_unrecognized,
+            },
+        )
 
     try:
         updated = await UserOperate.batch_set_expired_at(target_uids, expired_at)
@@ -1858,24 +2001,203 @@ async def admin_bulk_set_expire():
         "管理员 %s 批量调控到期时间: matched=%d updated=%d target=%s "
         "filter=%s include_admin=%s include_whitelist=%s include_pending_emby=%s",
         g.current_user.USERNAME,
-        matched, updated, expired_at, filt,
-        include_admin, include_whitelist, include_pending_emby,
+        matched,
+        updated,
+        expired_at,
+        filt,
+        include_admin,
+        include_whitelist,
+        include_pending_emby,
     )
 
-    return api_response(True, f"已更新 {updated} 个用户到期时间", {
-        'matched': matched,
-        'updated': updated,
-        'expired_at': expired_at,
-        'skipped_admins': skipped_admins,
-        'skipped_whitelist': skipped_whitelist,
-        'skipped_pending_emby': skipped_pending_emby,
-        'skipped_unrecognized': skipped_unrecognized,
-    })
+    return api_response(
+        True,
+        f"已更新 {updated} 个用户到期时间",
+        {
+            "matched": matched,
+            "updated": updated,
+            "expired_at": expired_at,
+            "skipped_admins": skipped_admins,
+            "skipped_whitelist": skipped_whitelist,
+            "skipped_pending_emby": skipped_pending_emby,
+            "skipped_unrecognized": skipped_unrecognized,
+        },
+    )
+
+
+@admin_bp.route("/users/bulk-enable-disabled", methods=["POST"])
+@require_auth
+@require_admin
+async def admin_bulk_enable_disabled_users():
+    """按 UID 列表或当前筛选条件批量启用已禁用账号。"""
+    from src.core.utils import rate_limit_check
+
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return api_response(False, "请求体必须是 JSON 对象", code=400)
+    confirm = (data.get("confirm") or "").strip()
+    if confirm != "BULK_ENABLE_DISABLED_OK":
+        return api_response(False, '需要提供 confirm="BULK_ENABLE_DISABLED_OK" 以确认本次批量启用', code=400)
+
+    allowed, retry_after = rate_limit_check(
+        "admin_bulk_enable_disabled",
+        str(g.current_user.UID),
+        max_requests=20,
+        window_seconds=60,
+    )
+    if not allowed:
+        return api_response(False, f"批量启用操作过于频繁，请 {retry_after} 秒后再试", code=429)
+
+    include_admin = parse_bool(data.get("include_admin"), default=False)
+    include_whitelist = parse_bool(data.get("include_whitelist"), default=False)
+    raw_uids = data.get("uids")
+    requested_uids: list[int] = []
+    users: list[UserModel] = []
+    skipped: list[dict] = []
+
+    if raw_uids is not None:
+        if not isinstance(raw_uids, list):
+            return api_response(False, "uids 必须是数组", code=400)
+        seen: set[int] = set()
+        for raw_uid in raw_uids:
+            try:
+                uid = int(raw_uid)
+            except (TypeError, ValueError):
+                return api_response(False, "uids 中只能包含正整数 UID", code=400)
+            if uid <= 0:
+                return api_response(False, "uids 中只能包含正整数 UID", code=400)
+            if uid in seen:
+                continue
+            seen.add(uid)
+            requested_uids.append(uid)
+        if not requested_uids:
+            return api_response(False, "请提供至少一个 UID", code=400)
+        if len(requested_uids) > 5000:
+            return api_response(False, "单次最多处理 5000 个 UID", code=400)
+        for uid in requested_uids:
+            user = await UserOperate.get_user_by_uid(uid)
+            if user:
+                users.append(user)
+            else:
+                skipped.append({"uid": uid, "reason": "用户不存在"})
+    else:
+        filt = data.get("filter") or {}
+        if not isinstance(filt, dict):
+            return api_response(False, "filter 必须是对象", code=400)
+
+        role_filter = filt.get("role")
+        if role_filter is not None:
+            try:
+                role_filter = int(role_filter)
+            except (TypeError, ValueError):
+                return api_response(False, "filter.role 必须是整数", code=400)
+            if role_filter not in [r.value for r in Role]:
+                return api_response(False, "filter.role 非法", code=400)
+
+        active_filter = filt.get("active")
+        if active_filter is not None and not isinstance(active_filter, bool):
+            return api_response(False, "filter.active 必须是布尔值", code=400)
+
+        search = (filt.get("search") or "").strip()
+        if len(search) > 100:
+            return api_response(False, "filter.search 过长", code=400)
+
+        emby_filter = (filt.get("emby") or "").strip().lower()
+        has_emby_flag: bool | None = None
+        if emby_filter == "bound":
+            has_emby_flag = True
+        elif emby_filter == "unbound":
+            has_emby_flag = False
+        elif emby_filter:
+            return api_response(False, "filter.emby 只能是 bound 或 unbound", code=400)
+
+        # 与前端筛选对齐：当前列表若明确“仅已启用”，这里不会暗中处理隐藏的禁用账号。
+        if active_filter is True:
+            users = []
+        else:
+            users, _ = await UserOperate.get_all_users(
+                include_inactive=True,
+                role=role_filter,
+                active_status=False,
+                search=search or None,
+                has_emby=has_emby_flag,
+                limit=100000,
+                offset=0,
+            )
+
+    eligible: list[UserModel] = []
+    skipped_admins = 0
+    skipped_whitelist = 0
+    skipped_unrecognized = 0
+    skipped_active = 0
+    for user in users:
+        if user.ROLE == Role.UNRECOGNIZED.value:
+            skipped_unrecognized += 1
+            skipped.append({"uid": user.UID, "reason": "未识别角色不可批量启用"})
+            continue
+        if user.ROLE == Role.ADMIN.value and not include_admin:
+            skipped_admins += 1
+            skipped.append({"uid": user.UID, "reason": "管理员账号默认跳过"})
+            continue
+        if user.ROLE == Role.WHITE_LIST.value and not include_whitelist:
+            skipped_whitelist += 1
+            skipped.append({"uid": user.UID, "reason": "白名单账号默认跳过"})
+            continue
+        if bool(user.ACTIVE_STATUS):
+            skipped_active += 1
+            skipped.append({"uid": user.UID, "reason": "账号已经启用"})
+            continue
+        eligible.append(user)
+
+    if len(eligible) > 5000:
+        return api_response(
+            False,
+            f"匹配到 {len(eligible)} 个待启用账号，超过单次上限 5000；请收紧筛选条件后重试",
+            code=400,
+        )
+
+    enabled: list[dict] = []
+    failed: list[dict] = []
+    for user in eligible:
+        ok, msg = await UserService.enable_user(user)
+        if ok:
+            enabled.append({"uid": int(user.UID), "username": user.USERNAME})
+        else:
+            failed.append({"uid": int(user.UID), "username": user.USERNAME, "reason": msg})
+
+    logger.warning(
+        "管理员 %s 批量启用禁用账号: matched=%d eligible=%d enabled=%d failed=%d include_admin=%s include_whitelist=%s",
+        g.current_user.USERNAME,
+        len(users),
+        len(eligible),
+        len(enabled),
+        len(failed),
+        include_admin,
+        include_whitelist,
+    )
+
+    return api_response(
+        True,
+        f"批量启用完成：成功 {len(enabled)}，失败 {len(failed)}",
+        {
+            "matched": len(users),
+            "eligible": len(eligible),
+            "enabled": len(enabled),
+            "failed": failed,
+            "skipped": skipped,
+            "skipped_admins": skipped_admins,
+            "skipped_whitelist": skipped_whitelist,
+            "skipped_unrecognized": skipped_unrecognized,
+            "skipped_active": skipped_active,
+            "enabled_users": enabled,
+        },
+    )
 
 
 # ==================== 无效用户清理 ====================
 
-@admin_bp.route('/users/cleanup-invalid', methods=['POST'])
+
+@admin_bp.route("/users/cleanup-invalid", methods=["POST"])
 @require_auth
 @require_admin
 async def cleanup_invalid_users():
@@ -1898,8 +2220,8 @@ async def cleanup_invalid_users():
     import time as _time
 
     data = request.get_json() or {}
-    min_days = max(1, data.get('min_days', 7))
-    dry_run = data.get('dry_run', False)
+    min_days = max(1, data.get("min_days", 7))
+    dry_run = data.get("dry_run", False)
 
     threshold = int(_time.time()) - min_days * 86400
 
@@ -1924,14 +2246,16 @@ async def cleanup_invalid_users():
 
     result_list = []
     for u in invalid_users:
-        result_list.append({
-            'uid': u.UID,
-            'username': u.USERNAME,
-            'role': u.ROLE,
-            'active': u.ACTIVE_STATUS,
-            'register_time': u.REGISTER_TIME,
-            'created_at': u.CREATE_AT or u.REGISTER_TIME,
-        })
+        result_list.append(
+            {
+                "uid": u.UID,
+                "username": u.USERNAME,
+                "role": u.ROLE,
+                "active": u.ACTIVE_STATUS,
+                "register_time": u.REGISTER_TIME,
+                "created_at": u.CREATE_AT or u.REGISTER_TIME,
+            }
+        )
 
     deleted_count = 0
     if not dry_run:
@@ -1943,14 +2267,18 @@ async def cleanup_invalid_users():
                 logger.warning(f"删除无效用户 {u.USERNAME}(UID:{u.UID}) 失败: {e}")
 
     action = "预览" if dry_run else "清理"
-    return api_response(True, f"{action}完成: 共 {len(invalid_users)} 个无效用户" + (f"，已删除 {deleted_count} 个" if not dry_run else ""), {
-        'users': result_list,
-        'count': deleted_count if not dry_run else len(invalid_users),
-        'dry_run': dry_run,
-    })
+    return api_response(
+        True,
+        f"{action}完成: 共 {len(invalid_users)} 个无效用户" + (f"，已删除 {deleted_count} 个" if not dry_run else ""),
+        {
+            "users": result_list,
+            "count": deleted_count if not dry_run else len(invalid_users),
+            "dry_run": dry_run,
+        },
+    )
 
 
-@admin_bp.route('/users/kick-no-emby', methods=['POST'])
+@admin_bp.route("/users/kick-no-emby", methods=["POST"])
 @require_auth
 @require_admin
 async def admin_kick_no_emby_users():
@@ -1978,40 +2306,42 @@ async def admin_kick_no_emby_users():
     from src.services.emby_register_queue import EmbyRegisterQueueService
 
     data = request.get_json(silent=True) or {}
-    dry_run = bool(data.get('dry_run', False))
+    dry_run = parse_bool(data.get("dry_run"), default=False)
 
     try:
-        min_days = int(data.get('min_days', 0) or 0)
+        min_days = int(data.get("min_days", 0) or 0)
     except (TypeError, ValueError):
         min_days = 0
     min_days = max(0, min(min_days, 3650))
 
-    preserve_raw = data.get('preserve_pending_register')
+    preserve_raw = data.get("preserve_pending_register")
     if preserve_raw is None:
         preserve_pending_register = bool(RegisterConfig.EMBY_DIRECT_REGISTER_ENABLED)
     else:
-        preserve_pending_register = bool(preserve_raw)
+        preserve_pending_register = parse_bool(preserve_raw, default=False)
 
     if not dry_run:
-        confirm = (data.get('confirm') or '').strip()
-        if confirm != 'KICK_NO_EMBY_OK':
+        confirm = (data.get("confirm") or "").strip()
+        if confirm != "KICK_NO_EMBY_OK":
             return api_response(
                 False,
-                "需要提供 confirm=\"KICK_NO_EMBY_OK\" 以确认实际删除",
+                '需要提供 confirm="KICK_NO_EMBY_OK" 以确认实际删除',
                 code=400,
             )
 
-    # 速率限制：5 分钟内最多 3 次（防误连点）
-    allowed, retry_after = rate_limit_check(
-        "admin_kick_no_emby", str(g.current_user.UID),
-        max_requests=3, window_seconds=300,
-    )
-    if not allowed:
-        return api_response(
-            False,
-            f"操作过于频繁，请 {retry_after} 秒后再试",
-            code=429,
+    if not dry_run:
+        allowed, retry_after = rate_limit_check(
+            "admin_kick_no_emby",
+            str(g.current_user.UID),
+            max_requests=10,
+            window_seconds=60,
         )
+        if not allowed:
+            return api_response(
+                False,
+                f"操作过于频繁，请 {retry_after} 秒后再试",
+                code=429,
+            )
 
     try:
         pending_register_uids = EmbyRegisterQueueService.pending_uids()
@@ -2068,46 +2398,54 @@ async def admin_kick_no_emby_users():
 
     candidate_view = [
         {
-            'uid': int(u.UID),
-            'username': u.USERNAME,
-            'role': u.ROLE,
-            'register_time': u.REGISTER_TIME,
-            'has_telegram': bool(u.TELEGRAM_ID),
-            'pending_emby': bool(getattr(u, 'PENDING_EMBY', False)),
+            "uid": int(u.UID),
+            "username": u.USERNAME,
+            "role": u.ROLE,
+            "register_time": u.REGISTER_TIME,
+            "has_telegram": bool(u.TELEGRAM_ID),
+            "pending_emby": bool(getattr(u, "PENDING_EMBY", False)),
         }
         for u in candidates
     ]
 
     summary_skips = {
-        'skipped_admins': skipped_admins,
-        'skipped_whitelist': skipped_whitelist,
-        'skipped_unrecognized': skipped_unrecognized,
-        'skipped_pending_register': skipped_pending_register,
-        'skipped_too_recent': skipped_too_recent,
-        'skipped_in_queue': skipped_in_queue,
-        'min_days': min_days,
-        'preserve_pending_register': preserve_pending_register,
+        "skipped_admins": skipped_admins,
+        "skipped_whitelist": skipped_whitelist,
+        "skipped_unrecognized": skipped_unrecognized,
+        "skipped_pending_register": skipped_pending_register,
+        "skipped_too_recent": skipped_too_recent,
+        "skipped_in_queue": skipped_in_queue,
+        "min_days": min_days,
+        "preserve_pending_register": preserve_pending_register,
     }
 
     if dry_run:
-        return api_response(True, f"干跑结束：匹配 {len(candidates)} 个未绑 Emby 账号", {
-            'candidates': candidate_view,
-            'candidate_count': len(candidates),
-            'deleted_count': 0,
-            'failed': [],
-            'dry_run': True,
-            **summary_skips,
-        })
+        return api_response(
+            True,
+            f"干跑结束：匹配 {len(candidates)} 个未绑 Emby 账号",
+            {
+                "candidates": candidate_view,
+                "candidate_count": len(candidates),
+                "deleted_count": 0,
+                "failed": [],
+                "dry_run": True,
+                **summary_skips,
+            },
+        )
 
     if not candidates:
-        return api_response(True, "没有需要清理的账号", {
-            'candidates': [],
-            'candidate_count': 0,
-            'deleted_count': 0,
-            'failed': [],
-            'dry_run': False,
-            **summary_skips,
-        })
+        return api_response(
+            True,
+            "没有需要清理的账号",
+            {
+                "candidates": [],
+                "candidate_count": 0,
+                "deleted_count": 0,
+                "failed": [],
+                "dry_run": False,
+                **summary_skips,
+            },
+        )
 
     deleted_count = 0
     failed: list[dict] = []
@@ -2117,46 +2455,57 @@ async def admin_kick_no_emby_users():
             if success:
                 deleted_count += 1
             else:
-                failed.append({'uid': int(u.UID), 'username': u.USERNAME, 'error': msg})
+                failed.append({"uid": int(u.UID), "username": u.USERNAME, "error": msg})
         except Exception as exc:
-            logger.warning(
-                f"踢出未绑 Emby 账号失败: uid={u.UID} username={u.USERNAME}: {exc}"
-            )
-            failed.append({'uid': int(u.UID), 'username': u.USERNAME, 'error': str(exc)})
+            logger.warning(f"踢出未绑 Emby 账号失败: uid={u.UID} username={u.USERNAME}: {exc}")
+            failed.append({"uid": int(u.UID), "username": u.USERNAME, "error": str(exc)})
 
     logger.warning(
         "管理员 %s 一键踢出未绑 Emby 账号: 候选=%d 已删除=%d 失败=%d "
         "(min_days=%d preserve_pending=%s skip admin=%d white=%d unknown=%d pending=%d recent=%d queue=%d)",
-        g.current_user.USERNAME, len(candidates), deleted_count, len(failed),
-        min_days, preserve_pending_register,
-        skipped_admins, skipped_whitelist, skipped_unrecognized,
-        skipped_pending_register, skipped_too_recent, skipped_in_queue,
+        g.current_user.USERNAME,
+        len(candidates),
+        deleted_count,
+        len(failed),
+        min_days,
+        preserve_pending_register,
+        skipped_admins,
+        skipped_whitelist,
+        skipped_unrecognized,
+        skipped_pending_register,
+        skipped_too_recent,
+        skipped_in_queue,
     )
 
-    return api_response(True, f"已删除 {deleted_count} 个未绑 Emby 的系统账号", {
-        'candidates': candidate_view,
-        'candidate_count': len(candidates),
-        'deleted_count': deleted_count,
-        'failed': failed,
-        'dry_run': False,
-        **summary_skips,
-    })
+    return api_response(
+        True,
+        f"已删除 {deleted_count} 个未绑 Emby 的系统账号",
+        {
+            "candidates": candidate_view,
+            "candidate_count": len(candidates),
+            "deleted_count": deleted_count,
+            "failed": failed,
+            "dry_run": False,
+            **summary_skips,
+        },
+    )
 
 
 # ==================== 邀请树管理 ====================
 
 
-@admin_bp.route('/invite/tree', methods=['GET'])
+@admin_bp.route("/invite/tree", methods=["GET"])
 @require_auth
 @require_admin
 async def admin_invite_tree():
     """返回完整邀请森林：节点 + 边 + 根节点列表，供前端星图渲染。"""
     from src.services import InviteService
+
     payload = await InviteService.build_forest_view()
     return api_response(True, "获取成功", payload)
 
 
-@admin_bp.route('/invite/users/<int:uid>/detach', methods=['POST'])
+@admin_bp.route("/invite/users/<int:uid>/detach", methods=["POST"])
 @require_auth
 @require_admin
 async def admin_detach_user_from_tree(uid: int):
@@ -2165,16 +2514,21 @@ async def admin_detach_user_from_tree(uid: int):
     if not user:
         return api_response(False, "用户不存在", code=404)
     from src.db.invite import InviteRelationOperate
+
     ok = await InviteRelationOperate.detach_child(uid)
     if not ok:
-        return api_response(True, "用户原本就是树根，无需操作", {
-            'uid': uid,
-            'is_root': True,
-        })
-    return api_response(True, "已断开上级关系", {'uid': uid, 'is_root': True})
+        return api_response(
+            True,
+            "用户原本就是树根，无需操作",
+            {
+                "uid": uid,
+                "is_root": True,
+            },
+        )
+    return api_response(True, "已断开上级关系", {"uid": uid, "is_root": True})
 
 
-@admin_bp.route('/invite/codes', methods=['GET'])
+@admin_bp.route("/invite/codes", methods=["GET"])
 @require_auth
 @require_admin
 async def admin_list_invite_codes():
@@ -2182,9 +2536,9 @@ async def admin_list_invite_codes():
     from src.db.invite import InviteSessionFactory, InviteCodeModel
     from sqlalchemy import select as _select
 
-    inviter_uid = request.args.get('inviter_uid', type=int)
-    page = max(1, request.args.get('page', 1, type=int))
-    per_page = min(max(1, request.args.get('per_page', 50, type=int)), 200)
+    inviter_uid = request.args.get("inviter_uid", type=int)
+    page = max(1, request.args.get("page", 1, type=int))
+    per_page = min(max(1, request.args.get("per_page", 50, type=int)), 200)
 
     async with InviteSessionFactory() as session:
         q = _select(InviteCodeModel)
@@ -2194,29 +2548,34 @@ async def admin_list_invite_codes():
         rows = await session.execute(q.offset((page - 1) * per_page).limit(per_page))
         codes = list(rows.scalars().all())
 
-    return api_response(True, f"共 {len(codes)} 条", {
-        'codes': [
-            {
-                'code': c.CODE,
-                'inviter_uid': c.INVITER_UID,
-                'days': c.DAYS,
-                'use_count_limit': c.USE_COUNT_LIMIT,
-                'use_count': c.USE_COUNT,
-                'expires_at': c.EXPIRES_AT,
-                'active': bool(c.ACTIVE),
-                'used_by_uid': c.USED_BY_UID,
-                'used_at': c.USED_AT,
-                'created_at': c.CREATED_AT,
-                'note': c.NOTE,
-            }
-            for c in codes
-        ],
-    })
+    return api_response(
+        True,
+        f"共 {len(codes)} 条",
+        {
+            "codes": [
+                {
+                    "code": c.CODE,
+                    "inviter_uid": c.INVITER_UID,
+                    "days": c.DAYS,
+                    "use_count_limit": c.USE_COUNT_LIMIT,
+                    "use_count": c.USE_COUNT,
+                    "expires_at": c.EXPIRES_AT,
+                    "active": bool(c.ACTIVE),
+                    "used_by_uid": c.USED_BY_UID,
+                    "used_at": c.USED_AT,
+                    "created_at": c.CREATED_AT,
+                    "note": c.NOTE,
+                }
+                for c in codes
+            ],
+        },
+    )
 
 
 # ==================== 公告板管理 ====================
 
-@admin_bp.route('/announcements', methods=['GET'])
+
+@admin_bp.route("/announcements", methods=["GET"])
 @require_auth
 @require_admin
 async def admin_list_announcements():
@@ -2231,10 +2590,10 @@ async def admin_list_announcements():
     from src.db.announcement import AnnouncementOperate
     from src.api.v1.announcements import serialize_announcement
 
-    page = request.args.get('page', 1, type=int)
-    per_page = request.args.get('per_page', 20, type=int)
-    include_invisible = (request.args.get('include_invisible', 'true').lower() != 'false')
-    include_expired = (request.args.get('include_expired', 'true').lower() != 'false')
+    page = request.args.get("page", 1, type=int)
+    per_page = request.args.get("per_page", 20, type=int)
+    include_invisible = request.args.get("include_invisible", "true").lower() != "false"
+    include_expired = request.args.get("include_expired", "true").lower() != "false"
 
     items, total = await AnnouncementOperate.list_all(
         include_invisible=include_invisible,
@@ -2242,21 +2601,25 @@ async def admin_list_announcements():
         page=page,
         per_page=per_page,
     )
-    return api_response(True, f"共 {total} 条公告", {
-        'announcements': [serialize_announcement(it, include_internal=True) for it in items],
-        'total': total,
-        'page': page,
-        'per_page': per_page,
-        'pages': (total + per_page - 1) // per_page if per_page > 0 else 0,
-    })
+    return api_response(
+        True,
+        f"共 {total} 条公告",
+        {
+            "announcements": [serialize_announcement(it, include_internal=True) for it in items],
+            "total": total,
+            "page": page,
+            "per_page": per_page,
+            "pages": (total + per_page - 1) // per_page if per_page > 0 else 0,
+        },
+    )
 
 
 def _validate_announcement_payload(data: dict, require_content: bool = True) -> tuple[bool, str]:
-    title = (data.get('title') or '').strip()
-    content = (data.get('content') or '').strip()
-    level = (data.get('level') or 'info').strip().lower()
-    render_mode_raw = data.get('render_mode')
-    render_mode = (render_mode_raw or '').strip().lower() if render_mode_raw is not None else ''
+    title = (data.get("title") or "").strip()
+    content = (data.get("content") or "").strip()
+    level = (data.get("level") or "info").strip().lower()
+    render_mode_raw = data.get("render_mode")
+    render_mode = (render_mode_raw or "").strip().lower() if render_mode_raw is not None else ""
 
     if require_content and not content:
         return False, "公告内容不能为空"
@@ -2264,14 +2627,14 @@ def _validate_announcement_payload(data: dict, require_content: bool = True) -> 
         return False, "公告标题最多 200 字符"
     if len(content) > 10000:
         return False, "公告内容最多 10000 字符"
-    if level and level not in {'info', 'notice', 'warning', 'critical'}:
+    if level and level not in {"info", "notice", "warning", "critical"}:
         return False, "公告级别仅支持 info / notice / warning / critical"
-    if render_mode and render_mode not in {'plain', 'markdown', 'bbcode', 'text', 'plaintext', 'md', 'bb'}:
+    if render_mode and render_mode not in {"plain", "markdown", "bbcode", "text", "plaintext", "md", "bb"}:
         return False, "公告渲染方式仅支持 plain / markdown / bbcode"
     return True, ""
 
 
-@admin_bp.route('/announcements', methods=['POST'])
+@admin_bp.route("/announcements", methods=["POST"])
 @require_auth
 @require_admin
 async def admin_create_announcement():
@@ -2295,27 +2658,27 @@ async def admin_create_announcement():
     if not ok:
         return api_response(False, msg, code=400)
 
-    expires_at = data.get('expires_at', -1)
+    expires_at = data.get("expires_at", -1)
     try:
         expires_at = int(expires_at) if expires_at is not None else -1
     except (TypeError, ValueError):
         return api_response(False, "expires_at 必须是整数", code=400)
 
     item = await AnnouncementOperate.create(
-        title=data.get('title'),
-        content=data['content'],
-        level=data.get('level', 'info'),
-        render_mode=data.get('render_mode', 'plain'),
-        pinned=bool(data.get('pinned', False)),
-        visible=bool(data.get('visible', True)),
+        title=data.get("title"),
+        content=data["content"],
+        level=data.get("level", "info"),
+        render_mode=data.get("render_mode", "plain"),
+        pinned=parse_bool(data.get("pinned"), default=False),
+        visible=parse_bool(data.get("visible"), default=True),
         expires_at=expires_at,
-        created_by_uid=getattr(g.current_user, 'UID', None),
+        created_by_uid=getattr(g.current_user, "UID", None),
     )
     logger.info(f"管理员 {g.current_user.USERNAME} 创建公告 ID={item.ID}")
     return api_response(True, "公告已创建", serialize_announcement(item, include_internal=True))
 
 
-@admin_bp.route('/announcements/<int:announcement_id>', methods=['PUT'])
+@admin_bp.route("/announcements/<int:announcement_id>", methods=["PUT"])
 @require_auth
 @require_admin
 async def admin_update_announcement(announcement_id: int):
@@ -2332,7 +2695,7 @@ async def admin_update_announcement(announcement_id: int):
     if not ok:
         return api_response(False, msg, code=400)
 
-    expires_at = data.get('expires_at', None)
+    expires_at = data.get("expires_at", None)
     if expires_at is not None:
         try:
             expires_at = int(expires_at)
@@ -2341,12 +2704,12 @@ async def admin_update_announcement(announcement_id: int):
 
     item = await AnnouncementOperate.update_fields(
         announcement_id=announcement_id,
-        title=data.get('title') if 'title' in data else None,
-        content=data.get('content') if 'content' in data else None,
-        level=data.get('level') if 'level' in data else None,
-        render_mode=data.get('render_mode') if 'render_mode' in data else None,
-        pinned=data.get('pinned') if 'pinned' in data else None,
-        visible=data.get('visible') if 'visible' in data else None,
+        title=data.get("title") if "title" in data else None,
+        content=data.get("content") if "content" in data else None,
+        level=data.get("level") if "level" in data else None,
+        render_mode=data.get("render_mode") if "render_mode" in data else None,
+        pinned=parse_bool(data.get("pinned"), default=False) if "pinned" in data else None,
+        visible=parse_bool(data.get("visible"), default=True) if "visible" in data else None,
         expires_at=expires_at,
     )
     if not item:
@@ -2355,7 +2718,7 @@ async def admin_update_announcement(announcement_id: int):
     return api_response(True, "公告已更新", serialize_announcement(item, include_internal=True))
 
 
-@admin_bp.route('/announcements/<int:announcement_id>', methods=['DELETE'])
+@admin_bp.route("/announcements/<int:announcement_id>", methods=["DELETE"])
 @require_auth
 @require_admin
 async def admin_delete_announcement(announcement_id: int):
@@ -2371,19 +2734,25 @@ async def admin_delete_announcement(announcement_id: int):
 
 # ==================== 定时任务管理 ====================
 
-@admin_bp.route('/scheduler/jobs', methods=['GET'])
+
+@admin_bp.route("/scheduler/jobs", methods=["GET"])
 @require_auth
 @require_admin
 async def admin_list_scheduler_jobs():
     """列出全部内置定时任务及其计划时间、上次运行情况。"""
     from src.services.scheduler_service import SchedulerService
+
     jobs = await SchedulerService.list_jobs()
-    return api_response(True, "获取成功", {
-        'jobs': jobs,
-    })
+    return api_response(
+        True,
+        "获取成功",
+        {
+            "jobs": jobs,
+        },
+    )
 
 
-@admin_bp.route('/scheduler/jobs/<string:job_id>/run', methods=['POST'])
+@admin_bp.route("/scheduler/jobs/<string:job_id>/run", methods=["POST"])
 @require_auth
 @require_admin
 async def admin_trigger_scheduler_job(job_id: str):
@@ -2396,51 +2765,61 @@ async def admin_trigger_scheduler_job(job_id: str):
     from src.services.scheduler_service import SchedulerService
 
     data = request.get_json(silent=True) or {}
-    raw_params = data.get('params')
+    raw_params = data.get("params")
     params = raw_params if isinstance(raw_params, dict) else None
 
     ok, message, record = await SchedulerService.trigger_job(job_id, params=params)
     logger.info(
-        f"管理员 {g.current_user.USERNAME} 手动触发定时任务: {job_id} -> "
-        f"ok={ok} message={message} params={params}"
+        f"管理员 {g.current_user.USERNAME} 手动触发定时任务: {job_id} -> " f"ok={ok} message={message} params={params}"
     )
-    return api_response(ok, message, {
-        'job_id': job_id,
-        'last_run': record,
-    }, code=200 if ok else 400)
+    return api_response(
+        ok,
+        message,
+        {
+            "job_id": job_id,
+            "last_run": record,
+        },
+        code=200 if ok else 400,
+    )
 
 
-@admin_bp.route('/scheduler/jobs/<string:job_id>/last-run', methods=['GET'])
+@admin_bp.route("/scheduler/jobs/<string:job_id>/last-run", methods=["GET"])
 @require_auth
 @require_admin
 async def admin_scheduler_job_last_run(job_id: str):
     """获取指定 job 的最近一次完整运行记录（含日志正文）。"""
     from src.services.scheduler_service import SchedulerService
+
     detail = await SchedulerService.get_last_run_detail(job_id)
     if not detail:
-        return api_response(True, "暂无运行记录", {'job_id': job_id, 'last_run': None})
-    return api_response(True, "获取成功", {'job_id': job_id, 'last_run': detail})
+        return api_response(True, "暂无运行记录", {"job_id": job_id, "last_run": None})
+    return api_response(True, "获取成功", {"job_id": job_id, "last_run": detail})
 
 
-@admin_bp.route('/scheduler/jobs/<string:job_id>/history', methods=['GET'])
+@admin_bp.route("/scheduler/jobs/<string:job_id>/history", methods=["GET"])
 @require_auth
 @require_admin
 async def admin_scheduler_job_history(job_id: str):
     """获取指定 job 的历史运行列表。"""
     from src.services.scheduler_service import SchedulerService
+
     try:
-        limit = int(request.args.get('limit', 20))
+        limit = int(request.args.get("limit", 20))
     except (TypeError, ValueError):
         limit = 20
     history = await SchedulerService.get_job_history(job_id, limit=limit)
-    return api_response(True, "获取成功", {
-        'job_id': job_id,
-        'history': history,
-        'total': len(history),
-    })
+    return api_response(
+        True,
+        "获取成功",
+        {
+            "job_id": job_id,
+            "history": history,
+            "total": len(history),
+        },
+    )
 
 
-@admin_bp.route('/scheduler/jobs/<string:job_id>/schedule', methods=['PUT'])
+@admin_bp.route("/scheduler/jobs/<string:job_id>/schedule", methods=["PUT"])
 @require_auth
 @require_admin
 async def admin_set_scheduler_job_schedule(job_id: str):
@@ -2453,33 +2832,41 @@ async def admin_set_scheduler_job_schedule(job_id: str):
     from src.services.scheduler_service import SchedulerService
 
     data = request.get_json(silent=True) or {}
-    trigger_type = (data.get('type') or '').strip()
+    trigger_type = (data.get("type") or "").strip()
     if not trigger_type:
         return api_response(False, "缺少 type 字段", code=400)
 
-    hour = data.get('hour')
-    minute = data.get('minute')
-    seconds = data.get('seconds')
+    hour = data.get("hour")
+    minute = data.get("minute")
+    seconds = data.get("seconds")
+
+    try:
+        hour_value = int(hour) if hour is not None else None
+        minute_value = int(minute) if minute is not None else None
+        seconds_value = int(seconds) if seconds is not None else None
+    except (TypeError, ValueError):
+        return api_response(False, "hour、minute、seconds 必须是整数", code=400)
 
     ok, message, spec = await SchedulerService.set_job_schedule(
         job_id,
         trigger_type=trigger_type,
-        hour=int(hour) if hour is not None else None,
-        minute=int(minute) if minute is not None else None,
-        seconds=int(seconds) if seconds is not None else None,
+        hour=hour_value,
+        minute=minute_value,
+        seconds=seconds_value,
     )
     logger.info(
         f"管理员 {g.current_user.USERNAME} 修改 scheduler 触发器: "
         f"{job_id} -> ok={ok} type={trigger_type} message={message}"
     )
     return api_response(
-        ok, message,
-        {'job_id': job_id, 'trigger_spec': spec, 'is_custom': True} if ok else None,
+        ok,
+        message,
+        {"job_id": job_id, "trigger_spec": spec, "is_custom": True} if ok else None,
         code=200 if ok else 400,
     )
 
 
-@admin_bp.route('/scheduler/jobs/<string:job_id>/schedule', methods=['DELETE'])
+@admin_bp.route("/scheduler/jobs/<string:job_id>/schedule", methods=["DELETE"])
 @require_auth
 @require_admin
 async def admin_reset_scheduler_job_schedule(job_id: str):
@@ -2487,20 +2874,19 @@ async def admin_reset_scheduler_job_schedule(job_id: str):
     from src.services.scheduler_service import SchedulerService
 
     ok, message, spec = await SchedulerService.reset_job_schedule(job_id)
-    logger.info(
-        f"管理员 {g.current_user.USERNAME} 重置 scheduler 触发器: "
-        f"{job_id} -> ok={ok} message={message}"
-    )
+    logger.info(f"管理员 {g.current_user.USERNAME} 重置 scheduler 触发器: " f"{job_id} -> ok={ok} message={message}")
     return api_response(
-        ok, message,
-        {'job_id': job_id, 'trigger_spec': spec, 'is_custom': False} if ok else None,
+        ok,
+        message,
+        {"job_id": job_id, "trigger_spec": spec, "is_custom": False} if ok else None,
         code=200 if ok else 400,
     )
 
 
 # ==================== Emby 独立账号 / 强制绑定 ====================
 
-@admin_bp.route('/emby/create-standalone', methods=['POST'])
+
+@admin_bp.route("/emby/create-standalone", methods=["POST"])
 @require_auth
 @require_admin
 async def create_standalone_emby_user():
@@ -2516,8 +2902,8 @@ async def create_standalone_emby_user():
     from src.services import UserService
 
     data = request.get_json() or {}
-    username = (data.get('username') or '').strip()
-    password = data.get('password') or ''
+    username = (data.get("username") or "").strip()
+    password = data.get("password") or ""
 
     if not username:
         return api_response(False, "缺少 Emby 用户名", code=400)
@@ -2545,17 +2931,18 @@ async def create_standalone_emby_user():
     if not emby_user:
         return api_response(False, "创建 Emby 账号失败：未返回用户信息", code=502)
 
-    logger.info(
-        f"管理员 {g.current_user.USERNAME} 创建独立 Emby 账号: "
-        f"name={emby_user.name}, id={emby_user.id}"
+    logger.info(f"管理员 {g.current_user.USERNAME} 创建独立 Emby 账号: " f"name={emby_user.name}, id={emby_user.id}")
+    return api_response(
+        True,
+        "Emby 账号创建成功",
+        {
+            "emby_id": emby_user.id,
+            "emby_username": emby_user.name,
+        },
     )
-    return api_response(True, "Emby 账号创建成功", {
-        'emby_id': emby_user.id,
-        'emby_username': emby_user.name,
-    })
 
 
-@admin_bp.route('/users/<int:uid>/bind-emby', methods=['POST'])
+@admin_bp.route("/users/<int:uid>/bind-emby", methods=["POST"])
 @require_auth
 @require_admin
 async def bind_emby_to_user(uid: int):
@@ -2569,10 +2956,11 @@ async def bind_emby_to_user(uid: int):
         }
     """
     import json
+
     data = request.get_json() or {}
-    emby_username = (data.get('emby_username') or '').strip()
-    emby_id_input = (data.get('emby_id') or '').strip()
-    force = bool(data.get('force', False))
+    emby_username = (data.get("emby_username") or "").strip()
+    emby_id_input = (data.get("emby_id") or "").strip()
+    force = parse_bool(data.get("force"), default=False)
 
     if not emby_username and not emby_id_input:
         return api_response(False, "请提供 emby_username 或 emby_id", code=400)
@@ -2600,6 +2988,7 @@ async def bind_emby_to_user(uid: int):
     # （从占用者那里夺取 → 净增 0；目标已经有 EMBYID → 替换；目标无 EMBYID → 净增 1）
     if not target_user.EMBYID and (occupant is None or occupant.UID == target_user.UID):
         from src.services import EmbyRegisterQueueService
+
         cap_ok, cap_msg = await UserService.check_emby_user_capacity(
             extra_pending=EmbyRegisterQueueService.in_flight_count(),
         )
@@ -2612,11 +3001,11 @@ async def bind_emby_to_user(uid: int):
                 False,
                 f"该 Emby 用户已绑定到系统账号 UID={occupant.UID}（{occupant.USERNAME}），需要强制夺取",
                 {
-                    'conflict': True,
-                    'conflict_uid': occupant.UID,
-                    'conflict_username': occupant.USERNAME,
-                    'emby_id': emby_user.id,
-                    'emby_username': emby_user.name,
+                    "conflict": True,
+                    "conflict_uid": occupant.UID,
+                    "conflict_username": occupant.USERNAME,
+                    "emby_id": emby_user.id,
+                    "emby_username": emby_user.name,
                 },
                 code=200,
             )
@@ -2645,13 +3034,14 @@ async def bind_emby_to_user(uid: int):
             other_data = json.loads(target_user.OTHER)
         except (json.JSONDecodeError, TypeError):
             other_data = {}
-    other_data['emby_username'] = emby_user.name
+    other_data["emby_username"] = emby_user.name
     target_user.OTHER = json.dumps(other_data)
     await UserOperate.update_user(target_user)
 
     # 同步状态到 Emby（按本地启用/到期状态调整 Emby 的 IsDisabled）
     try:
         from src.services import UserService
+
         await UserService.sync_user_to_emby(target_user)
     except Exception as exc:
         logger.warning(f"绑定后同步 Emby 状态失败: {exc}")
@@ -2660,19 +3050,23 @@ async def bind_emby_to_user(uid: int):
         f"管理员 {g.current_user.USERNAME} 绑定 Emby 到系统账号: "
         f"uid={target_user.UID} emby_id={emby_user.id} emby_name={emby_user.name} force={force}"
     )
-    return api_response(True, "绑定成功", {
-        'uid': target_user.UID,
-        'emby_id': emby_user.id,
-        'emby_username': emby_user.name,
-        'force_taken': bool(occupant and force),
-        'previous_uid': occupant.UID if occupant else None,
-    })
+    return api_response(
+        True,
+        "绑定成功",
+        {
+            "uid": target_user.UID,
+            "emby_id": emby_user.id,
+            "emby_username": emby_user.name,
+            "force_taken": bool(occupant and force),
+            "previous_uid": occupant.UID if occupant else None,
+        },
+    )
 
 
 # ==================== Telegram 群组花名册 / 一键清理未绑账号 ====================
 
 
-@admin_bp.route('/telegram/roster/stats', methods=['GET'])
+@admin_bp.route("/telegram/roster/stats", methods=["GET"])
 @require_auth
 @require_admin
 async def admin_telegram_roster_stats():
@@ -2694,26 +3088,162 @@ async def admin_telegram_roster_stats():
     from src.db.telegram_roster import TelegramRosterOperate
 
     if not TelegramMembershipService.is_bot_available():
-        return api_response(True, "Bot 未就绪", {
-            'available': False,
-            'reason': 'bot_unavailable',
-        })
+        return api_response(
+            True,
+            "Bot 未就绪",
+            {
+                "available": False,
+                "reason": "bot_unavailable",
+            },
+        )
 
     group_ids = TelegramMembershipService.required_group_ids()
     if not group_ids:
-        return api_response(True, "未配置群组", {
-            'available': False,
-            'reason': 'no_group_configured',
-        })
+        return api_response(
+            True,
+            "未配置群组",
+            {
+                "available": False,
+                "reason": "no_group_configured",
+            },
+        )
 
     chat_id = group_ids[0]
     stats = await TelegramRosterOperate.stats(chat_id)
-    stats['available'] = True
-    stats['chat_id'] = str(chat_id)
+    stats["available"] = True
+    stats["chat_id"] = str(chat_id)
     return api_response(True, "获取成功", stats)
 
 
-@admin_bp.route('/telegram/kick-unbound', methods=['POST'])
+@admin_bp.route("/telegram/rejoined-users/enable", methods=["POST"])
+@require_auth
+@require_admin
+async def enable_rejoined_telegram_users():
+    """重新校验并启用已禁用但已回到必需 Telegram 群组的用户。"""
+    from src.config import TelegramConfig
+    from src.core.utils import rate_limit_check, timestamp
+    from src.services.telegram_membership import TelegramMembershipService
+
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return api_response(False, "请求体必须是 JSON 对象", code=400)
+    confirm = (data.get("confirm") or "").strip()
+    if confirm != "ENABLE_REJOINED_OK":
+        return api_response(False, '需要提供 confirm="ENABLE_REJOINED_OK" 以确认恢复启用', code=400)
+
+    if not TelegramMembershipService.enforcement_enabled():
+        return api_response(False, "群组成员资格巡检未启用或未配置必需群组", code=400)
+    if bool(getattr(TelegramConfig, "BAN_ON_LEAVE", False)):
+        return api_response(False, "退群永久封禁模式已开启，禁止批量恢复启用", code=400)
+    if not TelegramMembershipService.is_bot_available():
+        return api_response(False, "Bot 未就绪或 Telegram 未启用，无法安全校验回群状态", code=400)
+
+    try:
+        max_per_run = int(data.get("max_per_run", 500))
+    except (TypeError, ValueError):
+        max_per_run = 500
+    max_per_run = max(1, min(max_per_run, 1000))
+
+    allowed, retry_after = rate_limit_check(
+        "admin_enable_rejoined_users",
+        str(g.current_user.UID),
+        max_requests=20,
+        window_seconds=60,
+    )
+    if not allowed:
+        return api_response(False, f"恢复启用操作过于频繁，请 {retry_after} 秒后再试", code=429)
+
+    inactive_users = await UserOperate.get_inactive_telegram_bound_users()
+    user_by_tg: dict[int, UserModel] = {}
+    invalid_tg = 0
+    for user in inactive_users:
+        try:
+            tg_id = int(user.TELEGRAM_ID)
+        except (TypeError, ValueError):
+            invalid_tg += 1
+            continue
+        if tg_id <= 0:
+            invalid_tg += 1
+            continue
+        user_by_tg[tg_id] = user
+
+    missing_map = await TelegramMembershipService.check_users_in_groups(
+        list(user_by_tg.keys()),
+        strict=True,
+    )
+
+    candidates: list[UserModel] = []
+    for tg_id, user in user_by_tg.items():
+        if missing_map.get(tg_id):
+            continue
+        candidates.append(user)
+
+    skipped: list[dict] = []
+    eligible_candidates: list[UserModel] = []
+    now_ts = timestamp()
+    for user in candidates:
+        exp_raw = getattr(user, "EXPIRED_AT", None)
+        if exp_raw not in (None, -1, 0, "-1", "0"):
+            try:
+                exp_ts = int(exp_raw)
+            except (TypeError, ValueError):
+                exp_ts = 0
+            if exp_ts > 0 and exp_ts < now_ts:
+                skipped.append(
+                    {"uid": int(user.UID), "username": user.USERNAME, "reason": "账号已过期，不能通过回群按钮启用"}
+                )
+                continue
+        eligible_candidates.append(user)
+
+    limited = len(eligible_candidates) > max_per_run
+    to_enable = eligible_candidates[:max_per_run]
+    enabled: list[dict] = []
+    failed: list[dict] = []
+    for user in to_enable:
+        if bool(user.ACTIVE_STATUS):
+            skipped.append({"uid": int(user.UID), "username": user.USERNAME, "reason": "账号已经启用"})
+            continue
+        ok, msg = await UserService.enable_user(user)
+        if ok:
+            enabled.append(
+                {
+                    "uid": int(user.UID),
+                    "username": user.USERNAME,
+                    "telegram_id": int(user.TELEGRAM_ID),
+                }
+            )
+        else:
+            failed.append({"uid": int(user.UID), "username": user.USERNAME, "reason": msg})
+
+    logger.warning(
+        "管理员 %s 一键启用回群用户: scanned=%d candidates=%d enabled=%d failed=%d limited=%s",
+        g.current_user.USERNAME,
+        len(inactive_users),
+        len(candidates),
+        len(enabled),
+        len(failed),
+        limited,
+    )
+    return api_response(
+        True,
+        f"回群用户恢复完成：启用 {len(enabled)} 个，失败 {len(failed)} 个",
+        {
+            "scanned": len(inactive_users),
+            "valid_telegram_users": len(user_by_tg),
+            "invalid_telegram_id": invalid_tg,
+            "candidates": len(candidates),
+            "eligible": len(eligible_candidates),
+            "enabled": len(enabled),
+            "failed": failed,
+            "skipped": skipped,
+            "enabled_users": enabled,
+            "max_per_run": max_per_run,
+            "limited": limited,
+        },
+    )
+
+
+@admin_bp.route("/telegram/kick-unbound", methods=["POST"])
 @require_auth
 @require_admin
 async def admin_telegram_kick_unbound():
@@ -2734,31 +3264,35 @@ async def admin_telegram_kick_unbound():
     from src.services.telegram_membership import TelegramMembershipService
 
     data = request.get_json(silent=True) or {}
-    dry_run = bool(data.get('dry_run', False))
+    dry_run = parse_bool(data.get("dry_run"), default=False)
     try:
-        max_per_run = int(data.get('max_per_run', 200))
+        max_per_run = int(data.get("max_per_run", 200))
     except (TypeError, ValueError):
         max_per_run = 200
     max_per_run = max(1, min(max_per_run, 500))
 
     if not dry_run:
-        confirm = (data.get('confirm') or '').strip()
-        if confirm != 'KICK_UNBOUND_OK':
+        confirm = (data.get("confirm") or "").strip()
+        if confirm != "KICK_UNBOUND_OK":
             return api_response(
                 False,
-                "需要提供 confirm=\"KICK_UNBOUND_OK\" 以确认实际踢人",
+                '需要提供 confirm="KICK_UNBOUND_OK" 以确认实际踢人',
                 code=400,
             )
 
-    # 速率限制：1 分钟内最多 5 次，防止误连点
-    allowed, retry_after = rate_limit_check(
-        'admin_kick_unbound', str(g.current_user.UID),
-        max_requests=5, window_seconds=60,
-    )
-    if not allowed:
-        return api_response(
-            False, f"操作过于频繁，请 {retry_after} 秒后再试", code=429,
+    if not dry_run:
+        allowed, retry_after = rate_limit_check(
+            "admin_kick_unbound",
+            str(g.current_user.UID),
+            max_requests=10,
+            window_seconds=60,
         )
+        if not allowed:
+            return api_response(
+                False,
+                f"操作过于频繁，请 {retry_after} 秒后再试",
+                code=429,
+            )
 
     if not TelegramMembershipService.is_bot_available():
         return api_response(False, "Bot 未就绪或 Telegram 未启用", code=400)
@@ -2770,41 +3304,38 @@ async def admin_telegram_kick_unbound():
 
     # Sakura_EmbyBoss 风格：以群组花名册为基准反查 users 表，确定踢人原因
     plan = await TelegramMembershipService.build_unbound_kick_plan(chat_id)
-    reasons: dict[int, str] = plan['reasons']  # type: ignore[assignment]
-    targets: list[int] = plan['targets']  # type: ignore[assignment]
-    excluded_ids: set[int] = plan['excluded_ids']  # type: ignore[assignment]
+    reasons: dict[int, str] = plan["reasons"]  # type: ignore[assignment]
+    targets: list[int] = plan["targets"]  # type: ignore[assignment]
+    excluded_ids: set[int] = plan["excluded_ids"]  # type: ignore[assignment]
 
-    reason_counts = {'no_account': 0, 'no_emby': 0, 'disabled': 0}
+    reason_counts = {"no_account": 0, "no_emby": 0, "disabled": 0}
     for r in reasons.values():
         reason_counts[r] = reason_counts.get(r, 0) + 1
 
     summary = {
-        'chat_id': str(chat_id),
-        'roster_size': plan['roster_size'],
-        'bots_in_roster': plan['bots_in_roster'],
-        'preserved_bound': plan['preserved_bound'],
-        'admins_excluded': len(plan['group_admin_ids']),  # type: ignore[arg-type]
-        'excluded_total': len(excluded_ids),
-        'targets': len(targets),
-        'reason_no_account': reason_counts['no_account'],
-        'reason_no_emby': reason_counts['no_emby'],
-        'reason_disabled': reason_counts['disabled'],
-        'dry_run': dry_run,
-        'max_per_run': max_per_run,
-        'kicked': 0,
-        'skipped': 0,
-        'failed': 0,
-        'not_in_group': 0,
-        'scanned': 0,
+        "chat_id": str(chat_id),
+        "roster_size": plan["roster_size"],
+        "bots_in_roster": plan["bots_in_roster"],
+        "preserved_bound": plan["preserved_bound"],
+        "admins_excluded": len(plan["group_admin_ids"]),  # type: ignore[arg-type]
+        "excluded_total": len(excluded_ids),
+        "targets": len(targets),
+        "reason_no_account": reason_counts["no_account"],
+        "reason_no_emby": reason_counts["no_emby"],
+        "reason_disabled": reason_counts["disabled"],
+        "dry_run": dry_run,
+        "max_per_run": max_per_run,
+        "kicked": 0,
+        "skipped": 0,
+        "failed": 0,
+        "not_in_group": 0,
+        "scanned": 0,
     }
 
     if dry_run:
         # 返回前 50 个 target + 原因供前端预览
-        preview = [
-            {'tg_id': tid, 'reason': reasons.get(tid, 'unknown')}
-            for tid in targets[:50]
-        ]
-        summary['preview_targets'] = preview
+        preview = [{"tg_id": tid, "reason": reasons.get(tid, "unknown")} for tid in targets[:50]]
+        summary["preview_targets"] = preview
         return api_response(True, "干跑结束（未实际踢人）", summary)
 
     if not targets:
@@ -2816,15 +3347,19 @@ async def admin_telegram_kick_unbound():
         excluded_ids=set(excluded_ids),
         max_per_run=max_per_run,
     )
-    for key in ('scanned', 'kicked', 'skipped', 'failed', 'not_in_group'):
+    for key in ("scanned", "kicked", "skipped", "failed", "not_in_group"):
         summary[key] = int(result.get(key, 0) or 0)
 
     logger.warning(
         "管理员 %s 触发一键踢未绑成员: chat=%s targets=%d kicked=%d failed=%d "
         "(no_account=%d no_emby=%d disabled=%d)",
-        g.current_user.USERNAME, chat_id, len(targets),
-        summary['kicked'], summary['failed'],
-        reason_counts['no_account'], reason_counts['no_emby'], reason_counts['disabled'],
+        g.current_user.USERNAME,
+        chat_id,
+        len(targets),
+        summary["kicked"],
+        summary["failed"],
+        reason_counts["no_account"],
+        reason_counts["no_emby"],
+        reason_counts["disabled"],
     )
     return api_response(True, f"已踢出 {summary['kicked']} 个未绑账号", summary)
-

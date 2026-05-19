@@ -80,6 +80,7 @@ const SUMMARY_LABELS: Record<string, string> = {
   pending_register_excluded: "注册队列排除",
   rejoin_scanned: "复核扫描",
   rejoin_candidates: "待复核恢复",
+  rejoin_expired_skipped: "过期跳过",
   rejoin_uids: "待复核 UID",
   reason_no_account: "无系统账号",
   reason_no_emby: "无 Emby",
@@ -403,6 +404,7 @@ export default function AdminSchedulerPage() {
   const { toast } = useToast();
   const [jobs, setJobs] = useState<SchedulerJobItem[]>([]);
   const [running, setRunning] = useState<Record<string, boolean>>({});
+  const [rejoinEnabling, setRejoinEnabling] = useState(false);
   const pollTimerRef = useRef<number | null>(null);
 
   // 日志/历史弹窗
@@ -536,6 +538,28 @@ export default function AdminSchedulerPage() {
     await runJob(job, params);
   };
 
+  const handleEnableRejoinedUsers = useCallback(async () => {
+    setRejoinEnabling(true);
+    try {
+      const res = await api.enableRejoinedTelegramUsers();
+      if (res.success && res.data) {
+        const failed = res.data.failed.length;
+        toast({
+          title: `已启用 ${res.data.enabled} 个回群用户`,
+          description: failed ? `失败 ${failed} 个，请查看后端日志` : "已重新校验 Telegram 群成员状态",
+          variant: failed ? "default" : "success",
+        });
+        await refresh();
+      } else {
+        toast({ title: "启用失败", description: res.message, variant: "destructive" });
+      }
+    } catch (err: any) {
+      toast({ title: "启用失败", description: err.message || "网络异常", variant: "destructive" });
+    } finally {
+      setRejoinEnabling(false);
+    }
+  }, [refresh, toast]);
+
   const openLogs = async (job: SchedulerJobItem) => {
     setLogsJob(job);
     setLogsDetail(null);
@@ -661,9 +685,25 @@ export default function AdminSchedulerPage() {
                       )}
                       {renderSummaryChips(lr.summary)}
                       {job.id === "enforce_group_membership" && rejoinCandidates > 0 && (
-                        <p className="text-amber-600 dark:text-amber-400">
-                          检测到 {rejoinCandidates} 个已禁用但重新入群用户，请前往用户管理手动复核恢复。
-                        </p>
+                        <div className="space-y-2 rounded-md border border-amber-500/30 bg-amber-500/5 p-2">
+                          <p className="text-amber-700 dark:text-amber-300">
+                            检测到 {rejoinCandidates} 个已禁用但重新入群用户，可重新校验后批量启用。
+                          </p>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => void handleEnableRejoinedUsers()}
+                            disabled={rejoinEnabling || isRunning}
+                            className="h-8 border-amber-500/40 text-amber-700 hover:text-amber-800 dark:text-amber-300 dark:hover:text-amber-200"
+                          >
+                            {rejoinEnabling ? (
+                              <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <CheckCircle2 className="mr-2 h-3.5 w-3.5" />
+                            )}
+                            一键启用回群用户
+                          </Button>
+                        </div>
                       )}
                     </div>
                   )}
@@ -752,7 +792,7 @@ export default function AdminSchedulerPage() {
                 <span>
                   保留已绑 Telegram 的待激活账号
                   <span className="block text-xs text-muted-foreground">
-                    他们仍可在前端 Modal 自助补建 Emby。关闭后这些"半完成"账号也会一并删除。
+                    他们仍可在前端 Modal 自助补建 Emby。关闭后这些“半完成”账号也会一并删除。
                   </span>
                 </span>
               </label>

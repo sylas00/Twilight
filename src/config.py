@@ -3,6 +3,7 @@
 
 提供基于TOML文件和环境变量的配置管理功能
 """
+
 import logging
 import os
 import shutil
@@ -15,6 +16,7 @@ import toml
 # 从 .env 文件加载环境变量（如果存在）
 try:
     from dotenv import load_dotenv
+
     load_dotenv()
 except ImportError:
     pass  # python-dotenv 未安装，继续使用系统环境变量
@@ -30,7 +32,7 @@ def resolve_storage_path(value: Union[str, Path], field_name: str) -> Path:
     - 相对路径: 相对于项目根目录，并要求最终路径仍位于项目根目录内。
     - 绝对路径: 允许使用，按 ``resolve`` 规范化。
     """
-    raw = Path(value) if isinstance(value, Path) else Path(str(value or '').strip())
+    raw = Path(value) if isinstance(value, Path) else Path(str(value or "").strip())
     if not str(raw):
         raise ValueError(f"{field_name} 不能为空")
 
@@ -41,15 +43,13 @@ def resolve_storage_path(value: Union[str, Path], field_name: str) -> Path:
     try:
         resolved.relative_to(ROOT_PATH)
     except ValueError as exc:
-        raise ValueError(
-            f"{field_name} 使用相对路径时不能逃逸项目目录: {value}"
-        ) from exc
+        raise ValueError(f"{field_name} 使用相对路径时不能逃逸项目目录: {value}") from exc
     return resolved
 
 
 def get_primary_config_path() -> Path:
     """返回主配置文件路径（支持环境变量覆盖）。"""
-    return Path(os.environ.get("TWILIGHT_CONFIG_FILE", str(ROOT_PATH / 'config.toml')))
+    return Path(os.environ.get("TWILIGHT_CONFIG_FILE", str(ROOT_PATH / "config.toml")))
 
 
 def _restrict_perms(path: Path) -> None:
@@ -68,7 +68,7 @@ def _restrict_perms(path: Path) -> None:
 # 备份目录最多保留多少份历史 *.bak；超过的按 mtime 从旧到新淘汰。
 # 启动期 sweep + 后台 fill-missing + 管理员手动保存都会触发备份，必须设上限
 # 避免长跑实例把磁盘塞满 / 让用户在恢复时迷失在几百份历史里。
-_CONFIG_BACKUP_RETENTION = int(os.environ.get('TWILIGHT_CONFIG_BACKUP_RETENTION', '20'))
+_CONFIG_BACKUP_RETENTION = int(os.environ.get("TWILIGHT_CONFIG_BACKUP_RETENTION", "20"))
 
 
 def _trim_backup_dir(backup_dir: Path, keep: int) -> int:
@@ -79,7 +79,7 @@ def _trim_backup_dir(backup_dir: Path, keep: int) -> int:
     if keep <= 0 or not backup_dir.is_dir():
         return 0
     try:
-        entries = [p for p in backup_dir.iterdir() if p.is_file() and p.suffix == '.bak']
+        entries = [p for p in backup_dir.iterdir() if p.is_file() and p.suffix == ".bak"]
     except Exception as exc:  # pragma: no cover
         logger.debug(f"读取备份目录失败 {backup_dir}: {exc}")
         return 0
@@ -96,7 +96,7 @@ def _trim_backup_dir(backup_dir: Path, keep: int) -> int:
     return removed
 
 
-def backup_config_file(config_path: Optional[Path] = None, reason: str = 'manual') -> Optional[Path]:
+def backup_config_file(config_path: Optional[Path] = None, reason: str = "manual") -> Optional[Path]:
     """创建配置备份（时间戳轮转 + 兼容单文件 backup + 数量上限裁剪）。
 
     备份文件可能包含 ``bot_token`` / ``emby_token`` 等敏感字段，写出后立刻
@@ -109,9 +109,9 @@ def backup_config_file(config_path: Optional[Path] = None, reason: str = 'manual
     if not path.exists():
         return None
 
-    safe_reason = ''.join(ch for ch in str(reason) if ch.isalnum() or ch in ('-', '_')) or 'manual'
-    timestamp = datetime.now().strftime('%Y%m%d-%H%M%S')
-    backup_dir = path.parent / 'config_backups'
+    safe_reason = "".join(ch for ch in str(reason) if ch.isalnum() or ch in ("-", "_")) or "manual"
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup_dir = path.parent / "config_backups"
     backup_dir.mkdir(parents=True, exist_ok=True)
     rotated_backup = backup_dir / f"{path.name}.{timestamp}.{safe_reason}.bak"
 
@@ -135,7 +135,9 @@ def backup_config_file(config_path: Optional[Path] = None, reason: str = 'manual
     if removed:
         logger.info(
             "已清理 %d 份过旧的配置备份 (目录=%s, 保留=%d)",
-            removed, backup_dir, _CONFIG_BACKUP_RETENTION,
+            removed,
+            backup_dir,
+            _CONFIG_BACKUP_RETENTION,
         )
 
     return rotated_backup
@@ -144,11 +146,12 @@ def backup_config_file(config_path: Optional[Path] = None, reason: str = 'manual
 class BaseConfig:
     """
     配置管理的基类
-    
+
     提供从TOML文件读取和保存配置的能力
     """
-    toml_file_path: str = str(ROOT_PATH / 'config.toml')
-    toml_override_file_path: str = str(ROOT_PATH / 'config.local.toml')
+
+    toml_file_path: str = str(ROOT_PATH / "config.toml")
+    toml_override_file_path: str = str(ROOT_PATH / "config.local.toml")
     _section: Optional[str] = None
 
     @classmethod
@@ -176,11 +179,11 @@ class BaseConfig:
         try:
             config = toml.load(primary_path)
         except FileNotFoundError:
-            logger.warning(f'配置文件不存在: {primary_path}')
+            logger.warning(f"配置文件不存在: {primary_path}")
         except toml.TomlDecodeError as err:
-            logger.error(f'TOML配置文件格式错误 ({primary_path}): {err}')
+            logger.error(f"TOML配置文件格式错误 ({primary_path}): {err}")
         except Exception as err:
-            logger.error(f'加载配置文件时发生错误 ({primary_path}): {err}')
+            logger.error(f"加载配置文件时发生错误 ({primary_path}): {err}")
 
         if local_override_path:
             try:
@@ -190,9 +193,9 @@ class BaseConfig:
             except FileNotFoundError:
                 pass
             except toml.TomlDecodeError as err:
-                logger.error(f'TOML配置文件格式错误 ({local_override_path}): {err}')
+                logger.error(f"TOML配置文件格式错误 ({local_override_path}): {err}")
             except Exception as err:
-                logger.error(f'加载本地覆盖配置时发生错误 ({local_override_path}): {err}')
+                logger.error(f"加载本地覆盖配置时发生错误 ({local_override_path}): {err}")
 
         return config
 
@@ -200,49 +203,49 @@ class BaseConfig:
     def update_from_toml(cls, section: Optional[str] = None) -> None:
         """
         从TOML配置文件和环境变量中加载配置
-        
+
         :param section: TOML文件中的配置节名称，为None时加载根级配置
         """
         cls._section = section
         config = cls._load_toml_config()
-            
+
         items = config.get(section, {}) if section else config
-        
+
         # 2. 从类属性更新（合并 TOML 与类默认值）
         for key in dir(cls):
-            if not key.isupper() or key.startswith('_'):
+            if not key.isupper() or key.startswith("_"):
                 continue
-                
+
             attr_name = key
             toml_key = key.lower()
-            
+
             # 优先级: 环境变量 > TOML > 类默认值
-            
+
             # 获取 TOML 值
             value = items.get(toml_key)
-            
+
             # 获取环境变量值
             env_prefix = f"TWILIGHT_{section.upper()}_" if section else "TWILIGHT_"
             env_key = env_prefix + attr_name
             env_value = os.environ.get(env_key)
-            
+
             if env_value is not None:
                 # 环境变量转换类型
                 current_value = getattr(cls, attr_name)
                 try:
                     if isinstance(current_value, bool):
-                        value = env_value.lower() in ('true', '1', 'yes', 'on')
+                        value = env_value.lower() in ("true", "1", "yes", "on")
                     elif isinstance(current_value, int):
                         value = int(env_value)
                     elif isinstance(current_value, float):
                         value = float(env_value)
                     elif isinstance(current_value, list):
-                        value = [v.strip() for v in env_value.split(',')]
+                        value = [v.strip() for v in env_value.split(",")]
                     else:
                         value = env_value
                 except ValueError:
                     logger.warning(f"无法将环境变量 {env_key} 的值 {env_value} 转换为 {type(current_value)}")
-            
+
             if value is not None:
                 # 如果原始值是 Path 类型，将字符串转换为 Path
                 current_value = getattr(cls, attr_name)
@@ -267,7 +270,7 @@ class BaseConfig:
     def save_to_toml(cls) -> bool:
         """
         将当前配置保存到TOML文件
-        
+
         :return: 保存是否成功
         """
         try:
@@ -281,10 +284,8 @@ class BaseConfig:
             # 收集类的配置属性
             config_data = {}
             for key in dir(cls):
-                if key.isupper() and not key.startswith('_'):
-                    config_data[key.lower()] = cls._serialize_config_value(
-                        getattr(cls, key)
-                    )
+                if key.isupper() and not key.startswith("_"):
+                    config_data[key.lower()] = cls._serialize_config_value(getattr(cls, key))
 
             # 更新配置
             if cls._section:
@@ -295,19 +296,19 @@ class BaseConfig:
                 config.update(config_data)
 
             # 写入文件
-            with open(primary_path, 'w', encoding='utf-8') as f:
+            with open(primary_path, "w", encoding="utf-8") as f:
                 toml.dump(config, f)
             return True
-            
+
         except Exception as err:
-            logger.error(f'保存配置文件时发生错误: {err}')
+            logger.error(f"保存配置文件时发生错误: {err}")
             return False
 
     @classmethod
     def get(cls, key: str, default: Any = None) -> Any:
         """
         获取配置值
-        
+
         :param key: 配置键名（不区分大小写）
         :param default: 默认值
         :return: 配置值
@@ -321,7 +322,7 @@ class BaseConfig:
         # 遍历 MRO 获取原始类定义的默认值
         for klass in reversed(cls.__mro__):
             for key, value in vars(klass).items():
-                if key.isupper() and not key.startswith('_'):
+                if key.isupper() and not key.startswith("_"):
                     defaults[key.lower()] = value
         return defaults
 
@@ -330,22 +331,22 @@ class BaseConfig:
         """
         检查 TOML 文件中是否缺少当前类定义的配置项，
         如缺少则用类默认值补全并写回文件。
-        
+
         :return: 是否有新增配置项
         """
         if not cls._section:
             return False
 
         primary_path = get_primary_config_path()
-        
+
         try:
             config = toml.load(primary_path)
         except (FileNotFoundError, toml.TomlDecodeError):
             config = {}
-        
+
         section_data = config.get(cls._section, {})
         defaults = cls._get_default_values()
-        
+
         missing = {}
         for key, default_value in defaults.items():
             if key not in section_data:
@@ -353,17 +354,17 @@ class BaseConfig:
                 if isinstance(default_value, Path):
                     default_value = cls._serialize_config_value(default_value)
                 missing[key] = default_value
-        
+
         if not missing:
             return False
-        
+
         # 补全缺失项
         if cls._section not in config:
             config[cls._section] = {}
         config[cls._section].update(missing)
-        
+
         try:
-            with open(primary_path, 'w', encoding='utf-8') as f:
+            with open(primary_path, "w", encoding="utf-8") as f:
                 toml.dump(config, f)
             logger.info(f"[{cls._section}] 已补全 {len(missing)} 个缺失配置项: {', '.join(missing.keys())}")
             return True
@@ -374,55 +375,52 @@ class BaseConfig:
 
 class Config(BaseConfig):
     """全局配置管理类"""
-    _section = 'Global'
-    SERVER_NAME: str = 'Twilight'  # 服务器名称，用于前端显示
-    SERVER_ICON: str = ''  # 服务器图标 URL，用于前端显示
+
+    _section = "Global"
+    SERVER_NAME: str = "Twilight"  # 服务器名称，用于前端显示
+    SERVER_ICON: str = ""  # 服务器图标 URL，用于前端显示
     LOGGING: bool = True
     LOG_LEVEL: int = 20  # 日志等级，数字越大，日志越详细
     SQLALCHEMY_LOG: bool = False
     MAX_RETRY: int = 3
-    DATABASES_DIR: Path = ROOT_PATH / 'db'
-    REDIS_URL: str = ''  # Token/缓存存储的 Redis 连接串，如 redis://localhost:6379/0
-    BANGUMI_TOKEN: str = ''
+    DATABASES_DIR: Path = ROOT_PATH / "db"
+    REDIS_URL: str = ""  # Token/缓存存储的 Redis 连接串，如 redis://localhost:6379/0
+    BANGUMI_TOKEN: str = ""
     TELEGRAM_MODE: bool = False
     FORCE_BIND_TELEGRAM: bool = True
     # TMDB 配置
-    TMDB_API_KEY: str = ''  # TMDB API Key (v3)
-    TMDB_API_URL: str = 'https://api.themoviedb.org/3'
-    TMDB_IMAGE_URL: str = 'https://image.tmdb.org/t/p'
+    TMDB_API_KEY: str = ""  # TMDB API Key (v3)
+    TMDB_API_URL: str = "https://api.themoviedb.org/3"
+    TMDB_IMAGE_URL: str = "https://image.tmdb.org/t/p"
     # Bangumi 配置
-    BANGUMI_API_URL: str = 'https://api.bgm.tv'
-    BANGUMI_APP_ID: str = ''  # Bangumi App ID (可选)
+    BANGUMI_API_URL: str = "https://api.bgm.tv"
+    BANGUMI_APP_ID: str = ""  # Bangumi App ID (可选)
 
 
 class EmbyConfig(BaseConfig):
     """Emby配置管理类"""
-    _section = 'Emby'
-    EMBY_URL: str = 'http://127.0.0.1:8096/'
-    EMBY_TOKEN: str = ''
-    EMBY_USERNAME: str = ''  # 管理员用户名（API Key 无效时的备用认证）
-    EMBY_PASSWORD: str = ''  # 管理员密码（API Key 无效时的备用认证）
-    EMBY_URL_LIST: List[str] = [
-        'Direct : http://127.0.0.1:8096/',
-        'Sample : http://192.168.1.1:8096/'
-    ]
-    EMBY_URL_LIST_FOR_WHITELIST: List[str] = [
-        'Direct : http://127.0.0.1:8096/',
-        'Sample : http://192.168.1.1:8096/'
-    ]
+
+    _section = "Emby"
+    EMBY_URL: str = "http://127.0.0.1:8096/"
+    EMBY_TOKEN: str = ""
+    EMBY_USERNAME: str = ""  # 管理员用户名（API Key 无效时的备用认证）
+    EMBY_PASSWORD: str = ""  # 管理员密码（API Key 无效时的备用认证）
+    EMBY_URL_LIST: List[str] = ["Direct : http://127.0.0.1:8096/", "Sample : http://192.168.1.1:8096/"]
+    EMBY_URL_LIST_FOR_WHITELIST: List[str] = ["Direct : http://127.0.0.1:8096/", "Sample : http://192.168.1.1:8096/"]
 
 
 class TelegramConfig(BaseConfig):
     """Telegram配置管理类"""
-    _section = 'Telegram'
-    TELEGRAM_API_URL: str = 'https://api.telegram.org/bot'
-    BOT_TOKEN: str = ''
-    BIND_CONFIRM_API_URL: str = ''  # Bot 绑定确认回调地址（可填完整接口或后端基础地址）
+
+    _section = "Telegram"
+    TELEGRAM_API_URL: str = "https://api.telegram.org/bot"
+    BOT_TOKEN: str = ""
+    BIND_CONFIRM_API_URL: str = ""  # Bot 绑定确认回调地址（可填完整接口或后端基础地址）
     ADMIN_ID: Union[int, List[int]] = []
     GROUP_ID: Union[int, str, List[Union[int, str]]] = []  # 支持数字ID或 @channelusername
     CHANNEL_ID: Union[int, str, List[Union[int, str]]] = []  # 支持数字ID或 @channelusername
     FORCE_SUBSCRIBE: bool = False
-    PROXY_URL: str = ''  # HTTP 代理地址，如 http://127.0.0.1:7890 或 socks5://127.0.0.1:1080
+    PROXY_URL: str = ""  # HTTP 代理地址，如 http://127.0.0.1:7890 或 socks5://127.0.0.1:1080
     ENABLE_TG_PANEL: bool = False  # 是否开启 TG Bot 完整面板（关闭时仅允许绑定和查看基础信息）
     REQUIRE_GROUP_MEMBERSHIP: bool = False  # 是否强制要求绑定/已绑定用户保持在配置中的群组内
     GROUP_CHECK_INTERVAL_MINUTES: int = 30  # 定时检查间隔（分钟），开启上面开关后生效
@@ -434,21 +432,22 @@ class TelegramConfig(BaseConfig):
     BAN_ON_LEAVE: bool = False
     # —— Bot 文案自定义（留空使用内置默认）。所有字符串都按 Markdown 渲染，
     # 注意自行转义 _ * [ 等特殊字符；其中可以用 {server_name} 占位符。
-    BOT_START_TITLE: str = ''       # /start 标题行，例如 "🌙 {server_name} 控制中心"
-    BOT_START_INTRO: str = ''       # /start 简介段，例如 "欢迎使用 Emby 管理机器人"
-    BOT_HELP_HEADER: str = ''       # /help 顶部段（命令列表前），可用于公告
-    BOT_HELP_FOOTER: str = ''       # /help 底部段，可放群组链接、规则等
-    BOT_ABOUT: str = ''             # 关于 Bot / 站点说明（暂留给将来 /about 使用）
+    BOT_START_TITLE: str = ""  # /start 标题行，例如 "🌙 {server_name} 控制中心"
+    BOT_START_INTRO: str = ""  # /start 简介段，例如 "欢迎使用 Emby 管理机器人"
+    BOT_HELP_HEADER: str = ""  # /help 顶部段（命令列表前），可用于公告
+    BOT_HELP_FOOTER: str = ""  # /help 底部段，可放群组链接、规则等
+    BOT_ABOUT: str = ""  # 关于 Bot / 站点说明（暂留给将来 /about 使用）
 
 
 class RegisterConfig(BaseConfig):
     """注册及用户策略配置管理类（含原 [Signin] 节字段）"""
-    _section = 'SAR'
+
+    _section = "SAR"
     REGISTER_MODE: bool = False
     REGISTER_CODE_LIMIT: bool = False  # 是否限制注册码注册
     USER_LIMIT: int = 200  # 允许的已注册用户数量上限
     MAX_CONCURRENT_REQUESTS_PER_USER: int = -1  # 每个用户允许同时存在的求片请求上限，-1 表示不限制
-    
+
     # 无码注册（待激活）配置
     ALLOW_PENDING_REGISTER: bool = True  # 是否允许无码注册（待激活状态）
     ALLOW_NO_EMBY_VIEW: bool = True  # 是否允许无 Emby 账户的用户查看部分信息
@@ -463,15 +462,15 @@ class RegisterConfig(BaseConfig):
     EMBY_DIRECT_REGISTER_WORKERS: int = 8  # Emby 自由注册队列 worker 数
     EMBY_DIRECT_REGISTER_MAX_QUEUE: int = 1000  # Emby 自由注册队列最大排队数
     EMBY_DIRECT_REGISTER_STATUS_TTL: int = 1800  # Emby 自由注册状态保留秒数
-    
+
     # 管理员配置（二选一，优先使用 UID）
-    ADMIN_UIDS: str = ''  # 管理员 UID 列表，逗号分隔（推荐，如 "1,2,3"）
-    ADMIN_USERNAMES: str = ''  # 管理员用户名列表，逗号分隔（如 "admin,superuser"）
-    
+    ADMIN_UIDS: str = ""  # 管理员 UID 列表，逗号分隔（推荐，如 "1,2,3"）
+    ADMIN_USERNAMES: str = ""  # 管理员用户名列表，逗号分隔（如 "admin,superuser"）
+
     # 白名单配置（二选一，优先使用 UID）
-    WHITE_LIST_UIDS: str = ''  # 白名单 UID 列表，逗号分隔（如 "10,11,12"）
-    WHITE_LIST_USERNAMES: str = ''  # 白名单用户名列表，逗号分隔（如 "vip1,vip2"）
-    
+    WHITE_LIST_UIDS: str = ""  # 白名单 UID 列表，逗号分隔（如 "10,11,12"）
+    WHITE_LIST_USERNAMES: str = ""  # 白名单用户名列表，逗号分隔（如 "vip1,vip2"）
+
     # 无 Emby 账户用户自动清理
     AUTO_CLEANUP_NO_EMBY: bool = False  # 是否自动清理没有 Emby 账户的用户
     AUTO_CLEANUP_NO_EMBY_DAYS: int = 7  # 注册后多少天未创建 Emby 账户则自动删除
@@ -487,7 +486,7 @@ class RegisterConfig(BaseConfig):
     # 重命名说明：[Signin].enabled → SAR.signin_enabled，避免与 SAR 节的语义重名；
     # 其余字段（currency_name / daily_min / ...）按原名保留，调用点改读 RegisterConfig。
     SIGNIN_ENABLED: bool = True  # 签到功能开关（原 [Signin].enabled）
-    CURRENCY_NAME: str = '星币'  # 货币展示名
+    CURRENCY_NAME: str = "星币"  # 货币展示名
     DAILY_MIN: int = 5  # 每日签到最少奖励
     DAILY_MAX: int = 20  # 每日签到最多奖励
     # 连签加成总开关：关闭后即使 STREAK_BONUS_DAYS / STREAK_BONUS_POINTS 有值也不发放
@@ -499,7 +498,8 @@ class RegisterConfig(BaseConfig):
 
 class DeviceLimitConfig(BaseConfig):
     """设备限制配置"""
-    _section = 'DeviceLimit'
+
+    _section = "DeviceLimit"
     DEVICE_LIMIT_ENABLED: bool = False  # 是否启用设备限制
     MAX_DEVICES: int = 5  # 最大设备数
     MAX_STREAMS: int = 2  # 最大同时播放数
@@ -508,20 +508,21 @@ class DeviceLimitConfig(BaseConfig):
 
 class APIConfig(BaseConfig):
     """API 服务器配置"""
-    _section = 'API'
+
+    _section = "API"
     HOST: str = "0.0.0.0"
     PORT: int = 5000
     DEBUG: bool = False
     TOKEN_EXPIRE: int = 864000  # Token 过期时间（秒）
     CORS_ENABLED: bool = True
     CORS_ORIGINS: List[str] = ["*"]
-    UPLOAD_FOLDER: str = str(ROOT_PATH / 'uploads')  # 文件上传目录
+    UPLOAD_FOLDER: str = str(ROOT_PATH / "uploads")  # 文件上传目录
     MAX_UPLOAD_SIZE: int = 5 * 1024 * 1024  # 最大上传文件大小（字节）
-    SESSION_COOKIE_NAME: str = 'twilight_session'
+    SESSION_COOKIE_NAME: str = "twilight_session"
     SESSION_COOKIE_SECURE: bool = False
-    SESSION_COOKIE_SAMESITE: str = 'Lax'  # Strict / Lax / None
-    SESSION_COOKIE_DOMAIN: str = ''
-    SESSION_COOKIE_PATH: str = '/'
+    SESSION_COOKIE_SAMESITE: str = "Lax"  # Strict / Lax / None
+    SESSION_COOKIE_DOMAIN: str = ""
+    SESSION_COOKIE_PATH: str = "/"
 
 
 def normalize_storage_settings() -> None:
@@ -533,7 +534,7 @@ def normalize_storage_settings() -> None:
         )
     except ValueError as err:
         logger.warning("%s，回退默认数据库目录", err)
-        Config.DATABASES_DIR = (ROOT_PATH / 'db').resolve()
+        Config.DATABASES_DIR = (ROOT_PATH / "db").resolve()
 
     try:
         upload_dir = resolve_storage_path(
@@ -542,23 +543,25 @@ def normalize_storage_settings() -> None:
         )
     except ValueError as err:
         logger.warning("%s，回退默认上传目录", err)
-        upload_dir = (ROOT_PATH / 'uploads').resolve()
+        upload_dir = (ROOT_PATH / "uploads").resolve()
     APIConfig.UPLOAD_FOLDER = str(upload_dir)
 
 
 class SecurityConfig(BaseConfig):
     """安全配置"""
-    _section = 'Security'
+
+    _section = "Security"
     LOGIN_FAIL_THRESHOLD: int = 5  # 登录失败锁定阈值
     LOCKOUT_MINUTES: int = 30  # 锁定时间
     TELEGRAM_DIRECT_LOGIN_ENABLED: bool = False  # 是否允许仅凭 telegram_id 直接登录
     APIKEY_DIRECT_LOGIN_ENABLED: bool = False  # 是否允许通过 API Key 直接换取完整会话 token
-    BOT_INTERNAL_SECRET: str = ''  # Bot 调用内部接口的密钥（建议显式配置）
+    BOT_INTERNAL_SECRET: str = ""  # Bot 调用内部接口的密钥（建议显式配置）
 
 
 class SchedulerConfig(BaseConfig):
     """定时任务配置"""
-    _section = 'Scheduler'
+
+    _section = "Scheduler"
     TIMEZONE: str = "Asia/Shanghai"
     ENABLED: bool = True
     EXPIRED_CHECK_TIME: str = "03:00"
@@ -570,7 +573,8 @@ class SchedulerConfig(BaseConfig):
 
 class NotificationConfig(BaseConfig):
     """通知配置"""
-    _section = 'Notification'
+
+    _section = "Notification"
     ENABLED: bool = True
     EXPIRY_REMIND_DAYS: int = 3
     NEW_MEDIA_NOTIFY: bool = False
@@ -578,7 +582,8 @@ class NotificationConfig(BaseConfig):
 
 class BangumiSyncConfig(BaseConfig):
     """Bangumi 同步配置"""
-    _section = 'BangumiSync'
+
+    _section = "BangumiSync"
     ENABLED: bool = False  # 是否启用 Bangumi 同步
     AUTO_ADD_COLLECTION: bool = True  # 同步时是否自动添加到收藏（设为"在看"）
     PRIVATE_COLLECTION: bool = False  # 观看记录是否设为私有
@@ -597,14 +602,14 @@ class BangumiSyncConfig(BaseConfig):
 # 历史 section.key → 新 section.key 映射；用于把弃用节里的字段搬到新归属
 _LEGACY_SECTION_KEY_MIGRATIONS: dict[tuple[str, str], tuple[str, str]] = {
     # [Signin] 节并入 [SAR]
-    ('Signin', 'enabled'): ('SAR', 'signin_enabled'),
-    ('Signin', 'currency_name'): ('SAR', 'currency_name'),
-    ('Signin', 'daily_min'): ('SAR', 'daily_min'),
-    ('Signin', 'daily_max'): ('SAR', 'daily_max'),
-    ('Signin', 'streak_bonus_enabled'): ('SAR', 'streak_bonus_enabled'),
-    ('Signin', 'streak_bonus_days'): ('SAR', 'streak_bonus_days'),
-    ('Signin', 'streak_bonus_points'): ('SAR', 'streak_bonus_points'),
-    ('Signin', 'reset_after_miss'): ('SAR', 'reset_after_miss'),
+    ("Signin", "enabled"): ("SAR", "signin_enabled"),
+    ("Signin", "currency_name"): ("SAR", "currency_name"),
+    ("Signin", "daily_min"): ("SAR", "daily_min"),
+    ("Signin", "daily_max"): ("SAR", "daily_max"),
+    ("Signin", "streak_bonus_enabled"): ("SAR", "streak_bonus_enabled"),
+    ("Signin", "streak_bonus_days"): ("SAR", "streak_bonus_days"),
+    ("Signin", "streak_bonus_points"): ("SAR", "streak_bonus_points"),
+    ("Signin", "reset_after_miss"): ("SAR", "reset_after_miss"),
 }
 
 
@@ -626,14 +631,10 @@ def _apply_legacy_migrations(config: dict) -> tuple[bool, list[str]]:
             continue
         # 已经存在新键时优先保留新值，丢弃旧值（提示一下）
         if new_key in new_block:
-            notes.append(
-                f"[{old_section}].{old_key} 已在 [{new_section}].{new_key} 存在，丢弃旧值"
-            )
+            notes.append(f"[{old_section}].{old_key} 已在 [{new_section}].{new_key} 存在，丢弃旧值")
         else:
             new_block[new_key] = value
-            notes.append(
-                f"[{old_section}].{old_key} → [{new_section}].{new_key}"
-            )
+            notes.append(f"[{old_section}].{old_key} → [{new_section}].{new_key}")
         changed = True
         legacy_sections_seen.add(old_section)
 
@@ -651,7 +652,7 @@ def _collect_known_section_keys() -> dict[str, set[str]]:
     """返回 ``{section: 该 section 在代码里声明的合法键集合}``。"""
     known: dict[str, set[str]] = {}
     for cls in _config_classes:
-        section = getattr(cls, '_section', None)
+        section = getattr(cls, "_section", None)
         if not section:
             continue
         known[section] = set(cls._get_default_values().keys())
@@ -666,7 +667,7 @@ def _prune_stale_keys(config: dict) -> tuple[bool, dict[str, list[str]]]:
     类的字段集，我们用同一逻辑校验根级键。
     """
     known = _collect_known_section_keys()
-    global_keys = known.get('Global', set())
+    global_keys = known.get("Global", set())
     removed: dict[str, list[str]] = {}
     changed = False
     section_removed: list[str] = []
@@ -677,7 +678,7 @@ def _prune_stale_keys(config: dict) -> tuple[bool, dict[str, list[str]]]:
         if isinstance(value, dict):
             continue  # 是 section header，留给下面的逻辑
         if key not in global_keys:
-            removed.setdefault('Global', []).append(key)
+            removed.setdefault("Global", []).append(key)
             del config[key]
             changed = True
 
@@ -699,31 +700,43 @@ def _prune_stale_keys(config: dict) -> tuple[bool, dict[str, list[str]]]:
                 changed = True
 
     if section_removed:
-        removed['__section_removed__'] = section_removed
+        removed["__section_removed__"] = section_removed
     return changed, removed
 
 
 # 启动时自动补全缺失的配置项
 _config_classes = [
-    Config, EmbyConfig, TelegramConfig, RegisterConfig,
-    DeviceLimitConfig, APIConfig, SecurityConfig,
-    SchedulerConfig, NotificationConfig, BangumiSyncConfig,
+    Config,
+    EmbyConfig,
+    TelegramConfig,
+    RegisterConfig,
+    DeviceLimitConfig,
+    APIConfig,
+    SecurityConfig,
+    SchedulerConfig,
+    NotificationConfig,
+    BangumiSyncConfig,
 ]
 
 
 def _load_all_configs() -> None:
     """把所有 BaseConfig 子类从 toml 重新加载一次（顺序敏感：先 Global 再 normalize）。"""
-    Config.update_from_toml('Global')
-    EmbyConfig.update_from_toml('Emby')
-    TelegramConfig.update_from_toml('Telegram')
-    RegisterConfig.update_from_toml('SAR')
-    DeviceLimitConfig.update_from_toml('DeviceLimit')
-    APIConfig.update_from_toml('API')
-    SecurityConfig.update_from_toml('Security')
-    SchedulerConfig.update_from_toml('Scheduler')
-    NotificationConfig.update_from_toml('Notification')
-    BangumiSyncConfig.update_from_toml('BangumiSync')
+    Config.update_from_toml("Global")
+    EmbyConfig.update_from_toml("Emby")
+    TelegramConfig.update_from_toml("Telegram")
+    RegisterConfig.update_from_toml("SAR")
+    DeviceLimitConfig.update_from_toml("DeviceLimit")
+    APIConfig.update_from_toml("API")
+    SecurityConfig.update_from_toml("Security")
+    SchedulerConfig.update_from_toml("Scheduler")
+    NotificationConfig.update_from_toml("Notification")
+    BangumiSyncConfig.update_from_toml("BangumiSync")
     normalize_storage_settings()
+
+
+def reload_runtime_config() -> None:
+    """公开的运行时配置热重载入口。"""
+    _load_all_configs()
 
 
 def fill_missing_config_items(
@@ -740,13 +753,13 @@ def fill_missing_config_items(
         config = {}
     except toml.TomlDecodeError as err:
         logger.error(f"配置文件格式错误，跳过缺项补全 ({primary_path}): {err}")
-        return {'filled_sections': 0, 'filled_items': 0, 'backup_path': None, 'error': str(err)}
+        return {"filled_sections": 0, "filled_items": 0, "backup_path": None, "error": str(err)}
 
     missing_by_section: dict[str, list[str]] = {}
     filled_items = 0
 
     for conf_cls in classes:
-        section = getattr(conf_cls, '_section', None)
+        section = getattr(conf_cls, "_section", None)
         if not section:
             continue
 
@@ -772,31 +785,31 @@ def fill_missing_config_items(
         filled_items += len(section_missing)
 
     if filled_items == 0:
-        return {'filled_sections': 0, 'filled_items': 0, 'backup_path': None}
+        return {"filled_sections": 0, "filled_items": 0, "backup_path": None}
 
     backup_path: Optional[Path] = None
     if auto_backup and primary_path.exists():
-        backup_path = backup_config_file(primary_path, reason='fill-missing')
+        backup_path = backup_config_file(primary_path, reason="fill-missing")
 
     try:
-        with open(primary_path, 'w', encoding='utf-8') as f:
+        with open(primary_path, "w", encoding="utf-8") as f:
             toml.dump(config, f)
     except Exception as err:
         logger.error(f"写回补全后的配置失败: {err}")
         return {
-            'filled_sections': 0,
-            'filled_items': 0,
-            'backup_path': str(backup_path) if backup_path else None,
-            'error': str(err),
+            "filled_sections": 0,
+            "filled_items": 0,
+            "backup_path": str(backup_path) if backup_path else None,
+            "error": str(err),
         }
 
     for section, keys in missing_by_section.items():
         logger.info(f"[{section}] 已补全 {len(keys)} 个缺失配置项: {', '.join(keys)}")
 
     return {
-        'filled_sections': len(missing_by_section),
-        'filled_items': filled_items,
-        'backup_path': str(backup_path) if backup_path else None,
+        "filled_sections": len(missing_by_section),
+        "filled_items": filled_items,
+        "backup_path": str(backup_path) if backup_path else None,
     }
 
 
@@ -820,8 +833,11 @@ def sweep_config_toml(
     except toml.TomlDecodeError as err:
         logger.error(f"配置文件格式错误，跳过整理 ({primary_path}): {err}")
         return {
-            'migrated': [], 'removed': {}, 'filled': {},
-            'backup_path': None, 'error': str(err),
+            "migrated": [],
+            "removed": {},
+            "filled": {},
+            "backup_path": None,
+            "error": str(err),
         }
 
     migrate_changed, migrate_notes = _apply_legacy_migrations(config)
@@ -830,7 +846,7 @@ def sweep_config_toml(
     # 补缺失：与 fill_missing_config_items 逻辑等价，但走同一份 config dict
     missing_by_section: dict[str, list[str]] = {}
     for conf_cls in classes:
-        section = getattr(conf_cls, '_section', None)
+        section = getattr(conf_cls, "_section", None)
         if not section:
             continue
         block = config.get(section)
@@ -854,65 +870,64 @@ def sweep_config_toml(
         # 没有变更也吐一条日志，便于排查"为什么没补全/没清理"
         logger.info("配置整理: %s 无需变更（所有 section / 字段均与代码声明一致）", primary_path)
         return {
-            'migrated': [], 'removed': {}, 'filled': {}, 'backup_path': None,
+            "migrated": [],
+            "removed": {},
+            "filled": {},
+            "backup_path": None,
         }
 
     backup_path: Optional[Path] = None
     if auto_backup and primary_path.exists():
-        backup_path = backup_config_file(primary_path, reason='sweep')
+        backup_path = backup_config_file(primary_path, reason="sweep")
 
     try:
-        with open(primary_path, 'w', encoding='utf-8') as f:
+        with open(primary_path, "w", encoding="utf-8") as f:
             toml.dump(config, f)
     except Exception as err:
         logger.error(f"写回整理后的配置失败: {err}")
         return {
-            'migrated': migrate_notes,
-            'removed': removed,
-            'filled': missing_by_section,
-            'backup_path': str(backup_path) if backup_path else None,
-            'error': str(err),
+            "migrated": migrate_notes,
+            "removed": removed,
+            "filled": missing_by_section,
+            "backup_path": str(backup_path) if backup_path else None,
+            "error": str(err),
         }
 
     for note in migrate_notes:
         logger.info("配置迁移: %s", note)
     for section, keys in removed.items():
-        if section == '__section_removed__':
+        if section == "__section_removed__":
             for sec in keys:
                 logger.info("配置清理: 整段移除 [%s]", sec)
         else:
-            logger.info("配置清理: [%s] 移除 %d 个无效字段: %s", section, len(keys), ', '.join(keys))
+            logger.info("配置清理: [%s] 移除 %d 个无效字段: %s", section, len(keys), ", ".join(keys))
     for section, keys in missing_by_section.items():
-        logger.info("配置补齐: [%s] 新增 %d 项: %s", section, len(keys), ', '.join(keys))
+        logger.info("配置补齐: [%s] 新增 %d 项: %s", section, len(keys), ", ".join(keys))
 
     return {
-        'migrated': migrate_notes,
-        'removed': removed,
-        'filled': missing_by_section,
-        'backup_path': str(backup_path) if backup_path else None,
+        "migrated": migrate_notes,
+        "removed": removed,
+        "filled": missing_by_section,
+        "backup_path": str(backup_path) if backup_path else None,
     }
 
 
 # 模块加载时序：先把 toml 整理干净（迁移 + 清理 + 补齐），再让各 Config 类读它
 _sweep_result = sweep_config_toml(auto_backup=True)
-if _sweep_result.get('error'):
-    logger.error("启动期 config.toml 整理失败: %s", _sweep_result['error'])
+if _sweep_result.get("error"):
+    logger.error("启动期 config.toml 整理失败: %s", _sweep_result["error"])
 else:
     _summary_parts: list[str] = []
-    _filled = _sweep_result.get('filled') or {}
+    _filled = _sweep_result.get("filled") or {}
     if _filled:
-        _summary_parts.append(
-            "补齐 " + ", ".join(f"[{s}] +{len(v)}" for s, v in _filled.items())
-        )
-    _removed = _sweep_result.get('removed') or {}
-    _removed_keys = {k: v for k, v in _removed.items() if k != '__section_removed__'}
+        _summary_parts.append("补齐 " + ", ".join(f"[{s}] +{len(v)}" for s, v in _filled.items()))
+    _removed = _sweep_result.get("removed") or {}
+    _removed_keys = {k: v for k, v in _removed.items() if k != "__section_removed__"}
     if _removed_keys:
-        _summary_parts.append(
-            "清理 " + ", ".join(f"[{s}] -{len(v)}" for s, v in _removed_keys.items())
-        )
-    if _removed.get('__section_removed__'):
-        _summary_parts.append("移除整段: " + ", ".join(_removed['__section_removed__']))
-    _migrated = _sweep_result.get('migrated') or []
+        _summary_parts.append("清理 " + ", ".join(f"[{s}] -{len(v)}" for s, v in _removed_keys.items()))
+    if _removed.get("__section_removed__"):
+        _summary_parts.append("移除整段: " + ", ".join(_removed["__section_removed__"]))
+    _migrated = _sweep_result.get("migrated") or []
     if _migrated:
         _summary_parts.append(f"迁移 {len(_migrated)} 条历史字段")
     if _summary_parts:

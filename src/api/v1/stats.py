@@ -3,23 +3,25 @@
 
 播放统计相关接口
 """
+
 from flask import Blueprint, g
 
 from src.api.v1.auth import require_auth, require_admin, api_response
 from src.db.user import Role
 from src.services.stats_service import StatsService
 
-stats_bp = Blueprint('stats', __name__, url_prefix='/stats')
+stats_bp = Blueprint("stats", __name__, url_prefix="/stats")
 
 
 # ==================== 个人统计 ====================
 
-@stats_bp.route('/me', methods=['GET'])
+
+@stats_bp.route("/me", methods=["GET"])
 @require_auth
 async def get_my_stats():
     """
     获取我的播放统计
-    
+
     Response:
         {
             "success": true,
@@ -40,13 +42,13 @@ async def get_my_stats():
         }
     """
     stats = await StatsService.get_user_stats(g.current_user.UID)
-    
+
     if stats:
         return api_response(True, "获取成功", stats)
     return api_response(False, "获取失败", code=500)
 
 
-@stats_bp.route('/user/<int:uid>', methods=['GET'])
+@stats_bp.route("/user/<int:uid>", methods=["GET"])
 @require_auth
 async def get_user_stats(uid: int):
     """获取指定用户的统计。
@@ -61,5 +63,3 @@ async def get_user_stats(uid: int):
     if stats:
         return api_response(True, "获取成功", stats)
     return api_response(False, "用户不存在", code=404)
-
-
