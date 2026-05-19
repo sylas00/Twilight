@@ -65,11 +65,45 @@ def _restrict_perms(path: Path) -> None:
         logger.debug(f"chmod 600 失败（可忽略）{path}: {exc}")
 
 
+# 备份目录最多保留多少份历史 *.bak；超过的按 mtime 从旧到新淘汰。
+# 启动期 sweep + 后台 fill-missing + 管理员手动保存都会触发备份，必须设上限
+# 避免长跑实例把磁盘塞满 / 让用户在恢复时迷失在几百份历史里。
+_CONFIG_BACKUP_RETENTION = int(os.environ.get('TWILIGHT_CONFIG_BACKUP_RETENTION', '20'))
+
+
+def _trim_backup_dir(backup_dir: Path, keep: int) -> int:
+    """保留 ``backup_dir`` 里最近 ``keep`` 个 *.bak 文件，旧的删除。
+
+    返回实际删除的数量。``keep <= 0`` 视为不裁剪（全部保留）。
+    """
+    if keep <= 0 or not backup_dir.is_dir():
+        return 0
+    try:
+        entries = [p for p in backup_dir.iterdir() if p.is_file() and p.suffix == '.bak']
+    except Exception as exc:  # pragma: no cover
+        logger.debug(f"读取备份目录失败 {backup_dir}: {exc}")
+        return 0
+    if len(entries) <= keep:
+        return 0
+    entries.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    removed = 0
+    for stale in entries[keep:]:
+        try:
+            stale.unlink()
+            removed += 1
+        except Exception as exc:  # pragma: no cover - safety
+            logger.debug(f"清理旧备份失败 {stale}: {exc}")
+    return removed
+
+
 def backup_config_file(config_path: Optional[Path] = None, reason: str = 'manual') -> Optional[Path]:
-    """创建配置备份（时间戳轮转 + 兼容单文件 backup）。
+    """创建配置备份（时间戳轮转 + 兼容单文件 backup + 数量上限裁剪）。
 
     备份文件可能包含 ``bot_token`` / ``emby_token`` 等敏感字段，写出后立刻
     chmod 0o600，避免 ``config_backups/`` 整个目录被同机其它账号读取。
+
+    备份目录里最多保留 ``_CONFIG_BACKUP_RETENTION`` 份历史（环境变量
+    ``TWILIGHT_CONFIG_BACKUP_RETENTION`` 可覆盖，<=0 表示不裁剪）。
     """
     path = Path(config_path) if config_path else get_primary_config_path()
     if not path.exists():
@@ -95,6 +129,14 @@ def backup_config_file(config_path: Optional[Path] = None, reason: str = 'manual
         _restrict_perms(legacy_backup)
     except Exception as err:
         logger.warning(f"更新兼容备份文件失败: {err}")
+
+    # 裁剪：超出保留份数的最旧备份直接删除。
+    removed = _trim_backup_dir(backup_dir, _CONFIG_BACKUP_RETENTION)
+    if removed:
+        logger.info(
+            "已清理 %d 份过旧的配置备份 (目录=%s, 保留=%d)",
+            removed, backup_dir, _CONFIG_BACKUP_RETENTION,
+        )
 
     return rotated_backup
 
@@ -384,6 +426,12 @@ class TelegramConfig(BaseConfig):
     ENABLE_TG_PANEL: bool = False  # 是否开启 TG Bot 完整面板（关闭时仅允许绑定和查看基础信息）
     REQUIRE_GROUP_MEMBERSHIP: bool = False  # 是否强制要求绑定/已绑定用户保持在配置中的群组内
     GROUP_CHECK_INTERVAL_MINUTES: int = 30  # 定时检查间隔（分钟），开启上面开关后生效
+    # 退群完全封禁模式：开启后，定时巡检发现某绑定用户已离开必需群组时，
+    # 除禁用本地账号 + Emby 外，还会对该 TG 用户在所有 GROUP_ID 列出的群里
+    # 执行 ban_chat_member（不 unban），使其无法重新加入。默认关闭，谨慎开启。
+    # 依赖：Bot 必须是群管理员且具有"封禁成员"权限；BAN_ON_LEAVE 开启后
+    # 巡检任务会跳过"重新入群识别"分支（永封后该分支永远不会命中）。
+    BAN_ON_LEAVE: bool = False
     # —— Bot 文案自定义（留空使用内置默认）。所有字符串都按 Markdown 渲染，
     # 注意自行转义 _ * [ 等特殊字符；其中可以用 {server_name} 占位符。
     BOT_START_TITLE: str = ''       # /start 标题行，例如 "🌙 {server_name} 控制中心"

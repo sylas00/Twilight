@@ -549,3 +549,100 @@ class TelegramMembershipService:
             result["failed"] = int(result["failed"]) + 1
             result["details"].append({"error": str(exc)})
             return result
+
+    @staticmethod
+    async def ban_user_permanently(
+        telegram_id: int,
+        *,
+        reason: str = "leave_required_group",
+    ) -> Dict[str, object]:
+        """在所有配置的 ``GROUP_ID`` 群里永久封禁该 TG 用户。
+
+        与 ``kick_unknown_members`` 的"ban + unban"不同，本方法**不调用 unban**，
+        因此被封禁用户后续无法重新加入群组。专供"退群完全封禁模式"使用。
+
+        前提条件：Bot 在每个目标群里都是管理员且具备封禁权限。失败的群会在
+        ``details`` 中体现，不影响其他群继续封禁。
+
+        :return: ``{"telegram_id", "banned_groups": [str...], "failed_groups": [{"id","error"}...]}``
+        """
+        out: Dict[str, object] = {
+            "telegram_id": int(telegram_id) if telegram_id else 0,
+            "banned_groups": [],
+            "failed_groups": [],
+        }
+        try:
+            tg_id = int(telegram_id)
+        except (TypeError, ValueError):
+            return out
+        if tg_id <= 0:
+            return out
+
+        group_ids = _normalize_group_ids()
+        if not group_ids:
+            return out
+
+        if not has_telegram_api_access():
+            out["failed_groups"] = [
+                {"id": str(g), "error": "telegram_unavailable"} for g in group_ids
+            ]
+            return out
+
+        try:
+            from telegram.error import BadRequest, Forbidden, TelegramError
+        except Exception:
+            BadRequest = Forbidden = TelegramError = Exception  # type: ignore
+
+        async def _ban_one(bot, gid) -> tuple[str, bool, Optional[str]]:
+            try:
+                # 不指定 until_date → 永久封禁；revoke_messages=False 避免回删历史消息。
+                await bot.ban_chat_member(gid, tg_id, revoke_messages=False)
+                return str(gid), True, None
+            except BadRequest as exc:
+                msg = str(exc).lower()
+                # 用户本来就不在群（已退或从未加入）也算成功："封禁名单"已生效
+                if "not found" in msg or "participant" in msg or "user not found" in msg:
+                    return str(gid), True, None
+                return str(gid), False, f"BadRequest: {exc}"
+            except Forbidden as exc:
+                return str(gid), False, f"Forbidden: {exc}"
+            except TelegramError as exc:
+                return str(gid), False, f"TelegramError: {exc}"
+            except Exception as exc:  # pragma: no cover - safety
+                return str(gid), False, f"unexpected: {exc}"
+
+        async def _do(bot) -> Dict[str, object]:
+            banned: List[str] = []
+            failed: List[dict] = []
+            results = await asyncio.gather(*(_ban_one(bot, g) for g in group_ids))
+            for gid_str, ok, err in results:
+                if ok:
+                    banned.append(gid_str)
+                else:
+                    failed.append({"id": gid_str, "error": err or "unknown"})
+            return {
+                "telegram_id": tg_id,
+                "banned_groups": banned,
+                "failed_groups": failed,
+            }
+
+        try:
+            result = await run_bot_operation(_do, timeout=60)
+        except Exception as exc:
+            logger.warning(
+                f"永封 TG {tg_id} 异常 (reason={reason}): {exc}"
+            )
+            out["failed_groups"] = [{"id": str(g), "error": str(exc)} for g in group_ids]
+            return out
+
+        if result.get("banned_groups"):
+            logger.warning(
+                "🚫 TG %d 已被永久封禁于群组 %s (reason=%s)",
+                tg_id, ", ".join(result["banned_groups"]), reason,
+            )
+        if result.get("failed_groups"):
+            logger.warning(
+                "永封 TG %d 在部分群失败 (reason=%s): %s",
+                tg_id, reason, result["failed_groups"],
+            )
+        return result

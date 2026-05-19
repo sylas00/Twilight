@@ -82,6 +82,11 @@ enable_tg_panel = false
 require_group_membership = false
 # 上面开启时的定时巡检间隔（分钟）
 group_check_interval_minutes = 30
+# 退群完全封禁模式：开启后巡检发现退群用户会在所有 GROUP_ID 群里被永久 ban
+#   • 永封通过 bot.ban_chat_member 实现（不会自动 unban），需要 Bot 是群管理员且有封禁权限
+#   • 开启后巡检的"重新入群识别"分支会被跳过（永封后该分支不会命中）
+#   • 谨慎开启：误判会导致用户永久无法回到群里
+ban_on_leave = false
 # Bot 出站代理（如 http://127.0.0.1:7890 / socks5://127.0.0.1:1080）
 proxy_url = ""
 # Bot 绑定确认回调（可填完整接口或后端基址；留空走默认）

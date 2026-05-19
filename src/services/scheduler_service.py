@@ -625,11 +625,14 @@ class SchedulerService:
         - 对已禁用且仍绑定 Telegram 的用户做“重新入群”识别；
         - 不自动恢复，仅记录到日志与 summary，供管理员手动判定是否恢复。
         """
+        from src.config import TelegramConfig
         from src.services.telegram_membership import TelegramMembershipService
         if not TelegramMembershipService.enforcement_enabled():
             ctx.summary['enabled'] = False
             ctx.log("ℹ️ 群组成员巡检未启用")
             return
+
+        ban_on_leave = bool(getattr(TelegramConfig, 'BAN_ON_LEAVE', False))
 
         # Bot 未就绪时直接退出。继续往下跑会让 check_user_in_groups 对每个
         # 用户都返回 (True, []) —— 这会把所有用户误判为「仍在群」，并产生
@@ -642,6 +645,9 @@ class SchedulerService:
             return
 
         ctx.summary['enabled'] = True
+        ctx.summary['ban_on_leave'] = ban_on_leave
+        if ban_on_leave:
+            ctx.log("⚠️ 退群完全封禁模式已开启：检测到退群的用户将被永久 ban，且不再做重新入群识别")
         ctx.log("🛂 开始群组成员资格巡检...")
         try:
             users = await UserOperate.get_active_telegram_bound_users()
@@ -649,6 +655,8 @@ class SchedulerService:
             ctx.summary['in_group'] = 0
             ctx.summary['disabled'] = 0
             ctx.summary['failed'] = 0
+            ctx.summary['permanently_banned'] = 0
+            ctx.summary['ban_failed'] = 0
             ctx.summary['rejoin_scanned'] = 0
             ctx.summary['rejoin_candidates'] = 0
             ctx.summary['rejoin_uids'] = []
@@ -692,12 +700,49 @@ class SchedulerService:
                         else:
                             ctx.summary['failed'] += 1
                             ctx.log(f"  ⚠️ 禁用 {u.USERNAME} 失败: {msg}")
+
+                        # 退群完全封禁模式：在所有 GROUP_ID 群里永久 ban，不解封
+                        if ban_on_leave:
+                            try:
+                                ban_result = await TelegramMembershipService.ban_user_permanently(
+                                    user_tg_id, reason="leave_required_group",
+                                )
+                                banned_ids = ban_result.get('banned_groups') or []
+                                failed_groups = ban_result.get('failed_groups') or []
+                                if banned_ids:
+                                    ctx.summary['permanently_banned'] += 1
+                                    ctx.log(
+                                        f"    🚫 已在 {len(banned_ids)} 个群永久封禁 "
+                                        f"(TG: {user_tg_id})"
+                                    )
+                                if failed_groups:
+                                    ctx.summary['ban_failed'] += 1
+                                    failed_ids = ', '.join(
+                                        item.get('id', '?') for item in failed_groups
+                                    )
+                                    ctx.log(
+                                        f"    ⚠️ 永封部分群失败 (TG: {user_tg_id}): "
+                                        f"{failed_ids}"
+                                    )
+                            except Exception as ban_exc:  # pragma: no cover
+                                ctx.summary['ban_failed'] += 1
+                                ctx.log(
+                                    f"    ❌ 永封 {u.USERNAME} (TG: {user_tg_id}) "
+                                    f"异常: {ban_exc}"
+                                )
                     except Exception as exc:  # pragma: no cover
                         ctx.summary['failed'] += 1
                         ctx.log(f"  ❌ 巡检 {u.USERNAME} (UID: {u.UID}) 出错: {exc}")
 
             # 已禁用账号重新入群识别：只上报管理员，不自动恢复，避免误恢复风控账号。
-            inactive_users = await UserOperate.get_inactive_telegram_bound_users()
+            # 退群完全封禁模式下用户被永封根本进不来群里，本分支永远拿不到结果，
+            # 跑一遍只是浪费 RTT，直接跳过。
+            if ban_on_leave:
+                ctx.summary['rejoin_skipped_due_to_ban_mode'] = True
+                ctx.log("ℹ️ 永封模式已开启，跳过重新入群识别")
+                inactive_users = []
+            else:
+                inactive_users = await UserOperate.get_inactive_telegram_bound_users()
             ctx.summary['rejoin_scanned'] = len(inactive_users)
             if inactive_users:
                 inactive_tg_ids: list[int] = []
@@ -743,10 +788,16 @@ class SchedulerService:
                     if len(rejoin_candidates) > 20:
                         ctx.log(f"    ... 其余 {len(rejoin_candidates) - 20} 个请查看 summary.rejoin_uids")
 
+            extra_summary = ""
+            if ban_on_leave:
+                ban_failed_count = ctx.summary['ban_failed']
+                extra_summary = f", 永封 {ctx.summary['permanently_banned']} 个"
+                if ban_failed_count:
+                    extra_summary += f", 永封失败 {ban_failed_count} 个"
             ctx.log(
                 f"✅ 群组成员资格巡检完成: 仍在群 {ctx.summary['in_group']} 个, "
                 f"已禁用 {ctx.summary['disabled']} 个, 失败 {ctx.summary['failed']} 个, "
-                f"待人工复核恢复 {ctx.summary['rejoin_candidates']} 个"
+                f"待人工复核恢复 {ctx.summary['rejoin_candidates']} 个{extra_summary}"
             )
         except Exception as exc:
             ctx.log(f"❌ 群组成员资格巡检异常: {exc}")

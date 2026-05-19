@@ -719,6 +719,7 @@ async def get_config_schema():
                     {'key': 'enable_tg_panel', 'label': '启用 TG 面板', 'type': 'bool', 'description': '启用后 Bot 提供完整的内联键盘面板功能，关闭则仅保留 /help、/bind、/me 基础命令', 'value': TelegramConfig.ENABLE_TG_PANEL},
                     {'key': 'require_group_membership', 'label': '强制群组成员资格', 'type': 'bool', 'description': '开启后绑定时校验，且定时巡检；用户退出必需群组将被禁用并同步禁用 Emby', 'value': TelegramConfig.REQUIRE_GROUP_MEMBERSHIP},
                     {'key': 'group_check_interval_minutes', 'label': '群组检查间隔（分钟）', 'type': 'int', 'description': '群组成员资格定时巡检间隔（分钟），开启上述开关后生效', 'value': TelegramConfig.GROUP_CHECK_INTERVAL_MINUTES},
+                    {'key': 'ban_on_leave', 'label': '退群完全封禁模式', 'type': 'bool', 'description': '⚠️ 危险操作：开启后巡检发现退群用户会被 Bot 在所有 GROUP_ID 群里永久 ban（不会自动解封）。依赖 Bot 是群管理员且有封禁权限；开启后"重新入群识别"分支会被跳过。默认关闭，谨慎使用', 'value': TelegramConfig.BAN_ON_LEAVE},
                     {'key': 'proxy_url', 'label': '代理地址', 'type': 'string', 'description': 'Telegram Bot 代理地址（如 socks5://127.0.0.1:1080），留空不使用代理', 'value': TelegramConfig.PROXY_URL},
                     {'key': 'bot_start_title', 'label': '/start 标题', 'type': 'string', 'description': '自定义 /start 第一行标题（Markdown），留空使用默认；支持 {server_name} 占位符', 'value': TelegramConfig.BOT_START_TITLE},
                     {'key': 'bot_start_intro', 'label': '/start 简介', 'type': 'string', 'description': '自定义 /start 简介段落，留空使用默认', 'value': TelegramConfig.BOT_START_INTRO},
