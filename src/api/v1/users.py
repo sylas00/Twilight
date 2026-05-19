@@ -24,6 +24,90 @@ logger = logging.getLogger(__name__)
 users_bp = Blueprint('users', __name__, url_prefix='/users')
 
 
+# ==================== 注册绑定码轮询：404 / IP 防滥用 ====================
+# 公开轮询接口 /telegram/register/bind-code/status 容易被脚本反复请求一个
+# 已过期 / 不存在的 code（每次都打 DB）。为了既不影响正常前端 2s 轮询，
+# 又能拦住"明知会 404 还狂打"的客户端，这里维护两份模块级缓存：
+#
+# 1) `_INVALID_CODE_CACHE`: code → 失效时间戳；第一次 DB 查到 404 后写入，
+#    TTL 内同 code 直接 404，不再消费限速配额、不再查 DB。
+# 2) `_IP_404_BAN`:        ip   → 解封时间戳；同 IP 60s 内累计 ``_IP_404_BAN_THRESHOLD``
+#    次 404，整 IP 进短期封禁名单（``_IP_404_BAN_DURATION`` 秒），期间任何
+#    请求该端点直接 429，不消费限速、不查 DB。
+#
+# 状态全局保存在进程内存里，重启清空；多 worker 部署下每个进程独立计数，
+# 但因为攻击者通常长链接打同一进程，单进程就足以挡住。
+_INVALID_CODE_TTL = 300        # 已知失效 code 的缓存秒数
+_INVALID_CODE_CACHE_MAX = 2048  # 缓存大小上限，防止恶意写满
+_IP_404_THRESHOLD = 20          # 60s 内同 IP 累计 404 阈值
+_IP_404_WINDOW = 60             # 计数窗口（秒）
+_IP_404_BAN_DURATION = 300      # 触发后的封禁时长（秒）
+
+_INVALID_CODE_CACHE: dict[str, float] = {}
+_IP_404_BAN: dict[str, float] = {}
+
+
+def _is_known_invalid_code(code: str) -> bool:
+    """该 code 是否在 ``_INVALID_CODE_CACHE`` 内且未过期。"""
+    exp = _INVALID_CODE_CACHE.get(code)
+    if exp is None:
+        return False
+    if _time.time() >= exp:
+        _INVALID_CODE_CACHE.pop(code, None)
+        return False
+    return True
+
+
+def _mark_invalid_code(code: str) -> None:
+    """把刚刚 404 的 code 标记成已知失效，``_INVALID_CODE_TTL`` 内复用。"""
+    now = _time.time()
+    _INVALID_CODE_CACHE[code] = now + _INVALID_CODE_TTL
+    # 顺手做一次按需 GC：写入达到上限时把过期项清掉，避免无界增长
+    if len(_INVALID_CODE_CACHE) > _INVALID_CODE_CACHE_MAX:
+        stale = [k for k, exp in _INVALID_CODE_CACHE.items() if exp < now]
+        for k in stale:
+            _INVALID_CODE_CACHE.pop(k, None)
+        # 如果清完仍超限（极端攻击）就按 expire 时间最早开始淘汰
+        if len(_INVALID_CODE_CACHE) > _INVALID_CODE_CACHE_MAX:
+            excess = len(_INVALID_CODE_CACHE) - _INVALID_CODE_CACHE_MAX
+            oldest = sorted(_INVALID_CODE_CACHE.items(), key=lambda kv: kv[1])[:excess]
+            for k, _ in oldest:
+                _INVALID_CODE_CACHE.pop(k, None)
+
+
+def _is_ip_404_banned(ip: str) -> int:
+    """返回该 IP 在 404 黑名单里的剩余封禁秒数，0 表示未封禁。"""
+    exp = _IP_404_BAN.get(ip)
+    if exp is None:
+        return 0
+    remaining = int(exp - _time.time())
+    if remaining <= 0:
+        _IP_404_BAN.pop(ip, None)
+        return 0
+    return remaining
+
+
+def _record_404_and_maybe_ban(ip: str, code: str) -> None:
+    """记一次 404，必要时把 IP 加入短期封禁名单。
+
+    用 ``rate_limit_check`` 实现 ``_IP_404_THRESHOLD/_IP_404_WINDOW`` 窗口计数：
+    第一次 ``rate_limit_check`` 返回 ``allowed=False`` 时说明本次刚好顶满阈值
+    （上一次调用已经填到第 N 次），把 IP 写进 ``_IP_404_BAN``。
+    """
+    from src.core.utils import rate_limit_check
+    allowed, _retry = rate_limit_check(
+        'tg_bind_status_404_count', ip,
+        max_requests=_IP_404_THRESHOLD, window_seconds=_IP_404_WINDOW,
+    )
+    if not allowed and ip not in _IP_404_BAN:
+        _IP_404_BAN[ip] = _time.time() + _IP_404_BAN_DURATION
+        logger.warning(
+            "🚫 IP %s 因 60s 内连续 >=%d 次 /telegram/register/bind-code/status 404 "
+            "被临时封禁 %ds (最后 code=%s)",
+            ip, _IP_404_THRESHOLD, _IP_404_BAN_DURATION, code,
+        )
+
+
 # ==================== 用户注册 ====================
 
 @users_bp.route('/register', methods=['POST'])
@@ -1326,14 +1410,37 @@ async def query_tg_register_bind_code_status():
     from src.config import Config, TelegramConfig
     from src.core.utils import rate_limit_check
 
+    client_ip = request.remote_addr or 'unknown'
+
+    # 第 0 层：IP 因连续 404 进入短期封禁名单 → 直接拒绝，不消费配额、不查 DB。
+    # 这是真正能挡住"明知 404 还死命刷"的客户端的杀手锏。
+    ban_remaining = _is_ip_404_banned(client_ip)
+    if ban_remaining > 0:
+        return api_response(
+            False,
+            f"请求频次异常，IP 已被临时限制 {ban_remaining} 秒",
+            code=429,
+        )
+
     code = (request.args.get('code') or '').strip().upper()
     if not code or len(code) != 8 or not code.isalnum():
-        return api_response(False, "绑定码格式无效", code=400)
+        # 格式不合法不是"业务终态"——前端不应把格式错的输入也当过期处理，
+        # 保留 400 + Error 抛出路径让调用方意识到自己传错了。
+        return api_response(False, "绑定码无效或已过期", code=400)
 
-    # 公开轮询端点：双层限速，避免被反复刷或被用来枚举绑定码。
+    # 第 1 层：已知失效 code 短路。第一次确认不存在/过期后会进 _INVALID_CODE_CACHE，
+    # 后续同 code 直接返回 200 + data.terminal=True，让前端立即停止轮询；
+    # **不**消费下面的 code/ip 限速配额、**不**查 DB。
+    # 同时仍要把这一次计入 IP 404 计数，避免攻击者轮换 code 绕过封禁。
+    if _is_known_invalid_code(code):
+        _record_404_and_maybe_ban(client_ip, code)
+        return api_response(False, "绑定码无效或已过期", data={
+            'invalid': True, 'terminal': True, 'code': code,
+        })
+
+    # 第 2 层：双层限速，正常前端 2s 轮询不会触发。
     # - 单 code：30 次 / 60s （前端 2s 一次 = 30 次/分钟，留 1× 余量）
     # - 单 IP：120 次 / 60s （单 IP 多页签/多账号兼容，但拒绝大规模扫描）
-    client_ip = request.remote_addr or 'unknown'
     allowed_code, retry_after_code = rate_limit_check(
         'tg_register_bind_code_status:code', code,
         max_requests=30, window_seconds=60,
@@ -1364,14 +1471,31 @@ async def query_tg_register_bind_code_status():
 
     code_info = await TelegramBindCodeOperate.get_code(code)
     if not code_info or code_info.SCENE != _BIND_SCENE_REGISTER:
-        # 不暴露具体过期/无效，避免被探测
-        return api_response(False, "绑定码无效或已过期", code=404)
+        # 注册阶段 code 在 DB 不存在（或 scene 不对）= 业务终态：前端应立即放弃轮询。
+        # 返回 HTTP 200 + success:false + data.terminal=true 让前端拿到 *决定性* 信号，
+        # 不再依赖 message 关键字匹配（旧逻辑脆弱，且 axios/fetch 对 4xx 抛错会绕过分支）。
+        # IP 404 计数 + invalid-cache 仍然写入，保证防滥用层级照常生效。
+        _mark_invalid_code(code)
+        _record_404_and_maybe_ban(client_ip, code)
+        return api_response(False, "绑定码无效或已过期", data={
+            'invalid': True, 'terminal': True, 'code': code,
+        })
 
     remaining = max(0, int(code_info.EXPIRES_AT - _time.time()))
+    # remaining<=0 表示已过期但 DB 还没清理：同样是终态，按 invalid 处理而非 success。
+    if remaining <= 0:
+        _mark_invalid_code(code)
+        _record_404_and_maybe_ban(client_ip, code)
+        return api_response(False, "绑定码无效或已过期", data={
+            'invalid': True, 'terminal': True, 'code': code,
+        })
+
     return api_response(True, "获取成功", {
         'code': code_info.CODE,
         'confirmed': bool(code_info.CONFIRMED_TELEGRAM_ID),
         'expires_in': remaining,
+        'invalid': False,
+        'terminal': bool(code_info.CONFIRMED_TELEGRAM_ID),  # 已确认绑定也是终态
     })
 
 

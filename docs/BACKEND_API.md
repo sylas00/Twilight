@@ -99,7 +99,7 @@ Authorization: ApiKey <api_key>
 | `GET  /users/check-available` | IP | 60 / 60 秒 | 防扫描可用用户名 |
 | `GET  /users/register/emby/status` | request_id + IP | 60/60s + 240/60s | Emby 注册队列轮询 |
 | `POST /users/telegram/register/bind-code` | IP | 5 / 10 分钟 | 生成注册绑定码 |
-| `GET  /users/telegram/register/bind-code/status` | code + IP | 60/60s + 240/60s | 注册绑定码轮询；防反复刷 |
+| `GET  /users/telegram/register/bind-code/status` | code + IP + 404 防御 | 30/60s + 120/60s + 失效缓存 + IP 404 封禁 | 注册绑定码轮询；详见下方 |
 | `POST /users/me/telegram/bind-code` | UID | 5 / 10 分钟 | 已登录用户生成 TG 绑定码 |
 | `POST /users/me/telegram/unbind` | UID | 5 / 10 分钟 | 防恶意频繁解绑 |
 | `POST /users/me/telegram/rebind-request` | UID | 3 / 1 小时 | 换绑申请会进管理员队列，从严限制 |
@@ -108,6 +108,17 @@ Authorization: ApiKey <api_key>
 | `POST /users/me/avatar/upload` 等上传 | UID | 10 / 60 秒 | 防滥用上传 |
 
 > 限速命中只写 `logger.warning`，不会写入 SecurityLog / login_history。
+
+#### `bind-code/status` 的三层防御
+
+线上观测到攻击者会盯着一个 8 位 code 反复刷（每次都是 404），所以这个端点
+在普通双层限速之上又加了两层（实现：`src/api/v1/users.py`）：
+
+1. **失效 code 短路缓存**：第一次 DB 查不到该 code 时，写入 `_INVALID_CODE_CACHE`（TTL 5 分钟）。期间同 code 任何请求 → 直接 404，**不查 DB、不消费 code 维度限速配额**。
+2. **IP 累计 404 封禁**：同 IP 60s 内累计 ≥20 次 404（包括短路命中的）→ 把 IP 加入 `_IP_404_BAN`（5 分钟）。期间该 IP 任何请求 → 直接 429。
+3. **前端配合**：`webui/src/app/(auth)/register/page.tsx` 的轮询 `useEffect` 收到 message 含"无效/过期/不存在"或"IP 已被/429/请求过于频繁"时立即停止轮询，避免合法用户被误锁。
+
+状态都是进程内存的，重启清零。多 worker 部署每个进程独立计数，但攻击者 keep-alive 会粘在同一进程上，足以拦住。
 
 ## 4. 模块总览
 

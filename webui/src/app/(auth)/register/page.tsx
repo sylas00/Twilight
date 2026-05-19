@@ -90,15 +90,27 @@ export default function RegisterPage() {
     let toastedConfirmed = false;
     const controller = new AbortController();
 
+    const stopWithToast = (title: string, description: string) => {
+      setBindCode("");
+      setBindCodeExpiry(0);
+      setBindConfirmed(false);
+      toast({ title, description, variant: "destructive" });
+    };
+
     const tick = async () => {
       try {
         const res = await api.getRegisterBindCodeStatus(bindCode, controller.signal);
         if (cancelled) return;
-        if (res.success && res.data) {
-          if (typeof res.data.expires_in === "number") {
-            setBindCodeExpiry(res.data.expires_in);
+
+        // 决定性信号：后端约定 data.terminal === true 表示"无须再轮询"。
+        // - invalid=true: 不存在 / 已过期 → 引导用户重新生成
+        // - invalid=false 但 terminal=true: 已被 Bot 确认（确认成功的终态）
+        if (res.data?.terminal) {
+          if (res.data.invalid) {
+            stopWithToast("绑定码已过期", "请重新获取绑定码");
+            return;
           }
-          if (res.data.confirmed && !toastedConfirmed) {
+          if (!toastedConfirmed) {
             toastedConfirmed = true;
             setBindConfirmed(true);
             toast({
@@ -107,20 +119,29 @@ export default function RegisterPage() {
               variant: "success",
             });
           }
-        } else if (res.message && /无效|过期/.test(res.message)) {
-          if (!cancelled) {
-            setBindCode("");
-            setBindCodeExpiry(0);
-            setBindConfirmed(false);
-            toast({
-              title: "绑定码已过期",
-              description: "请重新获取绑定码",
-              variant: "destructive",
-            });
+          return;
+        }
+
+        if (res.success && res.data) {
+          if (typeof res.data.expires_in === "number") {
+            setBindCodeExpiry(res.data.expires_in);
           }
         }
-      } catch {
-        // 静默重试
+      } catch (err) {
+        // 已经把"业务终态"挪到 HTTP 200 的 data.terminal；这里只剩
+        // 真正的异常：限速 429 / 网络异常 / 400 格式错误等。
+        if (cancelled) return;
+        const msg = (err instanceof Error ? err.message : String(err ?? "")) || "";
+        if (/IP\s*已被|请求频次异常|请求过于频繁|429/.test(msg)) {
+          stopWithToast(
+            "请求过于频繁",
+            "已暂停轮询，请稍后重新获取绑定码再试",
+          );
+        } else if (/格式无效|格式不正确/.test(msg)) {
+          // 400 绑定码格式无效——前端 state 本身坏了，直接清掉
+          stopWithToast("绑定码格式无效", "请重新获取绑定码");
+        }
+        // 其它（疑似网络抖动）保持原本的静默重试行为
       }
     };
 

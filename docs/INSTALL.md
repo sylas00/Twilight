@@ -67,6 +67,33 @@
    - 把 Pages 绑定到自己 Cloudflare 托管的域名。
    - 在 Pages 的 **构建 → 部署挂钩** 添加 GitHub 仓库，实现自动部署（不放心可不加，手动部署即可）。
 
+#### 自托管：1Panel / Docker / systemd 等非交互环境跑 pnpm
+
+把前端跑在自己服务器（1Panel 的 Node 运行环境、Docker、systemd 守护进程等）时，启动脚本通常没有 TTY。pnpm 在这种环境下检测到 `node_modules` 需要重建会卡在 `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`：
+
+```text
+[ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY] Aborted removal of modules directory due to no TTY
+
+If you are running pnpm in CI, set the CI environment variable to "true", or set "confirmModulesPurge" to "false".
+```
+
+仓库 `webui/.npmrc` 已经配置好 `confirm-modules-purge=false`，clone 下来直接跑就能避开。如果你裁剪过这个文件或者用别的工具引导启动，至少需要满足以下任一条件：
+
+1. **推荐**：保留 `webui/.npmrc` 里的 `confirm-modules-purge=false`
+2. 在启动脚本里 `export CI=true` 再跑 `pnpm install`
+3. 在 `webui/package.json` 加 `"pnpm": { "confirmModulesPurge": false }`
+
+启动命令示例（1Panel Node 运行环境）：
+
+```bash
+cd webui
+pnpm install --frozen-lockfile      # 严格按 pnpm-lock.yaml 装
+pnpm build                          # next build
+pnpm start                          # next start
+```
+
+> `--frozen-lockfile` 保证生产环境装的是和仓库 lockfile 一致的依赖；如果遇到 lockfile 过时报错，先在本地 `pnpm install` 更新 lockfile 提交后再部署，不要在生产环境随手 `--no-frozen-lockfile` 改装。
+
 ### 后端
 
 1. 安装 Python / uv 环境。

@@ -266,7 +266,16 @@ class ApiClient {
 
   async getRegisterBindCodeStatus(code: string, signal?: AbortSignal) {
     const q = new URLSearchParams({ code }).toString();
-    return this.request<{ code: string; confirmed: boolean; expires_in: number }>(
+    // 后端约定：code 在 DB 不存在 / 已过期 / 已确认 都是 *终态*，
+    // 通过 data.terminal === true 表示；其中 invalid 区分"不存在/过期"和"已确认"。
+    // 这一端点不会再为业务无效抛 HTTP 404——上面的字段是唯一可信信号。
+    return this.request<{
+      code?: string;
+      confirmed?: boolean;
+      expires_in?: number;
+      invalid?: boolean;
+      terminal?: boolean;
+    }>(
       `/users/telegram/register/bind-code/status?${q}`,
       { signal },
     );
