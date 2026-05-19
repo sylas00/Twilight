@@ -332,6 +332,7 @@ class BaseConfig:
 
 class Config(BaseConfig):
     """全局配置管理类"""
+    _section = 'Global'
     SERVER_NAME: str = 'Twilight'  # 服务器名称，用于前端显示
     SERVER_ICON: str = ''  # 服务器图标 URL，用于前端显示
     LOGGING: bool = True
@@ -354,6 +355,7 @@ class Config(BaseConfig):
 
 class EmbyConfig(BaseConfig):
     """Emby配置管理类"""
+    _section = 'Emby'
     EMBY_URL: str = 'http://127.0.0.1:8096/'
     EMBY_TOKEN: str = ''
     EMBY_USERNAME: str = ''  # 管理员用户名（API Key 无效时的备用认证）
@@ -370,6 +372,7 @@ class EmbyConfig(BaseConfig):
 
 class TelegramConfig(BaseConfig):
     """Telegram配置管理类"""
+    _section = 'Telegram'
     TELEGRAM_API_URL: str = 'https://api.telegram.org/bot'
     BOT_TOKEN: str = ''
     BIND_CONFIRM_API_URL: str = ''  # Bot 绑定确认回调地址（可填完整接口或后端基础地址）
@@ -381,10 +384,18 @@ class TelegramConfig(BaseConfig):
     ENABLE_TG_PANEL: bool = False  # 是否开启 TG Bot 完整面板（关闭时仅允许绑定和查看基础信息）
     REQUIRE_GROUP_MEMBERSHIP: bool = False  # 是否强制要求绑定/已绑定用户保持在配置中的群组内
     GROUP_CHECK_INTERVAL_MINUTES: int = 30  # 定时检查间隔（分钟），开启上面开关后生效
+    # —— Bot 文案自定义（留空使用内置默认）。所有字符串都按 Markdown 渲染，
+    # 注意自行转义 _ * [ 等特殊字符；其中可以用 {server_name} 占位符。
+    BOT_START_TITLE: str = ''       # /start 标题行，例如 "🌙 {server_name} 控制中心"
+    BOT_START_INTRO: str = ''       # /start 简介段，例如 "欢迎使用 Emby 管理机器人"
+    BOT_HELP_HEADER: str = ''       # /help 顶部段（命令列表前），可用于公告
+    BOT_HELP_FOOTER: str = ''       # /help 底部段，可放群组链接、规则等
+    BOT_ABOUT: str = ''             # 关于 Bot / 站点说明（暂留给将来 /about 使用）
 
 
 class RegisterConfig(BaseConfig):
-    """注册及用户策略配置管理类"""
+    """注册及用户策略配置管理类（含原 [Signin] 节字段）"""
+    _section = 'SAR'
     REGISTER_MODE: bool = False
     REGISTER_CODE_LIMIT: bool = False  # 是否限制注册码注册
     USER_LIMIT: int = 200  # 允许的已注册用户数量上限
@@ -423,9 +434,23 @@ class RegisterConfig(BaseConfig):
     INVITE_REQUIRE_EMBY: bool = True  # 是否要求邀请人已绑定 Emby 账号才能生码
     INVITE_CODE_DEFAULT_DAYS: int = 30  # 被邀请人 Emby 账号的默认开通天数
 
+    # ───────── 签到 / 积分（原 [Signin] 节并入此处）─────────
+    # 重命名说明：[Signin].enabled → SAR.signin_enabled，避免与 SAR 节的语义重名；
+    # 其余字段（currency_name / daily_min / ...）按原名保留，调用点改读 RegisterConfig。
+    SIGNIN_ENABLED: bool = True  # 签到功能开关（原 [Signin].enabled）
+    CURRENCY_NAME: str = '星币'  # 货币展示名
+    DAILY_MIN: int = 5  # 每日签到最少奖励
+    DAILY_MAX: int = 20  # 每日签到最多奖励
+    # 连签加成总开关：关闭后即使 STREAK_BONUS_DAYS / STREAK_BONUS_POINTS 有值也不发放
+    STREAK_BONUS_ENABLED: bool = True
+    STREAK_BONUS_DAYS: List[int] = [3, 7, 14, 30]
+    STREAK_BONUS_POINTS: List[int] = [10, 50, 100, 300]
+    RESET_AFTER_MISS: bool = True  # 漏签是否清零连签
+
 
 class DeviceLimitConfig(BaseConfig):
     """设备限制配置"""
+    _section = 'DeviceLimit'
     DEVICE_LIMIT_ENABLED: bool = False  # 是否启用设备限制
     MAX_DEVICES: int = 5  # 最大设备数
     MAX_STREAMS: int = 2  # 最大同时播放数
@@ -434,6 +459,7 @@ class DeviceLimitConfig(BaseConfig):
 
 class APIConfig(BaseConfig):
     """API 服务器配置"""
+    _section = 'API'
     HOST: str = "0.0.0.0"
     PORT: int = 5000
     DEBUG: bool = False
@@ -473,6 +499,7 @@ def normalize_storage_settings() -> None:
 
 class SecurityConfig(BaseConfig):
     """安全配置"""
+    _section = 'Security'
     LOGIN_FAIL_THRESHOLD: int = 5  # 登录失败锁定阈值
     LOCKOUT_MINUTES: int = 30  # 锁定时间
     TELEGRAM_DIRECT_LOGIN_ENABLED: bool = False  # 是否允许仅凭 telegram_id 直接登录
@@ -482,6 +509,7 @@ class SecurityConfig(BaseConfig):
 
 class SchedulerConfig(BaseConfig):
     """定时任务配置"""
+    _section = 'Scheduler'
     TIMEZONE: str = "Asia/Shanghai"
     ENABLED: bool = True
     EXPIRED_CHECK_TIME: str = "03:00"
@@ -493,6 +521,7 @@ class SchedulerConfig(BaseConfig):
 
 class NotificationConfig(BaseConfig):
     """通知配置"""
+    _section = 'Notification'
     ENABLED: bool = True
     EXPIRY_REMIND_DAYS: int = 3
     NEW_MEDIA_NOTIFY: bool = False
@@ -500,6 +529,7 @@ class NotificationConfig(BaseConfig):
 
 class BangumiSyncConfig(BaseConfig):
     """Bangumi 同步配置"""
+    _section = 'BangumiSync'
     ENABLED: bool = False  # 是否启用 Bangumi 同步
     AUTO_ADD_COLLECTION: bool = True  # 同步时是否自动添加到收藏（设为"在看"）
     PRIVATE_COLLECTION: bool = False  # 观看记录是否设为私有
@@ -507,41 +537,144 @@ class BangumiSyncConfig(BaseConfig):
     MIN_PROGRESS_PERCENT: int = 80  # 最小播放进度（百分比）才算看完
 
 
-class SigninConfig(BaseConfig):
-    """签到与积分系统配置（积分仅装饰用途，无排行榜）"""
-    ENABLED: bool = True
-    CURRENCY_NAME: str = '星币'  # 货币展示名
-    DAILY_MIN: int = 5  # 每日签到最少奖励
-    DAILY_MAX: int = 20  # 每日签到最多奖励
-    # 连签加成总开关：关闭后即使 STREAK_BONUS_DAYS / STREAK_BONUS_POINTS 有值也不发放
-    STREAK_BONUS_ENABLED: bool = True
-    # 连签加成：达到列表中的连签天数（含当日），额外奖励对应位置的积分
-    STREAK_BONUS_DAYS: List[int] = [3, 7, 14, 30]
-    STREAK_BONUS_POINTS: List[int] = [10, 50, 100, 300]
-    RESET_AFTER_MISS: bool = True  # 漏签是否清零连签
+# （历史 [Signin] 节已并入 [SAR]；SigninConfig 类删除）
 
 
-# 自动加载配置
-Config.update_from_toml("Global")
-EmbyConfig.update_from_toml('Emby')
-TelegramConfig.update_from_toml('Telegram')
-RegisterConfig.update_from_toml('SAR')
-DeviceLimitConfig.update_from_toml('DeviceLimit')
-APIConfig.update_from_toml('API')
-SecurityConfig.update_from_toml('Security')
-SchedulerConfig.update_from_toml('Scheduler')
-NotificationConfig.update_from_toml('Notification')
-BangumiSyncConfig.update_from_toml('BangumiSync')
-SigninConfig.update_from_toml('Signin')
-normalize_storage_settings()
+# ============================================================
+#  迁移 / 清理：处理历史遗留 section 与字段名
+# ============================================================
+
+
+# 历史 section.key → 新 section.key 映射；用于把弃用节里的字段搬到新归属
+_LEGACY_SECTION_KEY_MIGRATIONS: dict[tuple[str, str], tuple[str, str]] = {
+    # [Signin] 节并入 [SAR]
+    ('Signin', 'enabled'): ('SAR', 'signin_enabled'),
+    ('Signin', 'currency_name'): ('SAR', 'currency_name'),
+    ('Signin', 'daily_min'): ('SAR', 'daily_min'),
+    ('Signin', 'daily_max'): ('SAR', 'daily_max'),
+    ('Signin', 'streak_bonus_enabled'): ('SAR', 'streak_bonus_enabled'),
+    ('Signin', 'streak_bonus_days'): ('SAR', 'streak_bonus_days'),
+    ('Signin', 'streak_bonus_points'): ('SAR', 'streak_bonus_points'),
+    ('Signin', 'reset_after_miss'): ('SAR', 'reset_after_miss'),
+}
+
+
+def _apply_legacy_migrations(config: dict) -> tuple[bool, list[str]]:
+    """就地把已弃用 section / 字段搬到新归属。返回 ``(变动, 迁移日志)``。"""
+    changed = False
+    notes: list[str] = []
+    legacy_sections_seen: set[str] = set()
+
+    for (old_section, old_key), (new_section, new_key) in _LEGACY_SECTION_KEY_MIGRATIONS.items():
+        old_block = config.get(old_section)
+        if not isinstance(old_block, dict) or old_key not in old_block:
+            continue
+        value = old_block.pop(old_key)
+        new_block = config.setdefault(new_section, {})
+        if not isinstance(new_block, dict):
+            # 新 section 在 toml 里被写成了非表格类型，跳过避免毁坏数据
+            old_block[old_key] = value
+            continue
+        # 已经存在新键时优先保留新值，丢弃旧值（提示一下）
+        if new_key in new_block:
+            notes.append(
+                f"[{old_section}].{old_key} 已在 [{new_section}].{new_key} 存在，丢弃旧值"
+            )
+        else:
+            new_block[new_key] = value
+            notes.append(
+                f"[{old_section}].{old_key} → [{new_section}].{new_key}"
+            )
+        changed = True
+        legacy_sections_seen.add(old_section)
+
+    # 旧 section 搬空之后顺手清空残留键的 dict（让 prune 阶段把它整段删掉）
+    for section in legacy_sections_seen:
+        block = config.get(section)
+        if isinstance(block, dict) and not block:
+            del config[section]
+            changed = True
+
+    return changed, notes
+
+
+def _collect_known_section_keys() -> dict[str, set[str]]:
+    """返回 ``{section: 该 section 在代码里声明的合法键集合}``。"""
+    known: dict[str, set[str]] = {}
+    for cls in _config_classes:
+        section = getattr(cls, '_section', None)
+        if not section:
+            continue
+        known[section] = set(cls._get_default_values().keys())
+    return known
+
+
+def _prune_stale_keys(config: dict) -> tuple[bool, dict[str, list[str]]]:
+    """删除 toml 里已经不再被任何配置类声明的 section / 字段。
+
+    返回 ``(是否变更, {section: [被删字段...]})``，``__section_removed__`` 列出整段被删的 section。
+    Global 节比较特殊：它在 toml 里平铺在根，``_collect_known_section_keys`` 拿到的是该
+    类的字段集，我们用同一逻辑校验根级键。
+    """
+    known = _collect_known_section_keys()
+    global_keys = known.get('Global', set())
+    removed: dict[str, list[str]] = {}
+    changed = False
+    section_removed: list[str] = []
+
+    # 根级（[Global] 的字段平铺在 toml 根，没有专门的 section header）
+    for key in list(config.keys()):
+        value = config.get(key)
+        if isinstance(value, dict):
+            continue  # 是 section header，留给下面的逻辑
+        if key not in global_keys:
+            removed.setdefault('Global', []).append(key)
+            del config[key]
+            changed = True
+
+    # 各 section
+    for section, block in list(config.items()):
+        if not isinstance(block, dict):
+            continue
+        valid = known.get(section)
+        if valid is None:
+            # 整段都不再被代码声明：整段移除
+            del config[section]
+            section_removed.append(section)
+            changed = True
+            continue
+        for key in list(block.keys()):
+            if key not in valid:
+                removed.setdefault(section, []).append(key)
+                del block[key]
+                changed = True
+
+    if section_removed:
+        removed['__section_removed__'] = section_removed
+    return changed, removed
+
 
 # 启动时自动补全缺失的配置项
 _config_classes = [
     Config, EmbyConfig, TelegramConfig, RegisterConfig,
     DeviceLimitConfig, APIConfig, SecurityConfig,
     SchedulerConfig, NotificationConfig, BangumiSyncConfig,
-    SigninConfig,
 ]
+
+
+def _load_all_configs() -> None:
+    """把所有 BaseConfig 子类从 toml 重新加载一次（顺序敏感：先 Global 再 normalize）。"""
+    Config.update_from_toml('Global')
+    EmbyConfig.update_from_toml('Emby')
+    TelegramConfig.update_from_toml('Telegram')
+    RegisterConfig.update_from_toml('SAR')
+    DeviceLimitConfig.update_from_toml('DeviceLimit')
+    APIConfig.update_from_toml('API')
+    SecurityConfig.update_from_toml('Security')
+    SchedulerConfig.update_from_toml('Scheduler')
+    NotificationConfig.update_from_toml('Notification')
+    BangumiSyncConfig.update_from_toml('BangumiSync')
+    normalize_storage_settings()
 
 
 def fill_missing_config_items(
@@ -618,10 +751,97 @@ def fill_missing_config_items(
     }
 
 
-_fill_result = fill_missing_config_items(auto_backup=True)
-if _fill_result.get('filled_sections'):
-    logger.info(
-        "已补全 %s 个配置节，共 %s 项缺失配置",
-        _fill_result['filled_sections'],
-        _fill_result['filled_items'],
-    )
+def sweep_config_toml(
+    *,
+    config_classes: Optional[List[type]] = None,
+    auto_backup: bool = True,
+) -> dict:
+    """一次性把 config.toml 整理干净：迁移老 section、删无效条目、补缺失默认。
+
+    顺序：``读 toml → 迁移历史字段 → 删陌生 section/字段 → 用类默认补齐 → 备份 → 写回``。
+    只有真的变更时才会触碰文件 / 备份；返回结构方便日志或 API 复用。
+    """
+    classes = config_classes or _config_classes
+    primary_path = get_primary_config_path()
+
+    try:
+        config = toml.load(primary_path)
+    except FileNotFoundError:
+        config = {}
+    except toml.TomlDecodeError as err:
+        logger.error(f"配置文件格式错误，跳过整理 ({primary_path}): {err}")
+        return {
+            'migrated': [], 'removed': {}, 'filled': {},
+            'backup_path': None, 'error': str(err),
+        }
+
+    migrate_changed, migrate_notes = _apply_legacy_migrations(config)
+    prune_changed, removed = _prune_stale_keys(config)
+
+    # 补缺失：与 fill_missing_config_items 逻辑等价，但走同一份 config dict
+    missing_by_section: dict[str, list[str]] = {}
+    for conf_cls in classes:
+        section = getattr(conf_cls, '_section', None)
+        if not section:
+            continue
+        block = config.get(section)
+        if not isinstance(block, dict):
+            block = {}
+            config[section] = block
+        defaults = conf_cls._get_default_values()
+        added: list[str] = []
+        for key, default_value in defaults.items():
+            if key in block:
+                continue
+            if isinstance(default_value, Path):
+                default_value = conf_cls._serialize_config_value(default_value)
+            block[key] = default_value
+            added.append(key)
+        if added:
+            missing_by_section[section] = sorted(added)
+
+    fill_changed = bool(missing_by_section)
+    if not (migrate_changed or prune_changed or fill_changed):
+        return {
+            'migrated': [], 'removed': {}, 'filled': {}, 'backup_path': None,
+        }
+
+    backup_path: Optional[Path] = None
+    if auto_backup and primary_path.exists():
+        backup_path = backup_config_file(primary_path, reason='sweep')
+
+    try:
+        with open(primary_path, 'w', encoding='utf-8') as f:
+            toml.dump(config, f)
+    except Exception as err:
+        logger.error(f"写回整理后的配置失败: {err}")
+        return {
+            'migrated': migrate_notes,
+            'removed': removed,
+            'filled': missing_by_section,
+            'backup_path': str(backup_path) if backup_path else None,
+            'error': str(err),
+        }
+
+    for note in migrate_notes:
+        logger.info("配置迁移: %s", note)
+    for section, keys in removed.items():
+        if section == '__section_removed__':
+            for sec in keys:
+                logger.info("配置清理: 整段移除 [%s]", sec)
+        else:
+            logger.info("配置清理: [%s] 移除 %d 个无效字段: %s", section, len(keys), ', '.join(keys))
+    for section, keys in missing_by_section.items():
+        logger.info("配置补齐: [%s] 新增 %d 项: %s", section, len(keys), ', '.join(keys))
+
+    return {
+        'migrated': migrate_notes,
+        'removed': removed,
+        'filled': missing_by_section,
+        'backup_path': str(backup_path) if backup_path else None,
+    }
+
+
+# 模块加载时序：先把 toml 整理干净（迁移 + 清理 + 补齐），再让各 Config 类读它
+_sweep_result = sweep_config_toml(auto_backup=True)
+_load_all_configs()

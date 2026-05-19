@@ -18,6 +18,7 @@ import {
   AlertTriangle,
   UserPlus,
   CalendarClock,
+  Send,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -136,9 +137,18 @@ export default function AdminUsersPage() {
   const [bulkExpireDays, setBulkExpireDays] = useState<string>("30");
   const [bulkExpireIncludeAdmin, setBulkExpireIncludeAdmin] = useState(false);
   const [bulkExpireIncludeWhitelist, setBulkExpireIncludeWhitelist] = useState(false);
-  const [bulkExpireIncludePending, setBulkExpireIncludePending] = useState(false);
   const [bulkExpireConfirmText, setBulkExpireConfirmText] = useState("");
   const [bulkExpireLoading, setBulkExpireLoading] = useState(false);
+
+  // 一键踢出 TG 群里未绑账号的成员
+  type KickPreview = NonNullable<Awaited<ReturnType<typeof api.kickUnboundGroupMembers>>["data"]>;
+  type RosterStats = NonNullable<Awaited<ReturnType<typeof api.getTelegramRosterStats>>["data"]>;
+  const [kickOpen, setKickOpen] = useState(false);
+  const [kickLoading, setKickLoading] = useState(false);
+  const [kickPreview, setKickPreview] = useState<KickPreview | null>(null);
+  const [kickRoster, setKickRoster] = useState<RosterStats | null>(null);
+  const [kickConfirmText, setKickConfirmText] = useState("");
+  const [kickResult, setKickResult] = useState<KickPreview | null>(null);
 
   const usersCacheRef = useRef<
     Map<string, { users: UserInfo[]; total: number; pages: number }>
@@ -529,7 +539,7 @@ export default function AdminUsersPage() {
     if (Object.keys(filter).length > 0) payload.filter = filter;
     payload.include_admin = bulkExpireIncludeAdmin;
     payload.include_whitelist = bulkExpireIncludeWhitelist;
-    payload.include_pending_emby = bulkExpireIncludePending;
+    // 未绑定 Emby 的账号永远跳过：后端会强制忽略这个字段
 
     setBulkExpireLoading(true);
     try {
@@ -559,6 +569,56 @@ export default function AdminUsersPage() {
       toast({ title: "批量更新失败", description: err.message || "网络异常", variant: "destructive" });
     } finally {
       setBulkExpireLoading(false);
+    }
+  };
+
+  // ============== 一键踢出 TG 群里未绑账号的成员 ==============
+  const openKickDialog = async () => {
+    setKickOpen(true);
+    setKickPreview(null);
+    setKickResult(null);
+    setKickConfirmText("");
+    setKickRoster(null);
+    setKickLoading(true);
+    try {
+      const [statsRes, dryRes] = await Promise.all([
+        api.getTelegramRosterStats(),
+        api.kickUnboundGroupMembers({ dryRun: true }),
+      ]);
+      if (statsRes.success && statsRes.data) setKickRoster(statsRes.data);
+      if (dryRes.success && dryRes.data) setKickPreview(dryRes.data);
+      else if (!dryRes.success) {
+        toast({ title: "无法预览", description: dryRes.message, variant: "destructive" });
+      }
+    } catch (err: any) {
+      toast({ title: "预览失败", description: err.message || "网络异常", variant: "destructive" });
+    } finally {
+      setKickLoading(false);
+    }
+  };
+
+  const handleKickConfirm = async () => {
+    if (kickConfirmText.trim() !== "确认") {
+      toast({ title: "需要在文本框输入「确认」二字以继续", variant: "destructive" });
+      return;
+    }
+    setKickLoading(true);
+    try {
+      const res = await api.kickUnboundGroupMembers({ dryRun: false, maxPerRun: 200 });
+      if (res.success && res.data) {
+        setKickResult(res.data);
+        toast({
+          title: `已踢出 ${res.data.kicked} 人`,
+          description: `失败 ${res.data.failed}，已不在群 ${res.data.not_in_group}`,
+          variant: "success",
+        });
+      } else {
+        toast({ title: "踢出失败", description: res.message, variant: "destructive" });
+      }
+    } catch (err: any) {
+      toast({ title: "踢出失败", description: err.message || "网络异常", variant: "destructive" });
+    } finally {
+      setKickLoading(false);
     }
   };
 
@@ -619,19 +679,20 @@ export default function AdminUsersPage() {
   };
 
   /**
-   * 根据 expired_at / pending_emby 渲染到期时间单元格。
-   * - 未绑定 Emby（pending_emby 或 expired_at===0）→"未开通"
+   * 根据 emby_bound / expired_at / pending_emby 渲染到期时间单元格。
+   * - 未绑定 Emby（emby_bound===false / pending_emby / expired_at===0）→"未绑定"
    * - -1 / "-1" → "永久"
    * - 真实时间戳 → 用 formatDate；已过期红字
    */
   const renderExpireCell = (user: UserInfo) => {
     const exp = user.expired_at;
-    const isUnopened =
+    const isUnbound =
+      user.emby_bound === false ||
       Boolean(user.pending_emby) ||
       exp === 0 ||
       exp === "0";
-    if (isUnopened) {
-      return <span className="text-muted-foreground">未开通</span>;
+    if (isUnbound) {
+      return <span className="text-muted-foreground italic">未绑定</span>;
     }
     if (exp === -1 || exp === "-1" || exp == null) {
       return <span className="text-emerald-500">永久</span>;
@@ -727,7 +788,6 @@ export default function AdminUsersPage() {
               setBulkExpireDays("30");
               setBulkExpireIncludeAdmin(false);
               setBulkExpireIncludeWhitelist(false);
-              setBulkExpireIncludePending(false);
               setBulkExpireConfirmText("");
               setBulkExpireOpen(true);
             }}
@@ -746,6 +806,14 @@ export default function AdminUsersPage() {
           >
             <UserX className="mr-2 h-4 w-4" />
             清理无效用户
+          </Button>
+          <Button
+            variant="outline"
+            className="text-destructive hover:text-destructive"
+            onClick={openKickDialog}
+          >
+            <Send className="mr-2 h-4 w-4" />
+            踢出未绑 TG 成员
           </Button>
           <Badge variant="outline" className="text-lg px-4 py-2">
             共 {total} 用户
@@ -1653,6 +1721,108 @@ export default function AdminUsersPage() {
         </DialogContent>
       </Dialog>
 
+      {/* 一键踢出 TG 群里未绑账号的成员 */}
+      <Dialog open={kickOpen} onOpenChange={(v) => { if (!kickLoading) setKickOpen(v); }}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Send className="h-5 w-5" />
+              一键踢出未绑 Web 账号的 TG 成员
+            </DialogTitle>
+            <DialogDescription>
+              Bot API 没法主动枚举群成员，本功能依赖 Bot 长期被动累积的"花名册"
+              （chat_member 事件 + 群消息观察）。Bot 必须在群里是有"封禁成员"权限的管理员。
+              群管理员、Bot、配置中的 ADMIN_ID 与所有持有 Web 账号的人都会被自动排除；
+              踢出策略是 ban + 立即 unban（临时移除，仍可重新加入）。
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3 text-sm">
+            {kickRoster && (
+              <div className="rounded-md border bg-muted/30 p-3 space-y-1 text-xs">
+                <p className="font-medium">花名册概况（chat_id: {kickRoster.chat_id || "—"}）</p>
+                <p>活跃: {kickRoster.active ?? 0}　已离群: {kickRoster.inactive ?? 0}　Bot: {kickRoster.bots ?? 0}</p>
+                {kickRoster.first_seen_at && (
+                  <p className="text-muted-foreground">
+                    最早观察：{formatDate(kickRoster.first_seen_at)}
+                    　最新观察：{formatDate(kickRoster.last_seen_at || kickRoster.first_seen_at)}
+                  </p>
+                )}
+              </div>
+            )}
+
+            {kickLoading && !kickPreview ? (
+              <div className="flex items-center justify-center py-6">
+                <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                <span className="ml-2 text-xs text-muted-foreground">正在统计候选人...</span>
+              </div>
+            ) : kickPreview ? (
+              <div className="rounded-md border p-3 space-y-1 text-xs">
+                <p>候选 TG ID 总数: <strong>{kickPreview.candidates_total}</strong></p>
+                <p>其中已绑 Web 账号: <strong>{kickPreview.bound_users}</strong></p>
+                <p>花名册补充: <strong>{kickPreview.roster_added}</strong></p>
+                <p>群管理员排除: <strong>{kickPreview.admins_excluded}</strong></p>
+                <p>排除总数: <strong>{kickPreview.excluded_total}</strong></p>
+                <p className="text-destructive">
+                  实际待踢: <strong>{kickPreview.targets}</strong>
+                </p>
+                {kickPreview.preview_targets && kickPreview.preview_targets.length > 0 && (
+                  <div className="pt-1">
+                    <p className="text-muted-foreground">前 {kickPreview.preview_targets.length} 个目标 ID：</p>
+                    <p className="break-all text-[10px] text-muted-foreground">
+                      {kickPreview.preview_targets.join(", ")}
+                    </p>
+                  </div>
+                )}
+              </div>
+            ) : null}
+
+            {kickResult ? (
+              <div className="rounded-md border border-emerald-500/40 bg-emerald-500/5 p-3 space-y-1 text-xs">
+                <p className="font-medium text-emerald-600 dark:text-emerald-400">执行结果</p>
+                <p>已踢出: {kickResult.kicked}　跳过: {kickResult.skipped}</p>
+                <p>已不在群: {kickResult.not_in_group}　失败: {kickResult.failed}</p>
+              </div>
+            ) : (
+              <div className="space-y-1.5 rounded-md border border-destructive/40 bg-destructive/5 p-3">
+                <Label className="text-xs uppercase tracking-wider text-destructive">二次确认</Label>
+                <p className="text-xs text-muted-foreground">
+                  请在下方输入 <span className="font-mono text-foreground">确认</span> 二字以继续执行：
+                </p>
+                <Input
+                  value={kickConfirmText}
+                  onChange={(e) => setKickConfirmText(e.target.value)}
+                  placeholder="确认"
+                  className="h-9"
+                  disabled={kickLoading}
+                />
+              </div>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setKickOpen(false)} disabled={kickLoading}>
+              关闭
+            </Button>
+            {!kickResult && (
+              <Button
+                variant="destructive"
+                onClick={handleKickConfirm}
+                disabled={
+                  kickLoading ||
+                  kickConfirmText.trim() !== "确认" ||
+                  !kickPreview ||
+                  (kickPreview && kickPreview.targets === 0)
+                }
+              >
+                {kickLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                确认踢出 {kickPreview ? kickPreview.targets : 0} 人
+              </Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* 一键批量到期调控 */}
       <Dialog open={bulkExpireOpen} onOpenChange={setBulkExpireOpen}>
         <DialogContent className="max-w-lg">
@@ -1741,15 +1911,9 @@ export default function AdminUsersPage() {
                   />
                   <span>包含白名单用户（一旦取消勾选，白名单的"永久"标签将被覆盖）</span>
                 </label>
-                <label className="flex items-start gap-2 text-xs cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={bulkExpireIncludePending}
-                    onChange={(e) => setBulkExpireIncludePending(e.target.checked)}
-                    className="mt-0.5 h-4 w-4 rounded"
-                  />
-                  <span>包含未开通 Emby 的账号（强烈不推荐：会把"未开通" sentinel 改为真实到期时间）</span>
-                </label>
+                <p className="rounded-md border border-muted-foreground/20 bg-muted/40 px-3 py-2 text-[11px] text-muted-foreground">
+                  ⚠ 未绑定 Emby 的账号一律强制跳过，「未开通」sentinel（EXPIRED_AT=0）由系统保护，无法通过批量操作覆盖。
+                </p>
               </div>
             </div>
 

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Optional, Tuple
 
-from src.config import SigninConfig
+from src.config import RegisterConfig
 from src.db.signin import (
     SigninOperate,
     UserPointsModel,
@@ -50,10 +50,10 @@ class SigninSummary:
 
 def _bonus_table() -> list[tuple[int, int]]:
     """返回 [(streak_day, bonus_points), ...]，按天数升序；总开关关闭时返回空表。"""
-    if not bool(SigninConfig.STREAK_BONUS_ENABLED):
+    if not bool(RegisterConfig.STREAK_BONUS_ENABLED):
         return []
-    days = list(SigninConfig.STREAK_BONUS_DAYS or [])
-    points = list(SigninConfig.STREAK_BONUS_POINTS or [])
+    days = list(RegisterConfig.STREAK_BONUS_DAYS or [])
+    points = list(RegisterConfig.STREAK_BONUS_POINTS or [])
     table: list[tuple[int, int]] = []
     for i, d in enumerate(days):
         try:
@@ -81,7 +81,7 @@ def _compute_streak(last_signin_date: Optional[str], previous_streak: int, today
     if delta == 1:
         return max(int(previous_streak or 0) + 1, 1)
     # 同日 (delta=0) 不应到这一步——会被 already-signed 拦截
-    if SigninConfig.RESET_AFTER_MISS:
+    if RegisterConfig.RESET_AFTER_MISS:
         return 1
     return max(int(previous_streak or 0) + 1, 1)
 
@@ -95,11 +95,11 @@ class SigninService:
 
     @staticmethod
     def is_enabled() -> bool:
-        return bool(SigninConfig.ENABLED)
+        return bool(RegisterConfig.SIGNIN_ENABLED)
 
     @staticmethod
     def currency_name() -> str:
-        return SigninConfig.CURRENCY_NAME or '积分'
+        return RegisterConfig.CURRENCY_NAME or '积分'
 
     @staticmethod
     def public_config() -> dict:
@@ -110,11 +110,11 @@ class SigninService:
         return {
             'enabled': SigninService.is_enabled(),
             'currency_name': SigninService.currency_name(),
-            'daily_min': int(SigninConfig.DAILY_MIN or 0),
-            'daily_max': int(SigninConfig.DAILY_MAX or 0),
-            'streak_bonus_enabled': bool(SigninConfig.STREAK_BONUS_ENABLED),
+            'daily_min': int(RegisterConfig.DAILY_MIN or 0),
+            'daily_max': int(RegisterConfig.DAILY_MAX or 0),
+            'streak_bonus_enabled': bool(RegisterConfig.STREAK_BONUS_ENABLED),
             'bonus_table': table,
-            'reset_after_miss': bool(SigninConfig.RESET_AFTER_MISS),
+            'reset_after_miss': bool(RegisterConfig.RESET_AFTER_MISS),
         }
 
     @staticmethod
@@ -143,8 +143,8 @@ class SigninService:
         last_date = existing.LAST_SIGNIN_DATE if existing else None
         new_streak = _compute_streak(last_date, previous_streak, today)
 
-        daily_min = max(0, int(SigninConfig.DAILY_MIN or 0))
-        daily_max = max(daily_min, int(SigninConfig.DAILY_MAX or daily_min))
+        daily_min = max(0, int(RegisterConfig.DAILY_MIN or 0))
+        daily_max = max(daily_min, int(RegisterConfig.DAILY_MAX or daily_min))
         daily_points = random.randint(daily_min, daily_max) if daily_max > 0 else 0
 
         bonus_points = 0

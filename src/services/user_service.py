@@ -223,6 +223,20 @@ class UserService:
         return await TelegramRebindRequestOperate.get_request_by_uid(uid)
 
     @staticmethod
+    def _normalize_text_note(note: Optional[str], *, max_length: int = 300) -> Optional[str]:
+        """清理备注字段，防止超长输入写库。"""
+        if note is None:
+            return None
+        if not isinstance(note, str):
+            note = str(note)
+        note = note.strip()
+        if not note:
+            return None
+        if len(note) > max_length:
+            return note[:max_length]
+        return note
+
+    @staticmethod
     async def create_telegram_rebind_request(user: UserModel, reason: Optional[str] = None) -> Tuple[bool, str, Optional[object]]:
         if not user.TELEGRAM_ID:
             return False, "当前账号尚未绑定 Telegram"
@@ -231,7 +245,8 @@ class UserService:
         if existing and existing.STATUS == 'pending':
             return False, "您已有待处理的换绑请求，请等待管理员处理"
 
-        request = await TelegramRebindRequestOperate.create_request(user.UID, user.TELEGRAM_ID, reason)
+        clean_reason = UserService._normalize_text_note(reason, max_length=500)
+        request = await TelegramRebindRequestOperate.create_request(user.UID, user.TELEGRAM_ID, clean_reason)
         return True, "换绑请求已提交，管理员审核后您可以重新绑定 Telegram", request
 
     @staticmethod
@@ -253,11 +268,12 @@ class UserService:
         if user.TELEGRAM_ID:
             await UserOperate.unbind_telegram_user(user)
 
+        clean_note = UserService._normalize_text_note(admin_note, max_length=500)
         success = await TelegramRebindRequestOperate.update_request_status(
             request_id,
             'approved',
             reviewer_uid=reviewer_uid,
-            admin_note=admin_note,
+            admin_note=clean_note,
         )
         if not success:
             return False, "更新请求状态失败"
@@ -272,11 +288,12 @@ class UserService:
         if request.STATUS != 'pending':
             return False, "该请求已处理"
 
+        clean_note = UserService._normalize_text_note(admin_note, max_length=500)
         success = await TelegramRebindRequestOperate.update_request_status(
             request_id,
             'rejected',
             reviewer_uid=reviewer_uid,
-            admin_note=admin_note,
+            admin_note=clean_note,
         )
         if not success:
             return False, "更新请求状态失败"
@@ -1308,12 +1325,14 @@ class UserService:
             embay_username = user.USERNAME
 
         is_pending_emby = bool(getattr(user, 'PENDING_EMBY', False)) and not user.EMBYID
-        # 待开通 Emby 时，覆盖默认的 expire_status 文案，避免显示"已过期"/"剩余 x"误导
-        if is_pending_emby:
-            expire_status = "未开通 Emby"
+        # 未绑定 Emby（无 EMBYID 或处于 pending）时，覆盖默认的 expire_status 文案，
+        # 避免展示"已过期"/"剩余 x"误导，同时让前端可以靠这串直接判断渲染。
+        if is_pending_emby or not user.EMBYID:
+            expire_status = "未绑定 Emby"
         else:
             expire_status = format_expire_time(user.EXPIRED_AT)
 
+        emby_bound = bool(user.EMBYID) and not is_pending_emby
         info = {
             "uid": user.UID,
             "username": user.USERNAME,
@@ -1323,13 +1342,15 @@ class UserService:
             "role_name": role_name,  # 添加角色名称
             "active": user.ACTIVE_STATUS,
             "expire_status": expire_status,
-            "expired_at": user.EXPIRED_AT,
+            # 未绑定 Emby 时不下发 EXPIRED_AT 数值，避免 sentinel(0) 被 UI 误解
+            "expired_at": user.EXPIRED_AT if emby_bound else None,
             "bgm_mode": user.BGM_MODE,
             "avatar": user.AVATAR or None,
             "register_time": user.REGISTER_TIME,
             "created_at": user.CREATE_AT or user.REGISTER_TIME,  # 前端兼容字段
             "emby_id": user.EMBYID,  # 添加 Emby ID
             "emby_username": embay_username,
+            "emby_bound": emby_bound,
             "pending_emby": is_pending_emby,
             "pending_emby_days": getattr(user, 'PENDING_EMBY_DAYS', None),
         }

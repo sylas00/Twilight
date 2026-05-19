@@ -801,6 +801,23 @@ class UserOperate:
             return list(result.scalars().all())
 
     @staticmethod
+    async def get_inactive_telegram_bound_users() -> list[UserModel]:
+        """获取所有「ACTIVE_STATUS=False 且绑定了 Telegram」的非管理员/非白名单用户。
+
+        用于群组巡检时识别“已禁用但已重新入群”的候选账号，供管理员人工复核是否恢复。
+        """
+        async with UsersSessionFactory() as session:
+            result = await session.execute(
+                select(UserModel).where(
+                    UserModel.ACTIVE_STATUS == False,
+                    UserModel.TELEGRAM_ID.isnot(None),
+                    UserModel.ROLE != Role.ADMIN.value,
+                    UserModel.ROLE != Role.WHITE_LIST.value,
+                )
+            )
+            return list(result.scalars().all())
+
+    @staticmethod
     async def batch_disable_users(uids: list[int]) -> int:
         """批量禁用用户"""
         if not uids:

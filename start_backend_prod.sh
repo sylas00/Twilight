@@ -20,6 +20,9 @@ WORKERS="${TWILIGHT_UVICORN_WORKERS:-1}"
 WITH_BOT="${TWILIGHT_WITH_BOT:-1}"
 FORCE_RESTART_BOT="${TWILIGHT_FORCE_RESTART_BOT:-0}"
 BOT_LOCK_FILE="${TWILIGHT_BOT_LOCK_FILE:-$SCRIPT_DIR/db/telegram_bot.lock}"
+WITH_SCHEDULER="${TWILIGHT_WITH_SCHEDULER:-1}"
+FORCE_RESTART_SCHEDULER="${TWILIGHT_FORCE_RESTART_SCHEDULER:-0}"
+SCHEDULER_LOCK_FILE="${TWILIGHT_SCHEDULER_LOCK_FILE:-$SCRIPT_DIR/db/scheduler.lock}"
 
 echo "=========================================="
 echo "   Twilight Backend (Production)"
@@ -33,9 +36,17 @@ if [[ "$WITH_BOT" == "1" ]]; then
 else
   echo "Bot: disabled (set TWILIGHT_WITH_BOT=1 to enable)"
 fi
+if [[ "$WITH_SCHEDULER" == "1" ]]; then
+  echo "Scheduler: enabled (separate process)"
+  echo "Scheduler lock: $SCHEDULER_LOCK_FILE"
+else
+  echo "Scheduler: disabled (set TWILIGHT_WITH_SCHEDULER=1 to enable)"
+fi
+
+BOT_STARTED=0
+SCHEDULER_STARTED=0
 
 if [[ "$WITH_BOT" == "1" ]]; then
-  BOT_STARTED=0
   EXISTING_BOT_PID=""
 
   if [[ -f "$BOT_LOCK_FILE" ]]; then
@@ -60,16 +71,44 @@ if [[ "$WITH_BOT" == "1" ]]; then
     BOT_STARTED=1
     echo "Started Bot PID: $BOT_PID"
   fi
-
-  cleanup() {
-    if [[ "${BOT_STARTED:-0}" == "1" && -n "${BOT_PID:-}" ]]; then
-      kill "$BOT_PID" 2>/dev/null || true
-    fi
-  }
-  trap cleanup EXIT INT TERM
-
-  "$PYTHON" -m uvicorn asgi:app --host "$HOST" --port "$PORT" --workers "$WORKERS" "$@"
-  exit $?
 fi
 
-exec "$PYTHON" -m uvicorn asgi:app --host "$HOST" --port "$PORT" --workers "$WORKERS" "$@"
+if [[ "$WITH_SCHEDULER" == "1" ]]; then
+  EXISTING_SCHEDULER_PID=""
+
+  if [[ -f "$SCHEDULER_LOCK_FILE" ]]; then
+    EXISTING_SCHEDULER_PID="$(tr -dc '0-9' < "$SCHEDULER_LOCK_FILE" || true)"
+    if [[ -n "$EXISTING_SCHEDULER_PID" ]] && kill -0 "$EXISTING_SCHEDULER_PID" 2>/dev/null; then
+      if [[ "$FORCE_RESTART_SCHEDULER" == "1" ]]; then
+        echo "Found running Scheduler PID: $EXISTING_SCHEDULER_PID, force restarting..."
+        kill "$EXISTING_SCHEDULER_PID" 2>/dev/null || true
+        sleep 1
+      else
+        echo "Found running Scheduler PID: $EXISTING_SCHEDULER_PID, skip starting duplicate instance"
+      fi
+    else
+      echo "Found stale Scheduler lock, cleaning: $SCHEDULER_LOCK_FILE"
+      rm -f "$SCHEDULER_LOCK_FILE" || true
+    fi
+  fi
+
+  if [[ "$FORCE_RESTART_SCHEDULER" == "1" || -z "$EXISTING_SCHEDULER_PID" || ! -f "$SCHEDULER_LOCK_FILE" ]]; then
+    "$PYTHON" main.py scheduler &
+    SCHEDULER_PID=$!
+    SCHEDULER_STARTED=1
+    echo "Started Scheduler PID: $SCHEDULER_PID"
+  fi
+fi
+
+cleanup() {
+  if [[ "${BOT_STARTED:-0}" == "1" && -n "${BOT_PID:-}" ]]; then
+    kill "$BOT_PID" 2>/dev/null || true
+  fi
+  if [[ "${SCHEDULER_STARTED:-0}" == "1" && -n "${SCHEDULER_PID:-}" ]]; then
+    kill "$SCHEDULER_PID" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT INT TERM
+
+"$PYTHON" -m uvicorn asgi:app --host "$HOST" --port "$PORT" --workers "$WORKERS" "$@"
+exit $?

@@ -99,6 +99,8 @@ async def list_users():
             except Exception:
                 live_fetch_used += 1  # 失败也算一次，免得一直死磕同一个
 
+        # 未绑定 Emby 的账号：EXPIRED_AT 仅为 sentinel（0=未开通），UI 应展示"未绑定"
+        emby_bound = bool(user.EMBYID) and not bool(getattr(user, 'PENDING_EMBY', False))
         user_list.append({
             'uid': user.UID,
             'telegram_id': user.TELEGRAM_ID,
@@ -109,7 +111,9 @@ async def list_users():
             'role_name': Role(user.ROLE).name if user.ROLE in [r.value for r in Role] else 'UNKNOWN',
             'active': user.ACTIVE_STATUS,
             'emby_id': user.EMBYID,
-            'expired_at': user.EXPIRED_AT,
+            'emby_bound': emby_bound,
+            'pending_emby': bool(getattr(user, 'PENDING_EMBY', False)),
+            'expired_at': user.EXPIRED_AT if emby_bound else None,
             'register_time': user.REGISTER_TIME,
             'created_at': user.CREATE_AT or user.REGISTER_TIME,
             'last_login_time': user.LAST_LOGIN_TIME,
@@ -1660,9 +1664,13 @@ async def admin_bulk_set_expire():
             },
             "include_admin": false,           // 默认 false，谨防误伤
             "include_whitelist": false,
-            "include_pending_emby": false,    // 默认 false：跳过未绑定 Emby 的账号
             "confirm": "BULK_EXPIRE_OK"       // 必填，强制确认串
         }
+
+    Note:
+        未绑定 Emby（EMBYID 为空 / PENDING_EMBY=true）的账号一律强制跳过，
+        ``EXPIRED_AT=0`` 是"未开通 Emby"的 sentinel，业务上不可被批量覆盖。
+        早期接口存在 ``include_pending_emby`` 开关，已下线。
 
     Response data:
         {
@@ -1726,7 +1734,9 @@ async def admin_bulk_set_expire():
 
     include_admin = bool(data.get('include_admin', False))
     include_whitelist = bool(data.get('include_whitelist', False))
-    include_pending_emby = bool(data.get('include_pending_emby', False))
+    # 未绑定 Emby 的账号一律强制跳过（EXPIRED_AT=0 是 sentinel，不允许批量覆盖）。
+    # 兼容旧前端：忽略请求里残留的 include_pending_emby。
+    include_pending_emby = False
 
     filt = data.get('filter') or {}
     if not isinstance(filt, dict):
@@ -2388,6 +2398,11 @@ async def bind_emby_to_user(uid: int):
     target_user.EMBYID = emby_user.id
     target_user.PENDING_EMBY = False
     target_user.PENDING_EMBY_DAYS = None
+    # 管理员直接绑定（非系统注册流程）：到期时间默认为永久。
+    # 仅当账号尚未拥有真实到期时间（None / 0 sentinel）时覆盖，
+    # 避免重新绑定时把之前手工设置的天数误改成永久。
+    if target_user.EXPIRED_AT in (None, 0):
+        target_user.EXPIRED_AT = -1
     # 把 emby 用户名记入 OTHER，便于后续展示
     other_data = {}
     if target_user.OTHER:
@@ -2417,4 +2432,210 @@ async def bind_emby_to_user(uid: int):
         'force_taken': bool(occupant and force),
         'previous_uid': occupant.UID if occupant else None,
     })
+
+
+# ==================== Telegram 群组花名册 / 一键清理未绑账号 ====================
+
+
+@admin_bp.route('/telegram/roster/stats', methods=['GET'])
+@require_auth
+@require_admin
+async def admin_telegram_roster_stats():
+    """返回 Bot 被动观察到的群组花名册概况（配置中的第一个群）。
+
+    Response data:
+        {
+            "available": true,
+            "chat_id": "@xxx",
+            "active": 123,        // 状态仍视为「在群」的人数
+            "inactive": 4,        // 已退群/被踢的历史记录
+            "bots": 1,            // 花名册里的 Bot 数
+            "first_seen_at": ..., // 该群最早一次被观察到的时间戳
+            "last_seen_at": ...
+        }
+    """
+    from src.config import TelegramConfig
+    from src.services.telegram_membership import TelegramMembershipService
+    from src.db.telegram_roster import TelegramRosterOperate
+
+    if not TelegramMembershipService.is_bot_available():
+        return api_response(True, "Bot 未就绪", {
+            'available': False,
+            'reason': 'bot_unavailable',
+        })
+
+    group_ids = TelegramMembershipService.required_group_ids()
+    if not group_ids:
+        return api_response(True, "未配置群组", {
+            'available': False,
+            'reason': 'no_group_configured',
+        })
+
+    chat_id = group_ids[0]
+    stats = await TelegramRosterOperate.stats(chat_id)
+    stats['available'] = True
+    stats['chat_id'] = str(chat_id)
+    return api_response(True, "获取成功", stats)
+
+
+@admin_bp.route('/telegram/kick-unbound', methods=['POST'])
+@require_auth
+@require_admin
+async def admin_telegram_kick_unbound():
+    """一键踢出群里未绑定 Web 账号的成员（仅配置的第一个群）。
+
+    Request body (可选):
+        {
+            "dry_run": true,    // true 时只统计目标 ID 不真踢；默认 false
+            "max_per_run": 200, // 单次最多处理多少个；默认 200，上限 500
+            "confirm": "KICK_UNBOUND_OK"  // dry_run=false 时必填
+        }
+
+    Response data:
+        - 同调度任务 ``kick_unknown_group_members`` 的 summary
+        - dry_run=true 时 ``scanned/kicked/skipped`` 全为 0，仅返回 ``targets`` 计数
+    """
+    from src.core.utils import rate_limit_check
+    from src.config import TelegramConfig
+    from src.services.telegram_membership import TelegramMembershipService
+    from src.db.user import (
+        UserModel, Role, TelegramBindCodeModel, UsersSessionFactory,
+    )
+    from src.db.telegram_roster import TelegramRosterOperate
+    from sqlalchemy import select as _select
+
+    data = request.get_json(silent=True) or {}
+    dry_run = bool(data.get('dry_run', False))
+    try:
+        max_per_run = int(data.get('max_per_run', 200))
+    except (TypeError, ValueError):
+        max_per_run = 200
+    max_per_run = max(1, min(max_per_run, 500))
+
+    if not dry_run:
+        confirm = (data.get('confirm') or '').strip()
+        if confirm != 'KICK_UNBOUND_OK':
+            return api_response(
+                False,
+                "需要提供 confirm=\"KICK_UNBOUND_OK\" 以确认实际踢人",
+                code=400,
+            )
+
+    # 速率限制：1 分钟内最多 5 次，防止误连点
+    allowed, retry_after = rate_limit_check(
+        'admin_kick_unbound', str(g.current_user.UID),
+        max_requests=5, window_seconds=60,
+    )
+    if not allowed:
+        return api_response(
+            False, f"操作过于频繁，请 {retry_after} 秒后再试", code=429,
+        )
+
+    if not TelegramMembershipService.is_bot_available():
+        return api_response(False, "Bot 未就绪或 Telegram 未启用", code=400)
+
+    group_ids = TelegramMembershipService.required_group_ids()
+    if not group_ids:
+        return api_response(False, "未配置 TelegramConfig.GROUP_ID", code=400)
+    chat_id = group_ids[0]
+
+    # 候选集合 & 排除集合：与调度任务保持一致
+    candidate_ids: set[int] = set()
+    excluded_ids: set[int] = set()
+    bound_ids: set[int] = set()
+    async with UsersSessionFactory() as session:
+        user_rows = (await session.execute(
+            _select(UserModel.TELEGRAM_ID, UserModel.ACTIVE_STATUS, UserModel.ROLE)
+            .where(UserModel.TELEGRAM_ID.isnot(None))
+        )).all()
+        for tg_id, active, role in user_rows:
+            if tg_id is None:
+                continue
+            try:
+                tg_int = int(tg_id)
+            except (TypeError, ValueError):
+                continue
+            candidate_ids.add(tg_int)
+            bound_ids.add(tg_int)
+            if role in (Role.ADMIN.value, Role.WHITE_LIST.value):
+                excluded_ids.add(tg_int)
+            elif bool(active) and role != Role.UNRECOGNIZED.value:
+                excluded_ids.add(tg_int)
+
+        bind_rows = (await session.execute(
+            _select(TelegramBindCodeModel.CONFIRMED_TELEGRAM_ID)
+            .where(TelegramBindCodeModel.CONFIRMED_TELEGRAM_ID.isnot(None))
+        )).all()
+        for (tg_id,) in bind_rows:
+            if tg_id is None:
+                continue
+            try:
+                candidate_ids.add(int(tg_id))
+            except (TypeError, ValueError):
+                continue
+
+    # 花名册补充
+    roster_rows = await TelegramRosterOperate.list_active_telegram_ids(chat_id)
+    roster_added = 0
+    for tg_int, is_bot in roster_rows:
+        if is_bot:
+            excluded_ids.add(tg_int)
+            continue
+        if tg_int not in candidate_ids:
+            roster_added += 1
+        candidate_ids.add(tg_int)
+
+    raw_admin = TelegramConfig.ADMIN_ID
+    admin_seq = raw_admin if isinstance(raw_admin, (list, tuple)) else [raw_admin]
+    for raw in admin_seq:
+        try:
+            excluded_ids.add(int(raw))
+        except (TypeError, ValueError):
+            continue
+
+    group_admin_ids = await TelegramMembershipService.fetch_group_admin_ids(chat_id)
+    excluded_ids.update(group_admin_ids)
+
+    targets = [tid for tid in candidate_ids if tid not in excluded_ids]
+    summary = {
+        'chat_id': str(chat_id),
+        'candidates_total': len(candidate_ids),
+        'bound_users': len(bound_ids),
+        'roster_size': len(roster_rows),
+        'roster_added': roster_added,
+        'admins_excluded': len(group_admin_ids),
+        'excluded_total': len(excluded_ids),
+        'targets': len(targets),
+        'dry_run': dry_run,
+        'max_per_run': max_per_run,
+        'kicked': 0,
+        'skipped': 0,
+        'failed': 0,
+        'not_in_group': 0,
+        'scanned': 0,
+    }
+
+    if dry_run:
+        # 只返回前 50 个 target ID 给前端展示，避免过大
+        summary['preview_targets'] = sorted(targets)[:50]
+        return api_response(True, "干跑结束（未实际踢人）", summary)
+
+    if not targets:
+        return api_response(True, "没有需要清理的成员", summary)
+
+    result = await TelegramMembershipService.kick_unknown_members(
+        chat_id,
+        list(targets),
+        excluded_ids=set(excluded_ids),
+        max_per_run=max_per_run,
+    )
+    for key in ('scanned', 'kicked', 'skipped', 'failed', 'not_in_group'):
+        summary[key] = int(result.get(key, 0) or 0)
+
+    logger.warning(
+        "管理员 %s 触发一键踢未绑成员: chat=%s targets=%d kicked=%d failed=%d",
+        g.current_user.USERNAME, chat_id, len(targets),
+        summary['kicked'], summary['failed'],
+    )
+    return api_response(True, f"已踢出 {summary['kicked']} 个未绑账号", summary)
 

@@ -761,7 +761,7 @@ class ApiClient {
     };
     include_admin?: boolean;
     include_whitelist?: boolean;
-    include_pending_emby?: boolean;
+    // 未绑定 Emby 的账号一律由后端强制跳过，无法通过此参数覆盖
   }) {
     return this.request<{
       matched: number;
@@ -774,6 +774,50 @@ class ApiClient {
     }>("/admin/users/bulk-expire", {
       method: "POST",
       body: JSON.stringify({ ...payload, confirm: "BULK_EXPIRE_OK" }),
+    });
+  }
+
+  /** 拉取 Bot 被动观察到的 TG 群花名册概况（用于踢人前的弹窗 / 状态展示）。 */
+  async getTelegramRosterStats() {
+    return this.request<{
+      available: boolean;
+      reason?: string;
+      chat_id?: string;
+      active?: number;
+      inactive?: number;
+      bots?: number;
+      first_seen_at?: number | null;
+      last_seen_at?: number | null;
+    }>("/admin/telegram/roster/stats");
+  }
+
+  /** 一键踢出群里未绑定 Web 账号的成员。``dryRun=true`` 时只统计目标，不实际踢。 */
+  async kickUnboundGroupMembers(opts: { dryRun?: boolean; maxPerRun?: number } = {}) {
+    const body: Record<string, unknown> = {
+      dry_run: !!opts.dryRun,
+      max_per_run: opts.maxPerRun ?? 200,
+    };
+    if (!opts.dryRun) body.confirm = "KICK_UNBOUND_OK";
+    return this.request<{
+      chat_id: string;
+      candidates_total: number;
+      bound_users: number;
+      roster_size: number;
+      roster_added: number;
+      admins_excluded: number;
+      excluded_total: number;
+      targets: number;
+      dry_run: boolean;
+      max_per_run: number;
+      kicked: number;
+      skipped: number;
+      failed: number;
+      not_in_group: number;
+      scanned: number;
+      preview_targets?: number[];
+    }>("/admin/telegram/kick-unbound", {
+      method: "POST",
+      body: JSON.stringify(body),
     });
   }
 
@@ -1253,6 +1297,7 @@ export interface UserInfo {
   expired_at?: string | number;  // 可能是时间戳或字符串，-1 表示永久
   emby_id?: string;
   emby_username?: string;  // 绑定的 Emby 用户名（与系统用户名独立）
+  emby_bound?: boolean;  // 后端判定的「真正绑定了 Emby」：EMBYID 非空且非 pending
   avatar?: string;
   bgm_mode: boolean;
   created_at?: string | number;
@@ -1588,10 +1633,19 @@ export interface ConfigSection {
   title: string;
   description: string;
   fields: ConfigField[];
+  /** 类别 key，与 ConfigSchema.categories 中的 key 对应。后端可缺省。 */
+  category?: string;
+}
+
+export interface ConfigCategory {
+  key: string;
+  title: string;
 }
 
 export interface ConfigSchema {
   sections: ConfigSection[];
+  /** 类别声明（顺序即渲染顺序）；后端可缺省，前端会回落为单一类别 */
+  categories?: ConfigCategory[];
 }
 
 

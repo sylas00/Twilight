@@ -21,10 +21,25 @@ from src.bot.handlers.common import (
     safe_delete_message, GROUP_MSG_DELETE_DELAY,
 )
 from src.db.user import UserOperate, Role
-from src.config import Config
+from src.config import Config, TelegramConfig
 
 logger = logging.getLogger(__name__)
 BIND_STATE_KEY = "bind_wait_code"
+
+
+def _render_custom_text(template: str) -> str:
+    """把 ``{server_name}`` 之类的占位符替换成真实值。
+
+    单一占位符当前只有 ``server_name``；以后要加占位符在这里扩展。
+    模板为空时返回空串，调用方据此决定是否插入对应段落。
+    """
+    if not template:
+        return ''
+    try:
+        return template.format(server_name=Config.SERVER_NAME or 'Twilight')
+    except (KeyError, IndexError, ValueError):
+        # 模板里出现未支持的占位符时不要崩，直接原样返回
+        return template
 
 
 def register(bot):
@@ -32,7 +47,13 @@ def register(bot):
     app = bot.application
 
     def _build_help_text(panel_on: bool, admin_mode: bool) -> str:
-        lines = [
+        custom_header = _render_custom_text(TelegramConfig.BOT_HELP_HEADER or '')
+        custom_footer = _render_custom_text(TelegramConfig.BOT_HELP_FOOTER or '')
+
+        lines: list[str] = []
+        if custom_header:
+            lines += [custom_header, ""]
+        lines += [
             "📚 **命令导航**\n",
             "**👤 常用功能**",
             "• /start - 打开主菜单",
@@ -65,6 +86,9 @@ def register(bot):
             "🧭 输入型操作可随时使用 /cancel 取消",
             "⚠️ 密码重置、注册等敏感操作请在网页端进行",
         ]
+
+        if custom_footer:
+            lines += ["", custom_footer]
         return "\n".join(lines)
 
     # ======================== /start 主菜单 ========================
@@ -99,11 +123,16 @@ def register(bot):
         panel_on = is_panel_enabled()
         admin_mode = is_admin(user_id)
 
+        custom_title = _render_custom_text(TelegramConfig.BOT_START_TITLE or '')
+        custom_intro = _render_custom_text(TelegramConfig.BOT_START_INTRO or '')
+        title_line = custom_title or f"🌙 **{server_name} 控制中心**"
+        intro_line = custom_intro or "欢迎使用 Emby 管理机器人"
+
         if panel_on:
             text = (
-                f"🌙 **{server_name} 控制中心**\n\n"
+                f"{title_line}\n\n"
                 f"你好，**{escape_markdown(user_name)}**！\n"
-                f"欢迎使用 Emby 管理机器人\n\n"
+                f"{intro_line}\n\n"
                 f"🧭 推荐先点下方菜单按钮操作"
             )
             if admin_mode:
@@ -116,9 +145,9 @@ def register(bot):
             )
         else:
             text = (
-                f"🌙 **{server_name} 控制中心**\n\n"
+                f"{title_line}\n\n"
                 f"你好，**{escape_markdown(user_name)}**！\n"
-                f"欢迎使用 Emby 管理机器人\n\n"
+                f"{intro_line}\n\n"
                 "可用命令：\n"
                 "• /start \\- 打开主菜单\n"
                 "• /help \\- 帮助信息\n"
@@ -139,8 +168,11 @@ def register(bot):
         user_name = update.effective_user.first_name if update.effective_user else "用户"
         server_name = Config.SERVER_NAME or "Twilight"
 
+        custom_title = _render_custom_text(TelegramConfig.BOT_START_TITLE or '')
+        title_line = custom_title or f"🌙 **{server_name}**"
+
         text = (
-            f"🌙 **{server_name}**\n\n"
+            f"{title_line}\n\n"
             f"你好，**{escape_markdown(user_name)}**！\n"
             f"请选择功能："
         )

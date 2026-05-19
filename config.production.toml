@@ -86,6 +86,14 @@ group_check_interval_minutes = 30
 proxy_url = ""
 # Bot 绑定确认回调（可填完整接口或后端基址；留空走默认）
 bind_confirm_api_url = ""
+# —— Bot 文案自定义（留空使用内置默认）
+#   • 所有文本按 Markdown 渲染，自行转义 _ * [ 等特殊字符
+#   • 可用占位符: {server_name}
+bot_start_title = ""    # /start 第一行标题
+bot_start_intro = ""    # /start 简介段
+bot_help_header = ""    # /help 命令列表前段（适合放公告 / 群规）
+bot_help_footer = ""    # /help 末尾（适合放群组邀请链接 / 客服）
+bot_about = ""          # 关于 Bot / 服务说明（预留 /about 用）
 
 # ───────── 注册 / 用户策略 ─────────
 [SAR]
@@ -105,9 +113,17 @@ allow_no_emby_view = true
 # —— Emby 自由注册（队列）
 emby_direct_register_enabled = false
 emby_direct_register_days = 30
+# 可选套餐天数，-1 = 永久；前端会按顺序展示
+emby_direct_register_day_options = [3, 7, 30, -1]
+# 是否允许用户自己输入开通天数（在下面 min/max 范围内）
+emby_direct_register_allow_custom_days = false
+emby_direct_register_custom_days_min = 1
+emby_direct_register_custom_days_max = 365
 emby_direct_register_workers = 8
 emby_direct_register_max_queue = 1000
 emby_direct_register_status_ttl = 1800
+# —— Emby 用户总上限（所有绑定了 Emby 的本地账号 + 标记 PENDING 的待补建数总和），-1 = 不限制
+emby_user_limit = -1
 
 # —— 管理员 / 白名单（优先 UID，逗号分隔）
 # ⚠ 请改成你的真实 UID；空字符串表示"无管理员"
@@ -126,6 +142,18 @@ invite_code_default_days = 30
 # —— 长期无 Emby 的悬空用户自动清理
 auto_cleanup_no_emby = false
 auto_cleanup_no_emby_days = 7
+
+# —— 签到 / 积分（原 [Signin] 节并入此处。仅装饰用途，无排行榜）
+# 命名说明：原 [Signin].enabled 改为 signin_enabled 避免与 SAR 整体开关混淆；
+# 其余字段保持原名（currency_name / daily_min / ...）。
+signin_enabled = true
+currency_name = "星币"
+daily_min = 5
+daily_max = 20
+streak_bonus_enabled = true
+streak_bonus_days = [3, 7, 14, 30]
+streak_bonus_points = [10, 50, 100, 300]
+reset_after_miss = true
 
 # ───────── 设备 / 并发流限制 ─────────
 [DeviceLimit]
@@ -178,18 +206,20 @@ apikey_direct_login_enabled = false
 bot_internal_secret = ""
 
 # ───────── 定时任务 ─────────
+# 各 job 的触发时间 / 间隔现在统一在「定时任务」页面按 job 维度调整，
+# 下方字段仅作为「首次拉起或重置」时的默认值；运行时被 DB 中的 schedule 覆盖。
 [Scheduler]
 timezone = "Asia/Shanghai"
 enabled = true
-# 过期用户清理（HH:MM）
+# 过期用户清理（HH:MM，默认值）
 expired_check_time = "03:00"
-# 即将过期提醒
+# 即将过期提醒（默认值）
 expiring_check_time = "09:00"
-# 每日统计汇总
+# 每日统计汇总（默认值）
 daily_stats_time = "00:05"
-# 会话清理间隔（小时）
+# 会话清理间隔（小时，默认值）
 session_cleanup_interval = 6
-# Emby 用户同步间隔（小时）
+# Emby 用户同步间隔（小时，默认值）
 emby_sync_interval = 6
 
 # ───────── 通知 ─────────
@@ -211,19 +241,12 @@ block_keywords = []
 # 播放进度达到多少 % 才算"看完"
 min_progress_percent = 80
 
-# ───────── 签到 / 积分 ─────────
-[Signin]
-# 仅装饰用途，无排行榜
-enabled = true
-# 展示用货币名（如 星币 / 金币 / 云币）
-currency_name = "星币"
-# 每日签到积分随机范围
-daily_min = 5
-daily_max = 20
-# 连签加成总开关（关闭后只发每日奖励）
-streak_bonus_enabled = true
-# 连签 N 天 → 额外奖励 M；两数组一一对应
-streak_bonus_days = [3, 7, 14, 30]
-streak_bonus_points = [10, 50, 100, 300]
-# 漏签是否清零连签天数
-reset_after_miss = true
+# ───────── 签到 / 积分（已并入 [SAR] 节，本段保留为旧版升级提示）─────────
+# 原 [Signin] 节自 v1.x 起已并入 [SAR]：
+#   - enabled              → signin_enabled
+#   - currency_name        → currency_name
+#   - daily_min/daily_max  → daily_min/daily_max
+#   - streak_bonus_*       → streak_bonus_*
+#   - reset_after_miss     → reset_after_miss
+# 启动时若仍存在独立的 [Signin] 节，会被自动迁移到 [SAR] 并清理掉；
+# 无需手动改动，但模板里不再保留该节以免误导。

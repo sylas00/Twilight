@@ -600,6 +600,10 @@ class SchedulerService:
 
         仅在 `TelegramConfig.REQUIRE_GROUP_MEMBERSHIP` 开启且配置了 `GROUP_ID` 时执行。
         管理员、白名单不会被本任务处理（在 SQL 层面就过滤掉了）。
+
+        额外逻辑：
+        - 对已禁用且仍绑定 Telegram 的用户做“重新入群”识别；
+        - 不自动恢复，仅记录到日志与 summary，供管理员手动判定是否恢复。
         """
         from src.services.telegram_membership import TelegramMembershipService
         if not TelegramMembershipService.enforcement_enabled():
@@ -625,54 +629,104 @@ class SchedulerService:
             ctx.summary['in_group'] = 0
             ctx.summary['disabled'] = 0
             ctx.summary['failed'] = 0
+            ctx.summary['rejoin_scanned'] = 0
+            ctx.summary['rejoin_candidates'] = 0
+            ctx.summary['rejoin_uids'] = []
             if not users:
                 ctx.log("✅ 没有需要检查的用户")
-                return
-
-            tg_ids = []
-            for u in users:
-                try:
-                    tg_ids.append(int(u.TELEGRAM_ID))
-                except (TypeError, ValueError):
-                    ctx.summary['failed'] += 1
-                    ctx.log(f"  ⚠️ 跳过非法 Telegram ID: {u.USERNAME} (UID: {u.UID})")
-
-            # 以系统内绑定用户为基准做批量对照，不扫描群全量成员列表。
-            missing_map = await TelegramMembershipService.check_users_in_groups(tg_ids, strict=False)
-
-            for u in users:
-                try:
+            else:
+                tg_ids = []
+                for u in users:
                     try:
-                        user_tg_id = int(u.TELEGRAM_ID)
+                        tg_ids.append(int(u.TELEGRAM_ID))
+                    except (TypeError, ValueError):
+                        ctx.summary['failed'] += 1
+                        ctx.log(f"  ⚠️ 跳过非法 Telegram ID: {u.USERNAME} (UID: {u.UID})")
+
+                # 以系统内绑定用户为基准做批量对照，不扫描群全量成员列表。
+                missing_map = await TelegramMembershipService.check_users_in_groups(tg_ids, strict=False)
+
+                for u in users:
+                    try:
+                        try:
+                            user_tg_id = int(u.TELEGRAM_ID)
+                        except (TypeError, ValueError):
+                            continue
+
+                        missing = missing_map.get(user_tg_id, [])
+                        if not missing:
+                            ctx.summary['in_group'] += 1
+                            continue
+
+                        # 拿到了「明确不在群」的判定 → 禁用
+                        success, msg = await UserService.disable_user(
+                            u, reason="未加入必需 Telegram 群组"
+                        )
+                        if success:
+                            ctx.summary['disabled'] += 1
+                            ctx.log(
+                                f"  ⏹️ 已禁用 {u.USERNAME} (UID: {u.UID}, "
+                                f"TG: {u.TELEGRAM_ID}) — 缺失群组: "
+                                f"{', '.join(m.id for m in missing) or '未知'}"
+                            )
+                        else:
+                            ctx.summary['failed'] += 1
+                            ctx.log(f"  ⚠️ 禁用 {u.USERNAME} 失败: {msg}")
+                    except Exception as exc:  # pragma: no cover
+                        ctx.summary['failed'] += 1
+                        ctx.log(f"  ❌ 巡检 {u.USERNAME} (UID: {u.UID}) 出错: {exc}")
+
+            # 已禁用账号重新入群识别：只上报管理员，不自动恢复，避免误恢复风控账号。
+            inactive_users = await UserOperate.get_inactive_telegram_bound_users()
+            ctx.summary['rejoin_scanned'] = len(inactive_users)
+            if inactive_users:
+                inactive_tg_ids: list[int] = []
+                for u in inactive_users:
+                    try:
+                        inactive_tg_ids.append(int(u.TELEGRAM_ID))
                     except (TypeError, ValueError):
                         continue
 
-                    missing = missing_map.get(user_tg_id, [])
-                    if not missing:
-                        ctx.summary['in_group'] += 1
+                inactive_missing_map = await TelegramMembershipService.check_users_in_groups(
+                    inactive_tg_ids,
+                    strict=False,
+                )
+
+                rejoin_candidates: list[dict[str, object]] = []
+                for u in inactive_users:
+                    try:
+                        tg_id = int(u.TELEGRAM_ID)
+                    except (TypeError, ValueError):
                         continue
 
-                    # 拿到了「明确不在群」的判定 → 禁用
-                    success, msg = await UserService.disable_user(
-                        u, reason="未加入必需 Telegram 群组"
+                    if inactive_missing_map.get(tg_id):
+                        continue
+
+                    rejoin_candidates.append({
+                        'uid': int(u.UID),
+                        'username': u.USERNAME,
+                        'telegram_id': tg_id,
+                    })
+
+                if rejoin_candidates:
+                    ctx.summary['rejoin_candidates'] = len(rejoin_candidates)
+                    ctx.summary['rejoin_uids'] = [item['uid'] for item in rejoin_candidates[:50]]
+                    ctx.log(
+                        f"  ℹ️ 发现 {len(rejoin_candidates)} 个已禁用但重新入群用户，"
+                        "请管理员在用户管理中手动评估是否恢复启用"
                     )
-                    if success:
-                        ctx.summary['disabled'] += 1
+                    for item in rejoin_candidates[:20]:
                         ctx.log(
-                            f"  ⏹️ 已禁用 {u.USERNAME} (UID: {u.UID}, "
-                            f"TG: {u.TELEGRAM_ID}) — 缺失群组: "
-                            f"{', '.join(m.id for m in missing) or '未知'}"
+                            f"    ↩️ 候选恢复: {item['username']} "
+                            f"(UID: {item['uid']}, TG: {item['telegram_id']})"
                         )
-                    else:
-                        ctx.summary['failed'] += 1
-                        ctx.log(f"  ⚠️ 禁用 {u.USERNAME} 失败: {msg}")
-                except Exception as exc:  # pragma: no cover
-                    ctx.summary['failed'] += 1
-                    ctx.log(f"  ❌ 巡检 {u.USERNAME} (UID: {u.UID}) 出错: {exc}")
+                    if len(rejoin_candidates) > 20:
+                        ctx.log(f"    ... 其余 {len(rejoin_candidates) - 20} 个请查看 summary.rejoin_uids")
 
             ctx.log(
                 f"✅ 群组成员资格巡检完成: 仍在群 {ctx.summary['in_group']} 个, "
-                f"已禁用 {ctx.summary['disabled']} 个, 失败 {ctx.summary['failed']} 个"
+                f"已禁用 {ctx.summary['disabled']} 个, 失败 {ctx.summary['failed']} 个, "
+                f"待人工复核恢复 {ctx.summary['rejoin_candidates']} 个"
             )
         except Exception as exc:
             ctx.log(f"❌ 群组成员资格巡检异常: {exc}")
@@ -680,17 +734,20 @@ class SchedulerService:
 
     @staticmethod
     async def kick_unknown_group_members(ctx: RunContext):
-        """手动专属：踢出"已知 TG ID 中、当前不在系统活跃用户里"的群成员。
+        """手动专属：踢出"群成员里没绑定本站 Web 账号的人"。
 
         - 仅扫描已配置的群组（取 TelegramConfig.GROUP_ID 第一个）。
-        - 候选集合：``users.TELEGRAM_ID`` ∪ ``telegram_bind_codes.CONFIRMED_TELEGRAM_ID``。
-          Bot API 没法枚举陌生群成员，所以这里只是"清理我们见过但已经不该在群里的 TG 账号"。
+        - 候选集合 = ``users.TELEGRAM_ID`` ∪ ``telegram_bind_codes.CONFIRMED_TELEGRAM_ID``
+          ∪ ``telegram_group_roster``（Bot 被动观察到的群成员，按 chat_id 过滤）。
+          Bot API 没法主动枚举陌生成员，但花名册由 chat_member 事件 + 消息观察
+          长期累积，能补齐"在群但从来没碰过本站"的那部分人。
         - 排除：群管理员/群主、Bot 自身、配置中的管理员账号、所有"系统中活跃且仍持有该 TG 绑定"的 ID。
         - 踢出策略：``ban + unban``（临时移除，能再加回来）。
         """
         from src.config import TelegramConfig
         from src.services.telegram_membership import TelegramMembershipService
         from src.db.user import UserOperate, UserModel, Role, TelegramBindCodeModel, UsersSessionFactory
+        from src.db.telegram_roster import TelegramRosterOperate
         from sqlalchemy import select as _select
 
         ctx.summary['enabled'] = False
@@ -710,6 +767,7 @@ class SchedulerService:
         ctx.log("📋 收集候选 TG ID...")
         candidate_ids: set[int] = set()
         excluded_ids: set[int] = set()
+        bound_ids: set[int] = set()  # 出现在 users 表里的 TG ID（视为"已绑定 Web 账号"）
         async with UsersSessionFactory() as session:
             # 所有 users.TELEGRAM_ID
             user_rows = (await session.execute(
@@ -724,6 +782,7 @@ class SchedulerService:
                 except (TypeError, ValueError):
                     continue
                 candidate_ids.add(tg_int)
+                bound_ids.add(tg_int)
                 # 系统内"活跃且非未识别"的就排除；管理员/白名单永远排除
                 if role in (Role.ADMIN.value, Role.WHITE_LIST.value):
                     excluded_ids.add(tg_int)
@@ -743,6 +802,20 @@ class SchedulerService:
                 except (TypeError, ValueError):
                     continue
 
+        # 花名册：Bot 被动观察到的群成员
+        roster_rows = await TelegramRosterOperate.list_active_telegram_ids(chat_id)
+        roster_added = 0
+        for tg_int, is_bot in roster_rows:
+            if is_bot:
+                # 花名册里的 bot 一律不动；顺手放进排除集，避免被其它路径吸进来
+                excluded_ids.add(tg_int)
+                continue
+            if tg_int not in candidate_ids:
+                roster_added += 1
+            candidate_ids.add(tg_int)
+        ctx.summary['roster_size'] = len(roster_rows)
+        ctx.summary['roster_added'] = roster_added
+
         # 配置中静态指定的管理员 TG ID（TelegramConfig.ADMIN_ID）也排除
         raw_admin = TelegramConfig.ADMIN_ID
         admin_seq = raw_admin if isinstance(raw_admin, (list, tuple)) else [raw_admin]
@@ -758,6 +831,7 @@ class SchedulerService:
         ctx.summary['admins_excluded'] = len(admin_ids)
         ctx.summary['candidates_total'] = len(candidate_ids)
         ctx.summary['excluded_total'] = len(excluded_ids)
+        ctx.summary['bound_users'] = len(bound_ids)
 
         targets = [tid for tid in candidate_ids if tid not in excluded_ids]
         ctx.summary['targets'] = len(targets)
@@ -765,7 +839,10 @@ class SchedulerService:
             ctx.log("✅ 没有可处理的候选 TG ID（全部被系统已知活跃用户/管理员吸收）")
             return
 
-        ctx.log(f"🛠️ 待清理 {len(targets)} 个 TG ID（已排除管理员/活跃用户/Bot）")
+        ctx.log(
+            f"🛠️ 待清理 {len(targets)} 个 TG ID "
+            f"(花名册新增 {roster_added}，已排除管理员/活跃用户/Bot)"
+        )
         result = await TelegramMembershipService.kick_unknown_members(
             chat_id,
             list(targets),

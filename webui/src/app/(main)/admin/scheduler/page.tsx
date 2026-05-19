@@ -76,6 +76,9 @@ const SUMMARY_LABELS: Record<string, string> = {
   emby_online: "Emby 在线",
   enabled: "启用",
   days_threshold: "阈值(天)",
+  rejoin_scanned: "复核扫描",
+  rejoin_candidates: "待复核恢复",
+  rejoin_uids: "待复核 UID",
 };
 
 function formatSummaryValue(value: unknown): string {
@@ -412,6 +415,11 @@ export default function AdminSchedulerPage() {
     [jobs, running]
   );
 
+  const schedulerHasTimedJobs = useMemo(
+    () => jobs.some((j) => !j.manual_only && j.enabled),
+    [jobs]
+  );
+
   useEffect(() => {
     if (!anyRunning) {
       if (pollTimerRef.current) {
@@ -502,11 +510,20 @@ export default function AdminSchedulerPage() {
           </CardContent>
         </Card>
       ) : (
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-          {jobs.map((job) => {
+        <>
+          {!schedulerHasTimedJobs && (
+            <Card className="border-amber-500/30 bg-amber-500/5">
+              <CardContent className="py-4 text-sm text-amber-700 dark:text-amber-300">
+                当前未发现已注册的自动定时任务。请确认调度器进程已启动，否则任务只会在你手动点击“立即运行”时执行。
+              </CardContent>
+            </Card>
+          )}
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            {jobs.map((job) => {
             const lr = job.last_run;
             const triggering = Boolean(running[job.id]);
             const isRunning = job.is_running || lr?.status === "running" || triggering;
+              const rejoinCandidates = Number((lr?.summary as Record<string, unknown> | null | undefined)?.["rejoin_candidates"] ?? 0);
             return (
               <Card key={job.id} className="flex flex-col">
                 <CardHeader className="space-y-2">
@@ -568,6 +585,11 @@ export default function AdminSchedulerPage() {
                         </p>
                       )}
                       {renderSummaryChips(lr.summary)}
+                      {job.id === "enforce_group_membership" && rejoinCandidates > 0 && (
+                        <p className="text-amber-600 dark:text-amber-400">
+                          检测到 {rejoinCandidates} 个已禁用但重新入群用户，请前往用户管理手动复核恢复。
+                        </p>
+                      )}
                     </div>
                   )}
 
@@ -606,8 +628,9 @@ export default function AdminSchedulerPage() {
                 </CardContent>
               </Card>
             );
-          })}
-        </div>
+            })}
+          </div>
+        </>
       )}
 
       <ScheduleEditor

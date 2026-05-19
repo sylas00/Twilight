@@ -74,7 +74,10 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import type { ConfigSchema, ConfigSection, ConfigField } from "@/lib/api";
+import type { ConfigSchema, ConfigSection, ConfigField, ConfigCategory } from "@/lib/api";
+
+// 没有声明 categories 时的回退：所有 section 归到「全部」一类，保持原来的扁平体验
+const FALLBACK_CATEGORY: ConfigCategory = { key: "_all", title: "全部" };
 
 const NUMERIC_LIST_FIELD_KEYS = new Set([
   "streak_bonus_days",
@@ -581,47 +584,83 @@ function SectionCard({
 
 function SectionNav({
   sections,
+  categories,
   activeSection,
   changedCounts,
   onSelect,
 }: {
   sections: ConfigSection[];
+  categories: ConfigCategory[];
   activeSection: string;
   changedCounts: Record<string, number>;
   onSelect: (key: string) => void;
 }) {
+  // 把 section 按 category 分组，未声明 category 的统一归到 FALLBACK_CATEGORY。
+  const grouped: Array<{ category: ConfigCategory; sections: ConfigSection[] }> = [];
+  const seen = new Map<string, ConfigSection[]>();
+  const orderedKeys: string[] = [];
+
+  const ensureBucket = (key: string) => {
+    if (!seen.has(key)) {
+      seen.set(key, []);
+      orderedKeys.push(key);
+    }
+    return seen.get(key)!;
+  };
+
+  for (const section of sections) {
+    const catKey = section.category && categories.some((c) => c.key === section.category)
+      ? section.category
+      : FALLBACK_CATEGORY.key;
+    ensureBucket(catKey).push(section);
+  }
+
+  for (const key of orderedKeys) {
+    const category =
+      categories.find((c) => c.key === key) || (key === FALLBACK_CATEGORY.key ? FALLBACK_CATEGORY : null);
+    if (!category) continue;
+    grouped.push({ category, sections: seen.get(key) || [] });
+  }
+
   return (
     <nav className="hidden xl:block w-52 shrink-0">
-      <div className="sticky top-20 space-y-0.5">
-        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2 px-2">
+      <div className="sticky top-20 space-y-4">
+        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-2">
           配置分组
         </p>
-        {sections.map((section) => {
-          const Icon = SECTION_ICONS[section.key] || CircleDot;
-          const count = changedCounts[section.key] || 0;
-          const isActive = activeSection === section.key;
-          return (
-            <button
-              key={section.key}
-              onClick={() => onSelect(section.key)}
-              className={`w-full flex items-center gap-2 px-2.5 py-2 rounded-md text-sm transition-colors ${
-                isActive
-                  ? "bg-primary/10 text-primary font-medium"
-                  : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
-              }`}
-            >
-              <Icon className="h-4 w-4 shrink-0" />
-              <span className="flex-1 text-left truncate">
-                {section.title}
-              </span>
-              {count > 0 && (
-                <span className="text-[10px] font-medium bg-amber-500 text-white rounded-full h-4 min-w-4 px-1 flex items-center justify-center">
-                  {count}
-                </span>
-              )}
-            </button>
-          );
-        })}
+        {grouped.map(({ category, sections: groupSections }) => (
+          <div key={category.key} className="space-y-0.5">
+            <p className="px-2 text-[11px] font-medium text-muted-foreground/70">
+              {category.title}
+            </p>
+            {groupSections.map((section) => {
+              const Icon = SECTION_ICONS[section.key] || CircleDot;
+              const count = changedCounts[section.key] || 0;
+              const isActive = activeSection === section.key;
+              return (
+                <button
+                  key={section.key}
+                  onClick={() => onSelect(section.key)}
+                  className={`w-full flex items-center gap-2 px-2.5 py-2 rounded-md text-sm transition-colors ${
+                    isActive
+                      ? "bg-primary/10 text-primary font-medium"
+                      : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+                  }`}
+                >
+                  <Icon className="h-4 w-4 shrink-0" />
+                  <span className="flex-1 text-left truncate">
+                    {section.title}
+                  </span>
+                  {count > 0 && (
+                    <span className="text-[10px] font-medium bg-amber-500 text-white rounded-full h-4 min-w-4 px-1 flex items-center justify-center">
+                      {count}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        ))}
       </div>
     </nav>
   );
@@ -1046,6 +1085,7 @@ export default function AdminConfigPage() {
               {schema && !searchText && (
                 <SectionNav
                   sections={schema.sections}
+                  categories={schema.categories ?? [FALLBACK_CATEGORY]}
                   activeSection={activeSection}
                   changedCounts={changedCounts}
                   onSelect={scrollToSection}
@@ -1060,23 +1100,72 @@ export default function AdminConfigPage() {
                   </div>
                 ) : (
                   <>
-                    {schema?.sections.map((section) => (
-                      <SectionCard
-                        key={section.key}
-                        section={section}
-                        values={editedValues[section.key] ?? {}}
-                        originalValues={originalValues[section.key] ?? {}}
-                        changedCount={changedCounts[section.key] || 0}
-                        onFieldChange={handleFieldChange}
-                        onResetField={handleResetField}
-                        searchText={searchText}
-                        matchedFieldKeys={
-                          matchedFieldsBySection[section.key] ?? new Set()
+                    {(() => {
+                      if (!schema) return null;
+                      const categories =
+                        schema.categories && schema.categories.length > 0
+                          ? schema.categories
+                          : [FALLBACK_CATEGORY];
+                      // 把 sections 按 category 排序后渲染；搜索态下隐藏分组标题，避免视觉干扰
+                      const buckets = new Map<string, ConfigSection[]>();
+                      const orderedKeys: string[] = [];
+                      for (const section of schema.sections) {
+                        const key =
+                          section.category &&
+                          categories.some((c) => c.key === section.category)
+                            ? section.category
+                            : FALLBACK_CATEGORY.key;
+                        if (!buckets.has(key)) {
+                          buckets.set(key, []);
+                          orderedKeys.push(key);
                         }
-                        isExpanded={expandedSections.has(section.key)}
-                        onToggle={() => toggleSection(section.key)}
-                      />
-                    ))}
+                        buckets.get(key)!.push(section);
+                      }
+                      const renderSection = (section: ConfigSection) => (
+                        <SectionCard
+                          key={section.key}
+                          section={section}
+                          values={editedValues[section.key] ?? {}}
+                          originalValues={originalValues[section.key] ?? {}}
+                          changedCount={changedCounts[section.key] || 0}
+                          onFieldChange={handleFieldChange}
+                          onResetField={handleResetField}
+                          searchText={searchText}
+                          matchedFieldKeys={
+                            matchedFieldsBySection[section.key] ?? new Set()
+                          }
+                          isExpanded={expandedSections.has(section.key)}
+                          onToggle={() => toggleSection(section.key)}
+                        />
+                      );
+
+                      // 搜索态：扁平渲染，不显示分组标题
+                      if (searchText) {
+                        return schema.sections.map(renderSection);
+                      }
+
+                      return orderedKeys.map((key) => {
+                        const groupSections = buckets.get(key) || [];
+                        if (groupSections.length === 0) return null;
+                        const category =
+                          categories.find((c) => c.key === key) ||
+                          (key === FALLBACK_CATEGORY.key ? FALLBACK_CATEGORY : null);
+                        return (
+                          <div key={key} className="space-y-4">
+                            {category && key !== FALLBACK_CATEGORY.key && (
+                              <div className="flex items-center gap-2 pt-2">
+                                <div className="h-px flex-1 bg-border" />
+                                <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+                                  {category.title}
+                                </span>
+                                <div className="h-px flex-1 bg-border" />
+                              </div>
+                            )}
+                            {groupSections.map(renderSection)}
+                          </div>
+                        );
+                      });
+                    })()}
                     {searchText &&
                       Object.keys(matchedFieldsBySection).length === 0 && (
                         <div className="py-16 text-center text-muted-foreground">

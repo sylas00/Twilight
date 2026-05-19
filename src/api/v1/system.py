@@ -15,9 +15,9 @@ from src.config import (
     Config, EmbyConfig, RegisterConfig,
     DeviceLimitConfig, APIConfig, SecurityConfig,
     SchedulerConfig, NotificationConfig, TelegramConfig,
-    BangumiSyncConfig, SigninConfig,
-    backup_config_file, fill_missing_config_items, get_primary_config_path,
-    normalize_storage_settings,
+    BangumiSyncConfig,
+    backup_config_file, fill_missing_config_items, sweep_config_toml,
+    get_primary_config_path, normalize_storage_settings,
 )
 from src import __version__
 from src.db.user import UsersSessionFactory
@@ -33,7 +33,6 @@ _CONFIG_CLASSES = [
     Config, EmbyConfig, TelegramConfig, RegisterConfig,
     DeviceLimitConfig, APIConfig, SecurityConfig,
     SchedulerConfig, NotificationConfig, BangumiSyncConfig,
-    SigninConfig,
 ]
 
 
@@ -88,7 +87,6 @@ def _reload_runtime_config() -> None:
     SchedulerConfig.update_from_toml('Scheduler')
     NotificationConfig.update_from_toml('Notification')
     BangumiSyncConfig.update_from_toml('BangumiSync')
-    SigninConfig.update_from_toml('Signin')
     normalize_storage_settings()
 
 
@@ -108,6 +106,19 @@ def _infer_schema_field_type(key: str, value: Any) -> str:
     return 'string'
 
 
+_SCHEMA_HIDDEN_FIELDS: dict[str, set[str]] = {
+    # 这些字段在配置类里仍是合法默认值，但「配置管理」UI 不再暴露；
+    # Scheduler 的逐 job 触发器在「定时任务」页编辑，避免双入口冲突。
+    'Scheduler': {
+        'expired_check_time',
+        'expiring_check_time',
+        'daily_stats_time',
+        'session_cleanup_interval',
+        'emby_sync_interval',
+    },
+}
+
+
 def _augment_schema_with_missing_fields(schema: dict) -> None:
     """将配置类中存在但 schema 未声明的字段自动补进可视化配置。"""
     section_class_map = {
@@ -121,7 +132,6 @@ def _augment_schema_with_missing_fields(schema: dict) -> None:
         'Scheduler': SchedulerConfig,
         'Notification': NotificationConfig,
         'BangumiSync': BangumiSyncConfig,
-        'Signin': SigninConfig,
     }
     sections = schema.get('sections', [])
     section_map = {section.get('key'): section for section in sections}
@@ -131,12 +141,13 @@ def _augment_schema_with_missing_fields(schema: dict) -> None:
         if not section:
             continue
 
+        hidden = _SCHEMA_HIDDEN_FIELDS.get(section_key, set())
         fields = section.get('fields', [])
         existing = {field.get('key') for field in fields}
         defaults = conf_cls._get_default_values()
 
         for field_key, default_value in defaults.items():
-            if field_key in existing:
+            if field_key in existing or field_key in hidden:
                 continue
 
             value = getattr(conf_cls, field_key.upper(), default_value)
@@ -390,9 +401,12 @@ async def get_emby_urls():
 
     user = getattr(g, 'current_user', None)
     is_admin = bool(user and user.ROLE == Role.ADMIN.value)
+    # 与 user_service.get_user_info / admin 列表用同一套口径：
+    # 「真正绑定 Emby」=有 EMBYID 且 PENDING_EMBY 为假；只要还在 pending 就视作未绑。
+    emby_bound = bool(user and user.EMBYID and not bool(getattr(user, 'PENDING_EMBY', False)))
 
     # 没绑定 Emby 且不是管理员 → 不下发任何线路，前端会据此隐藏整块 UI
-    if user and not user.EMBYID and not is_admin:
+    if user and not emby_bound and not is_admin:
         return api_response(True, "未绑定 Emby 账号，未下发线路", {
             'lines': [],
             'requires_emby_account': True,
@@ -594,7 +608,8 @@ async def update_config_toml():
         with open(config_file, 'w', encoding='utf-8') as f:
             f.write(content)
 
-        fill_result = fill_missing_config_items(config_classes=_CONFIG_CLASSES, auto_backup=False)
+        # sweep 会顺手补缺失项 + 迁移历史字段 + 清理无效条目；admin 手编时同样适用
+        sweep_result = sweep_config_toml(config_classes=_CONFIG_CLASSES, auto_backup=False)
         _reload_runtime_config()
 
         # 改为重启整个程序（由进程管理器/启动脚本拉起）
@@ -603,7 +618,9 @@ async def update_config_toml():
         return api_response(True, "配置已保存，程序将自动重启", {
             'path': str(config_file),
             'backup_path': str(backup_file) if backup_file else None,
-            'filled_items': int(fill_result.get('filled_items', 0) or 0),
+            'filled': sweep_result.get('filled') or {},
+            'removed': sweep_result.get('removed') or {},
+            'migrated': sweep_result.get('migrated') or [],
             'restart': True,
         })
     except Exception as e:
@@ -625,13 +642,26 @@ async def update_config_toml():
 @require_auth
 @require_admin
 async def get_config_schema():
-    """获取配置项的结构化描述信息（管理员）"""
+    """获取配置项的结构化描述信息（管理员）。
+
+    每个 section 带 ``category``，便于前端把同类配置归组展示，避免一字长龙。
+    """
     schema = {
+        # 前端按下列顺序渲染分组；section 的 category 必须与其中之一匹配
+        'categories': [
+            {'key': 'base', 'title': '基础设置'},
+            {'key': 'media', 'title': '媒体服务'},
+            {'key': 'integration', 'title': '第三方接入'},
+            {'key': 'user', 'title': '用户与注册'},
+            {'key': 'api', 'title': 'API 与安全'},
+            {'key': 'automation', 'title': '自动化与通知'},
+        ],
         'sections': [
             {
                 'key': 'Global',
+                'category': 'base',
                 'title': '全局配置',
-                'description': '系统全局设置',
+                'description': '站点名称、日志、数据库等基础设置',
                 'fields': [
                     {'key': 'server_name', 'label': '服务器名称', 'type': 'string', 'description': '服务器名称，用于前端和通知中显示', 'value': Config.SERVER_NAME},
                     {'key': 'server_icon', 'label': '服务器图标', 'type': 'string', 'description': '服务器图标 URL，留空使用默认', 'value': Config.SERVER_ICON},
@@ -655,6 +685,7 @@ async def get_config_schema():
             },
             {
                 'key': 'Emby',
+                'category': 'media',
                 'title': 'Emby 配置',
                 'description': 'Emby/Jellyfin 媒体服务器连接配置',
                 'fields': [
@@ -668,6 +699,7 @@ async def get_config_schema():
             },
             {
                 'key': 'Telegram',
+                'category': 'integration',
                 'title': 'Telegram 配置',
                 'description': 'Telegram Bot 相关设置',
                 'fields': [
@@ -681,10 +713,16 @@ async def get_config_schema():
                     {'key': 'require_group_membership', 'label': '强制群组成员资格', 'type': 'bool', 'description': '开启后绑定时校验，且定时巡检；用户退出必需群组将被禁用并同步禁用 Emby', 'value': TelegramConfig.REQUIRE_GROUP_MEMBERSHIP},
                     {'key': 'group_check_interval_minutes', 'label': '群组检查间隔（分钟）', 'type': 'int', 'description': '群组成员资格定时巡检间隔（分钟），开启上述开关后生效', 'value': TelegramConfig.GROUP_CHECK_INTERVAL_MINUTES},
                     {'key': 'proxy_url', 'label': '代理地址', 'type': 'string', 'description': 'Telegram Bot 代理地址（如 socks5://127.0.0.1:1080），留空不使用代理', 'value': TelegramConfig.PROXY_URL},
+                    {'key': 'bot_start_title', 'label': '/start 标题', 'type': 'string', 'description': '自定义 /start 第一行标题（Markdown），留空使用默认；支持 {server_name} 占位符', 'value': TelegramConfig.BOT_START_TITLE},
+                    {'key': 'bot_start_intro', 'label': '/start 简介', 'type': 'string', 'description': '自定义 /start 简介段落，留空使用默认', 'value': TelegramConfig.BOT_START_INTRO},
+                    {'key': 'bot_help_header', 'label': '/help 顶部段', 'type': 'string', 'description': '/help 命令列表前的自定义内容，可用来挂公告 / 群规', 'value': TelegramConfig.BOT_HELP_HEADER},
+                    {'key': 'bot_help_footer', 'label': '/help 底部段', 'type': 'string', 'description': '/help 末尾的自定义内容，可放群组链接、客服等', 'value': TelegramConfig.BOT_HELP_FOOTER},
+                    {'key': 'bot_about', 'label': '关于 / 服务说明', 'type': 'string', 'description': '关于 Bot / 站点的简介，预留用于 /about 等场景', 'value': TelegramConfig.BOT_ABOUT},
                 ],
             },
             {
                 'key': 'SAR',
+                'category': 'user',
                 'title': '注册与用户策略',
                 'description': '注册、用户限制与 Emby 自由注册配置',
                 'fields': [
@@ -713,10 +751,20 @@ async def get_config_schema():
                     {'key': 'invite_limit', 'label': '单人邀请上限', 'type': 'int', 'description': '每人最多同时存在多少未使用的邀请码，-1 = 无限制', 'value': RegisterConfig.INVITE_LIMIT},
                     {'key': 'invite_require_emby', 'label': '邀请需绑定 Emby', 'type': 'bool', 'description': '是否要求邀请人已绑定 Emby 账号才能生成邀请码', 'value': RegisterConfig.INVITE_REQUIRE_EMBY},
                     {'key': 'invite_code_default_days', 'label': '邀请码默认天数', 'type': 'int', 'description': '被邀请人 Emby 账号默认开通天数（0 或 -1 表示永久）', 'value': RegisterConfig.INVITE_CODE_DEFAULT_DAYS},
+                    # —— 签到 / 积分（原 [Signin] 节，并入此处。仅装饰用途，无排行榜）
+                    {'key': 'signin_enabled', 'label': '启用签到', 'type': 'bool', 'description': '是否开放签到功能（原 [Signin].enabled）', 'value': RegisterConfig.SIGNIN_ENABLED},
+                    {'key': 'currency_name', 'label': '货币名称', 'type': 'string', 'description': '展示用的货币名（如 星币 / 金币 / 云币）', 'value': RegisterConfig.CURRENCY_NAME},
+                    {'key': 'daily_min', 'label': '每日最少奖励', 'type': 'int', 'description': '单日签到获得的最少积分（含 0）', 'value': RegisterConfig.DAILY_MIN},
+                    {'key': 'daily_max', 'label': '每日最多奖励', 'type': 'int', 'description': '单日签到获得的最多积分（≥ 最少）', 'value': RegisterConfig.DAILY_MAX},
+                    {'key': 'streak_bonus_enabled', 'label': '启用连签奖励', 'type': 'bool', 'description': '关闭后只发放每日奖励，连签天数仍记录但不再额外赠送积分', 'value': RegisterConfig.STREAK_BONUS_ENABLED},
+                    {'key': 'streak_bonus_days', 'label': '连签加成天数', 'type': 'list', 'description': '达到该连签天数时获得额外奖励，与下方"加成积分"列表一一对应（仅在"启用连签奖励"开启时生效）', 'value': RegisterConfig.STREAK_BONUS_DAYS},
+                    {'key': 'streak_bonus_points', 'label': '加成积分', 'type': 'list', 'description': '上方天数对应的额外奖励积分', 'value': RegisterConfig.STREAK_BONUS_POINTS},
+                    {'key': 'reset_after_miss', 'label': '漏签清零连签', 'type': 'bool', 'description': '关闭后即使漏签也保留并累计连签', 'value': RegisterConfig.RESET_AFTER_MISS},
                 ],
             },
             {
                 'key': 'DeviceLimit',
+                'category': 'media',
                 'title': '设备限制',
                 'description': '用户设备和播放流数限制',
                 'fields': [
@@ -728,6 +776,7 @@ async def get_config_schema():
             },
             {
                 'key': 'API',
+                'category': 'api',
                 'title': 'API 服务器',
                 'description': 'Web API 服务器配置',
                 'fields': [
@@ -749,6 +798,7 @@ async def get_config_schema():
             },
             {
                 'key': 'Security',
+                'category': 'api',
                 'title': '安全配置',
                 'description': '登录失败锁定等安全策略',
                 'fields': [
@@ -761,20 +811,21 @@ async def get_config_schema():
             },
             {
                 'key': 'Scheduler',
+                'category': 'automation',
                 'title': '定时任务',
-                'description': '定时任务执行时间配置',
+                'description': '仅保留全局开关与时区；每个任务的执行时间 / 间隔请前往「定时任务」页面编辑。',
                 'fields': [
-                    {'key': 'timezone', 'label': '时区', 'type': 'string', 'description': '定时任务使用的时区', 'value': SchedulerConfig.TIMEZONE},
-                    {'key': 'enabled', 'label': '启用定时任务', 'type': 'bool', 'description': '是否启用定时任务系统', 'value': SchedulerConfig.ENABLED},
-                    {'key': 'expired_check_time', 'label': '过期检查时间', 'type': 'string', 'description': '检查过期用户的时间（HH:MM 格式）', 'value': SchedulerConfig.EXPIRED_CHECK_TIME},
-                    {'key': 'expiring_check_time', 'label': '即将过期检查', 'type': 'string', 'description': '检查即将过期用户的时间（HH:MM 格式）', 'value': SchedulerConfig.EXPIRING_CHECK_TIME},
-                    {'key': 'daily_stats_time', 'label': '统计汇总时间', 'type': 'string', 'description': '每日统计汇总的时间（HH:MM 格式）', 'value': SchedulerConfig.DAILY_STATS_TIME},
-                    {'key': 'session_cleanup_interval', 'label': '会话清理间隔', 'type': 'int', 'description': '会话清理任务的执行间隔（小时）', 'value': SchedulerConfig.SESSION_CLEANUP_INTERVAL},
-                    {'key': 'emby_sync_interval', 'label': 'Emby 同步间隔', 'type': 'int', 'description': 'Emby 用户数据同步的执行间隔（小时）', 'value': SchedulerConfig.EMBY_SYNC_INTERVAL},
+                    {'key': 'enabled', 'label': '启用定时任务', 'type': 'bool', 'description': '是否启用整个定时任务系统（关闭后所有任务都不再触发）', 'value': SchedulerConfig.ENABLED},
+                    {'key': 'timezone', 'label': '时区', 'type': 'string', 'description': '定时任务使用的时区，如 Asia/Shanghai', 'value': SchedulerConfig.TIMEZONE},
                 ],
+                # 已迁出的字段（仍在 toml 中作为缺省值；不再向「配置管理」UI 暴露）：
+                #   expired_check_time / expiring_check_time / daily_stats_time
+                #   session_cleanup_interval / emby_sync_interval
+                # 改为在「定时任务」页面按 job 维度调整，避免双入口冲突。
             },
             {
                 'key': 'Notification',
+                'category': 'automation',
                 'title': '通知配置',
                 'description': '系统通知相关设置',
                 'fields': [
@@ -785,6 +836,7 @@ async def get_config_schema():
             },
             {
                 'key': 'BangumiSync',
+                'category': 'integration',
                 'title': 'Bangumi 同步',
                 'description': 'Bangumi 观看记录同步设置',
                 'fields': [
@@ -795,24 +847,9 @@ async def get_config_schema():
                     {'key': 'min_progress_percent', 'label': '最小播放进度', 'type': 'int', 'description': '播放进度达到多少百分比才算看完并同步', 'value': BangumiSyncConfig.MIN_PROGRESS_PERCENT},
                 ],
             },
-            {
-                'key': 'Signin',
-                'title': '签到与积分',
-                'description': '每日签到、积分奖励与连签加成；积分仅装饰用途，无排行榜',
-                'fields': [
-                    {'key': 'enabled', 'label': '启用签到', 'type': 'bool', 'description': '是否开放签到功能', 'value': SigninConfig.ENABLED},
-                    {'key': 'currency_name', 'label': '货币名称', 'type': 'string', 'description': '展示用的货币名（如 星币 / 金币 / 云币）', 'value': SigninConfig.CURRENCY_NAME},
-                    {'key': 'daily_min', 'label': '每日最少奖励', 'type': 'int', 'description': '单日签到获得的最少积分（含 0）', 'value': SigninConfig.DAILY_MIN},
-                    {'key': 'daily_max', 'label': '每日最多奖励', 'type': 'int', 'description': '单日签到获得的最多积分（≥ 最少）', 'value': SigninConfig.DAILY_MAX},
-                    {'key': 'streak_bonus_enabled', 'label': '启用连签奖励', 'type': 'bool', 'description': '关闭后只发放每日奖励，连签天数仍记录但不再额外赠送积分', 'value': SigninConfig.STREAK_BONUS_ENABLED},
-                    {'key': 'streak_bonus_days', 'label': '连签加成天数', 'type': 'list', 'description': '达到该连签天数时获得额外奖励，与下方"加成积分"列表一一对应（仅在"启用连签奖励"开启时生效）', 'value': SigninConfig.STREAK_BONUS_DAYS},
-                    {'key': 'streak_bonus_points', 'label': '加成积分', 'type': 'list', 'description': '上方天数对应的额外奖励积分', 'value': SigninConfig.STREAK_BONUS_POINTS},
-                    {'key': 'reset_after_miss', 'label': '漏签清零连签', 'type': 'bool', 'description': '关闭后即使漏签也保留并累计连签', 'value': SigninConfig.RESET_AFTER_MISS},
-                ],
-            },
         ],
     }
-    
+
     _augment_schema_with_missing_fields(schema)
     return api_response(True, "获取成功", schema)
 
@@ -856,7 +893,7 @@ async def update_config_by_schema():
         with open(config_file, 'w', encoding='utf-8') as f:
             toml.dump(config, f)
 
-        fill_result = fill_missing_config_items(config_classes=_CONFIG_CLASSES, auto_backup=False)
+        sweep_result = sweep_config_toml(config_classes=_CONFIG_CLASSES, auto_backup=False)
 
         # 重新加载所有配置（仅供短暂回应使用，实际仍以重启后为准）
         _reload_runtime_config()
@@ -866,7 +903,9 @@ async def update_config_by_schema():
 
         return api_response(True, "配置已保存，程序将自动重启", {
             'backup_path': str(backup_file) if backup_file else None,
-            'filled_items': int(fill_result.get('filled_items', 0) or 0),
+            'filled': sweep_result.get('filled') or {},
+            'removed': sweep_result.get('removed') or {},
+            'migrated': sweep_result.get('migrated') or [],
             'restart': True,
         })
     except Exception as e:

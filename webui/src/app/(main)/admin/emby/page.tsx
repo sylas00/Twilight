@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import {
   Server,
@@ -23,6 +23,14 @@ import {
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { api } from "@/lib/api";
 import {
@@ -102,6 +110,41 @@ export default function AdminEmbyPage() {
   // Emby users state
   const [embyData, setEmbyData] = useState<EmbyUsersData | null>(null);
   const [isLoadingUsers, setIsLoadingUsers] = useState(false);
+
+  // Emby 用户表筛选：name 关键字 + 关联状态 + 属性
+  const [userSearch, setUserSearch] = useState("");
+  const [linkFilter, setLinkFilter] = useState<"all" | "linked" | "unlinked" | "name_mismatch">("all");
+  const [attrFilter, setAttrFilter] = useState<"all" | "admin" | "disabled" | "hidden">("all");
+
+  const filteredEmbyUsers = useMemo<EmbyUserItem[]>(() => {
+    if (!embyData) return [];
+    const q = userSearch.trim().toLowerCase();
+    return embyData.emby_users.filter((eu) => {
+      // 关键字匹配 emby_name / emby_id / 本地 username / 本地 UID
+      if (q) {
+        const haystacks = [
+          eu.emby_name,
+          eu.emby_id,
+          eu.local_user?.username || "",
+          eu.local_user ? String(eu.local_user.uid) : "",
+          eu.local_user?.telegram_id ? String(eu.local_user.telegram_id) : "",
+        ];
+        if (!haystacks.some((h) => h.toLowerCase().includes(q))) return false;
+      }
+
+      // 关联状态
+      if (linkFilter === "linked" && !eu.local_user) return false;
+      if (linkFilter === "unlinked" && eu.local_user) return false;
+      if (linkFilter === "name_mismatch" && eu.sync_status !== "name_mismatch") return false;
+
+      // 属性
+      if (attrFilter === "admin" && !eu.is_admin) return false;
+      if (attrFilter === "disabled" && !eu.is_disabled) return false;
+      if (attrFilter === "hidden" && !eu.is_hidden) return false;
+
+      return true;
+    });
+  }, [embyData, userSearch, linkFilter, attrFilter]);
 
   // Action loading states
   const [isImporting, setIsImporting] = useState(false);
@@ -581,7 +624,43 @@ export default function AdminEmbyPage() {
 
               {/* Emby Users Table */}
               <div>
-                <h3 className="text-sm font-medium mb-2">Emby 用户列表</h3>
+                <div className="mb-3 flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+                  <h3 className="text-sm font-medium">Emby 用户列表</h3>
+                  <Badge variant="outline" className="w-fit text-xs">
+                    当前展示 {filteredEmbyUsers.length} / {embyData.emby_users.length}
+                  </Badge>
+                </div>
+
+                <div className="mb-3 grid gap-2 md:grid-cols-3">
+                  <Input
+                    placeholder="搜索 Emby 名称 / EmbyID / 本地用户名 / UID / Telegram ID"
+                    value={userSearch}
+                    onChange={(event) => setUserSearch(event.target.value)}
+                  />
+                  <Select value={linkFilter} onValueChange={(value) => setLinkFilter(value as typeof linkFilter)}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="关联状态" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">全部关联状态</SelectItem>
+                      <SelectItem value="linked">仅已绑定本地用户</SelectItem>
+                      <SelectItem value="unlinked">仅未绑定本地用户</SelectItem>
+                      <SelectItem value="name_mismatch">仅名称不一致</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <Select value={attrFilter} onValueChange={(value) => setAttrFilter(value as typeof attrFilter)}>
+                    <SelectTrigger>
+                      <SelectValue placeholder="属性筛选" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">全部属性</SelectItem>
+                      <SelectItem value="admin">仅管理员</SelectItem>
+                      <SelectItem value="disabled">仅已禁用</SelectItem>
+                      <SelectItem value="hidden">仅隐藏</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
                 <div className="rounded-lg border overflow-hidden">
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">
@@ -594,7 +673,7 @@ export default function AdminEmbyPage() {
                         </tr>
                       </thead>
                       <tbody className="divide-y">
-                        {embyData.emby_users.map((eu) => (
+                        {filteredEmbyUsers.map((eu) => (
                           <tr key={eu.emby_id} className="hover:bg-muted/30">
                             <td className="p-3">
                               <div className="font-medium">{eu.emby_name}</div>
@@ -632,10 +711,10 @@ export default function AdminEmbyPage() {
                             <td className="p-3">{syncStatusBadge(eu.sync_status)}</td>
                           </tr>
                         ))}
-                        {embyData.emby_users.length === 0 && (
+                        {filteredEmbyUsers.length === 0 && (
                           <tr>
                             <td colSpan={4} className="p-6 text-center text-muted-foreground">
-                              无 Emby 用户数据
+                              未匹配到筛选结果
                             </td>
                           </tr>
                         )}

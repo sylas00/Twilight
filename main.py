@@ -13,7 +13,10 @@ _platform._wmi = None
 import argparse
 import asyncio
 import logging
+import os
+import signal
 import sys
+from pathlib import Path
 
 from src import __version__
 from src.config import Config, RegisterConfig, TelegramConfig, APIConfig
@@ -38,6 +41,39 @@ def run_api_server(host: str = '0.0.0.0', port: int = 5000, debug: bool = False)
 async def run_scheduler():
     """运行定时任务"""
     from src.services.scheduler_service import SchedulerService
+
+    lock_file = os.getenv("TWILIGHT_SCHEDULER_LOCK_FILE")
+    if lock_file:
+        lock_path = Path(lock_file).expanduser()
+    else:
+        lock_path = Path.cwd() / "db" / "scheduler.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+    force_restart = os.getenv("TWILIGHT_FORCE_RESTART_SCHEDULER", "0") == "1"
+    current_pid = os.getpid()
+
+    if lock_path.exists():
+        try:
+            existing_pid = int(lock_path.read_text(encoding="utf-8").strip() or "0")
+        except (ValueError, OSError):
+            existing_pid = 0
+
+        if existing_pid > 0 and existing_pid != current_pid:
+            try:
+                os.kill(existing_pid, 0)
+                if force_restart:
+                    logger.warning(f"检测到已有 Scheduler 进程 ({existing_pid})，将尝试重启")
+                    os.kill(existing_pid, signal.SIGTERM)
+                else:
+                    logger.error(f"检测到已有 Scheduler 进程正在运行 (PID={existing_pid})，本次启动已跳过")
+                    return
+            except OSError:
+                logger.warning(f"检测到过期 Scheduler 锁文件，将覆盖: {lock_path}")
+
+    try:
+        lock_path.write_text(str(current_pid), encoding="utf-8")
+    except OSError as exc:
+        logger.warning(f"写入 Scheduler 锁文件失败: {exc}")
     
     # 启动调度器服务，它会在后台处理定时任务，如自动续期、定时同步等
     await SchedulerService.start()
@@ -48,6 +84,12 @@ async def run_scheduler():
             await asyncio.sleep(3600)
     except (KeyboardInterrupt, SystemExit):
         await SchedulerService.stop()
+    finally:
+        try:
+            if lock_path.exists() and lock_path.read_text(encoding="utf-8").strip() == str(current_pid):
+                lock_path.unlink()
+        except OSError:
+            pass
 
 
 async def run_bot():

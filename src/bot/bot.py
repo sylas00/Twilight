@@ -231,16 +231,21 @@ class TelegramBot:
     
     def _register_handlers(self):
         """注册消息处理器"""
-        from src.bot.handlers import user_handlers, admin_handlers, emby_handlers
-        
+        from src.bot.handlers import (
+            user_handlers, admin_handlers, emby_handlers, roster_handlers,
+        )
+
         # 注册用户命令
         user_handlers.register(self)
-        
+
         # 注册管理员命令
         admin_handlers.register(self)
-        
+
         # 注册 Emby 命令
         emby_handlers.register(self)
+
+        # 群组花名册被动收集（chat_member 事件 + 群消息观察）
+        roster_handlers.register(self)
 
         # 兜底处理：未知命令与过期按钮
         self.application.add_handler(MessageHandler(filters.COMMAND, self._unknown_command_handler), group=99)

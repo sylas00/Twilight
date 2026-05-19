@@ -8,7 +8,7 @@ import logging
 
 from flask import Blueprint, request, g
 
-from src.api.v1.auth import require_auth, api_response
+from src.api.v1.auth import require_auth, require_admin, api_response
 from src.services import MediaService, MediaRequestService, MediaSource, InventoryService
 from src.db.bangumi import ReqStatus
 
@@ -649,8 +649,13 @@ async def get_my_requests():
 
 @media_bp.route('/request/pending', methods=['GET'])
 @require_auth
+@require_admin
 async def get_pending_requests():
-    """获取待处理的求片列表（需要登录）"""
+    """获取待处理的求片列表（仅管理员）。
+
+    历史上该接口仅 ``@require_auth``，导致任何登录用户都能拿到其他用户的
+    ``telegram_id`` / ``username``（IDOR）。普通用户应改用 ``/request/my``。
+    """
     requests = await MediaRequestService.get_pending_requests()
     return api_response(True, f"共 {len(requests)} 个待处理", requests)
 

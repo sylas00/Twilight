@@ -164,9 +164,11 @@ export default function AdminTelegramRebindRequestsPage() {
             <div className="space-y-4">
               {requests.map((request) => (
                 <Card key={request.id} className="border">
-                  <CardContent>
-                    <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-                      <div className="space-y-2">
+                  {/* 内层卡没有 CardHeader，shadcn 默认 `p-6 pt-0` 会把内容顶到 0px 边缘，
+                      显式补 `pt-6` 再用 `items-center` 让按钮和文字块垂直居中 */}
+                  <CardContent className="pt-6">
+                    <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                      <div className="space-y-2 min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-3">
                           <p className="text-lg font-medium">{request.username || `UID ${request.uid}`}</p>
                           {getStatusBadge(request.status)}
@@ -187,18 +189,27 @@ export default function AdminTelegramRebindRequestsPage() {
                           <p className="text-sm text-muted-foreground">处理时间：{formatDate(request.reviewed_at)}</p>
                         )}
                       </div>
-                      <div className="flex flex-wrap items-center gap-2">
-                        {request.status === 'pending' && (
-                          <>
-                            <Button size="sm" onClick={() => openActionDialog(request, 'approve')}>
-                              批准
-                            </Button>
-                            <Button size="sm" variant="destructive" onClick={() => openActionDialog(request, 'reject')}>
-                              拒绝
-                            </Button>
-                          </>
-                        )}
-                      </div>
+                      {request.status === 'pending' && (
+                        <div className="flex shrink-0 flex-wrap items-center gap-2 md:flex-nowrap">
+                          <Button
+                            size="sm"
+                            className="h-9 min-w-20 justify-center"
+                            onClick={() => openActionDialog(request, 'approve')}
+                          >
+                            <Check className="mr-1 h-4 w-4" />
+                            批准
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="destructive"
+                            className="h-9 min-w-20 justify-center"
+                            onClick={() => openActionDialog(request, 'reject')}
+                          >
+                            <X className="mr-1 h-4 w-4" />
+                            拒绝
+                          </Button>
+                        </div>
+                      )}
                     </div>
                   </CardContent>
                 </Card>
