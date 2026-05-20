@@ -479,13 +479,12 @@ export default function DashboardPage() {
     if (!registerAvailability) return null;
     if (!registerAvailability.emby_direct_register_enabled) return "管理员尚未开启自由注册";
     if (user?.emby_id) return "您已经绑定了 Emby 账号";
-    if (!user?.pending_emby) return "当前账号不在待开通 Emby 状态，请前往设置绑定已有 Emby 账号或联系管理员";
     if (!user?.telegram_id) return "请先在「设置 → Telegram」中完成 Telegram 绑定";
     const limit = Number(registerAvailability.emby_user_limit ?? -1);
     const used = Number(registerAvailability.emby_bound_users ?? 0);
     if (limit > 0 && used >= limit) return `Emby 已绑定用户数已达上限（${used}/${limit}）`;
     return null;
-  }, [registerAvailability, user?.emby_id, user?.pending_emby, user?.telegram_id]);
+  }, [registerAvailability, user?.emby_id, user?.telegram_id]);
 
   const showEmbyDirectRegisterCard = Boolean(
     registerAvailability?.emby_direct_register_enabled && !user?.emby_id,

@@ -350,9 +350,9 @@ class UserService:
         reg_code_lock: Optional[str] = None,
     ) -> RegisterResponse:
         """
-        待激活注册（仅创建系统账号，未绑定 Emby）。
+        注册系统账号（仅创建系统账号，未绑定 Emby）。
 
-        :param pending_emby_days: 注册码授予的开通天数；为 None 时由 Emby 注册流程使用默认值
+        :param pending_emby_days: 注册码授予的开通天数；为 None 时不默认授予 Emby 开通资格
         :param skip_pending_check: 走注册码路径时不需要再校验 ALLOW_PENDING_REGISTER
         """
         from src.config import RegisterConfig
@@ -429,6 +429,7 @@ class UserService:
             # 9999-12-31 的时间戳（管理员和白名单使用）
             permanent_expire = 253402214400
             created_at = timestamp()
+            has_emby_entitlement = pending_emby_days is not None
 
             # 管理员默认激活，到期时间为 9999 年
             if is_admin:
@@ -444,7 +445,7 @@ class UserService:
                     EXPIRED_AT=permanent_expire,
                     CREATE_AT=created_at,
                     REGISTER_TIME=created_at,
-                    PENDING_EMBY=True,
+                    PENDING_EMBY=has_emby_entitlement,
                     PENDING_EMBY_DAYS=pending_emby_days,
                 )
             elif is_whitelist:
@@ -461,7 +462,7 @@ class UserService:
                     EXPIRED_AT=permanent_expire,
                     CREATE_AT=created_at,
                     REGISTER_TIME=created_at,
-                    PENDING_EMBY=True,
+                    PENDING_EMBY=has_emby_entitlement,
                     PENDING_EMBY_DAYS=pending_emby_days,
                 )
             else:
@@ -480,12 +481,15 @@ class UserService:
                     EXPIRED_AT=0,
                     CREATE_AT=created_at,
                     REGISTER_TIME=created_at,
-                    PENDING_EMBY=True,
+                    PENDING_EMBY=has_emby_entitlement,
                     PENDING_EMBY_DAYS=pending_emby_days,
                 )
             await UserOperate.add_user(user)
 
-            logger.info(f"待激活用户注册: {username} (UID: {new_uid}, pending_emby_days={pending_emby_days})")
+            logger.info(
+                f"系统用户注册: {username} (UID: {new_uid}, "
+                f"pending_emby={has_emby_entitlement}, pending_emby_days={pending_emby_days})"
+            )
 
             return RegisterResponse(
                 result=RegisterResult.SUCCESS,

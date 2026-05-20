@@ -201,10 +201,14 @@ class EmbyRegisterQueueService:
     ) -> Tuple[Optional[Dict[str, Any]], str]:
         """把"已登录用户补建 Emby"任务投递给队列，立即返回 request_id + 当前状态。
 
-        前置校验已经在更外层（API handler）做过 PENDING_EMBY=True / EMBYID 为空，这里
-        只做队列相关的去重 + 容量门控。
+        前置校验已经在更外层（API handler）做过 EMBYID 为空与资格校验，这里
+        只做队列相关的去重 + 容量门控。注册码资格可在自由注册关闭时继续补建。
         """
-        if not RegisterConfig.EMBY_DIRECT_REGISTER_ENABLED:
+        has_code_entitlement = (
+            bool(getattr(user, "PENDING_EMBY", False))
+            and getattr(user, "PENDING_EMBY_DAYS", None) is not None
+        )
+        if not has_code_entitlement and not RegisterConfig.EMBY_DIRECT_REGISTER_ENABLED:
             return None, "Emby 自由注册未开启"
 
         cls.ensure_started_sync()
@@ -443,10 +447,14 @@ class EmbyRegisterQueueService:
                     await cls._mark_already_done(task, fresh_user)
                     continue
 
-                if not getattr(fresh_user, "PENDING_EMBY", False):
+                has_code_entitlement = (
+                    bool(getattr(fresh_user, "PENDING_EMBY", False))
+                    and getattr(fresh_user, "PENDING_EMBY_DAYS", None) is not None
+                )
+                if not has_code_entitlement and not RegisterConfig.EMBY_DIRECT_REGISTER_ENABLED:
                     await cls._mark_failed(
                         task,
-                        "该账号不在待补建 Emby 状态，无法继续",
+                        "当前未开启 Emby 自由注册，且该账号没有注册码开通资格",
                         terminal=True,
                     )
                     continue

@@ -229,7 +229,7 @@ async def register():
             result.message,
             {
                 "username": result.user.USERNAME if result.user else None,
-                "pending_emby": True,
+                "pending_emby": bool(getattr(result.user, "PENDING_EMBY", False)) if result.user else False,
                 "user": user_info,
             },
         )
@@ -243,8 +243,8 @@ async def complete_emby_account_for_me():
     """
     已登录用户补建 Emby 账号。
 
-    需要当前用户 PENDING_EMBY=True 且 EMBYID 为空。
-    失败会保留 PENDING_EMBY 标记，前端可重复尝试。
+    注册码用户需要当前用户 PENDING_EMBY=True 且 EMBYID 为空。
+    自由注册用户不再预先写入 PENDING_EMBY，按当前配置即时校验。
 
     实际执行走 ``EmbyRegisterQueueService``：API handler 入队后同步等结果（默认 60s），
     在等待窗口内完成就直接返回最终态；超时未完成会返回 ``status='queued'/'processing'``，
@@ -262,10 +262,17 @@ async def complete_emby_account_for_me():
     user = g.current_user
     if user.EMBYID:
         return api_response(False, "您已绑定 Emby 账号，无需再次注册", code=400)
-    if not getattr(user, "PENDING_EMBY", False):
+
+    from src.config import RegisterConfig
+
+    has_regcode_entitlement = (
+        bool(getattr(user, "PENDING_EMBY", False))
+        and getattr(user, "PENDING_EMBY_DAYS", None) is not None
+    )
+    if not has_regcode_entitlement and not RegisterConfig.EMBY_DIRECT_REGISTER_ENABLED:
         return api_response(
             False,
-            "您的账号不在待补建 Emby 状态。如果需要绑定 Emby，请联系管理员。",
+            "当前未开启 Emby 自由注册。如果需要绑定 Emby，请联系管理员或使用注册码。",
             code=400,
         )
 
