@@ -9,12 +9,29 @@ import logging
 from pathlib import Path
 from typing import Type
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import DeclarativeBase
 
 from src.config import Config
 
 logger = logging.getLogger(__name__)
+
+
+def _sqlite_connect_args() -> dict:
+    """Shared SQLite connection options for sync and async engines."""
+    return {"timeout": 30, "check_same_thread": False}
+
+
+def _configure_sqlite_connection(dbapi_connection, _connection_record) -> None:
+    """Apply per-connection SQLite pragmas used under bursty registration load."""
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute("PRAGMA busy_timeout = 30000")
+        cursor.execute("PRAGMA journal_mode = WAL")
+        cursor.execute("PRAGMA synchronous = NORMAL")
+        cursor.execute("PRAGMA temp_store = MEMORY")
+    finally:
+        cursor.close()
 
 
 def _add_missing_columns(engine, model: Type[DeclarativeBase]) -> None:
@@ -66,7 +83,8 @@ def create_database(database_name: str, model: Type[DeclarativeBase]) -> None:
     db_path = Path(Config.DATABASES_DIR) / f"{database_name}.db"
     database_url = f"sqlite:///{db_path.as_posix()}"
 
-    engine = create_engine(database_url)
+    engine = create_engine(database_url, connect_args=_sqlite_connect_args())
+    event.listen(engine, "connect", _configure_sqlite_connection)
     db_existed = db_path.exists() and db_path.stat().st_size > 0
     model.metadata.create_all(engine)
 
@@ -115,13 +133,21 @@ def init_async_db(database_name: str, model: Type[DeclarativeBase]):
         engine = create_async_engine(
             url,
             echo=Config.SQLALCHEMY_LOG,
+            connect_args=_sqlite_connect_args(),
             pool_size=5,
             max_overflow=10,
             pool_timeout=30,
+            pool_pre_ping=True,
         )
+        event.listen(engine.sync_engine, "connect", _configure_sqlite_connection)
     except TypeError:
         # Some SQLAlchemy/sqlite combinations do not accept pool sizing kwargs.
         # Still avoid NullPool so concurrent requests reuse a bounded/default pool.
-        engine = create_async_engine(url, echo=Config.SQLALCHEMY_LOG)
+        engine = create_async_engine(
+            url,
+            echo=Config.SQLALCHEMY_LOG,
+            connect_args=_sqlite_connect_args(),
+        )
+        event.listen(engine.sync_engine, "connect", _configure_sqlite_connection)
     session_factory = async_sessionmaker(bind=engine, expire_on_commit=False)
     return engine, session_factory

@@ -11,8 +11,10 @@ from typing import List, Optional, Tuple
 from dataclasses import dataclass
 from enum import Enum
 
+from sqlalchemy import func, select
+
 from src.config import Config, RegisterConfig
-from src.db.user import UserModel, UserOperate, Role, TelegramRebindRequestOperate
+from src.db.user import UserModel, UserOperate, Role, TelegramRebindRequestOperate, UsersSessionFactory
 from src.services.emby import get_emby_client, EmbyError
 from src.core.utils import generate_password, hash_password, timestamp, days_to_seconds, is_valid_username
 from src.core.registration_lock import (
@@ -375,116 +377,128 @@ class UserService:
             if not skip_pending_check and not RegisterConfig.ALLOW_PENDING_REGISTER:
                 return RegisterResponse(RegisterResult.ERROR, "暂不开放注册，请使用注册码")
 
-            # 检查注册是否开放
-            available, msg = await UserService.check_registration_available(use_cache=False)
-            if not available:
-                return RegisterResponse(RegisterResult.USER_LIMIT_REACHED, msg)
+            async with UsersSessionFactory() as session:
+                async with session.begin():
+                    # 注册临界区只占用一个 DB session，降低高并发注册时的连接占用和锁竞争。
+                    if not RegisterConfig.REGISTER_MODE:
+                        return RegisterResponse(RegisterResult.USER_LIMIT_REACHED, "注册功能已关闭")
 
-            # 检查用户名是否已存在
-            existing = await UserOperate.get_user_by_username(username)
-            if existing:
-                return RegisterResponse(RegisterResult.USER_EXISTS, "用户名已被使用")
+                    count_result = await session.execute(
+                        select(func.count())
+                        .select_from(UserModel)
+                        .where(
+                            UserModel.ROLE != Role.UNRECOGNIZED.value,
+                            UserModel.ROLE != Role.WHITE_LIST.value,
+                            UserModel.ROLE != Role.ADMIN.value,
+                        )
+                    )
+                    current_count = int(count_result.scalar_one() or 0)
+                    if current_count >= RegisterConfig.USER_LIMIT:
+                        return RegisterResponse(
+                            RegisterResult.USER_LIMIT_REACHED,
+                            f"已达到用户数量上限 ({RegisterConfig.USER_LIMIT})",
+                        )
 
-            # 如果有 telegram_id，检查是否已注册
-            if telegram_id:
-                existing_tg = await UserOperate.get_user_by_telegram_id(telegram_id)
-                if existing_tg:
-                    return RegisterResponse(RegisterResult.USER_EXISTS, "该 Telegram 账号已注册")
+                    existing = await session.execute(select(UserModel.UID).filter_by(USERNAME=username).limit(1))
+                    if existing.scalar_one_or_none() is not None:
+                        return RegisterResponse(RegisterResult.USER_EXISTS, "用户名已被使用")
 
-            # 先获取新 UID
-            new_uid = await UserOperate.get_new_uid()
-            user_password = password if password else generate_password(12)
+                    if telegram_id:
+                        existing_tg = await session.execute(
+                            select(UserModel.UID).filter_by(TELEGRAM_ID=telegram_id).limit(1)
+                        )
+                        if existing_tg.scalar_one_or_none() is not None:
+                            return RegisterResponse(RegisterResult.USER_EXISTS, "该 Telegram 账号已注册")
 
-            # 检查是否是预设管理员或白名单（优先使用 UID，其次使用用户名）
-            is_admin = False
-            is_whitelist = False
+                    max_uid_result = await session.execute(select(func.max(UserModel.UID)).limit(1))
+                    max_uid = max_uid_result.scalar_one_or_none()
+                    new_uid = 1 if max_uid is None else int(max_uid) + 1
+                    user_password = password if password else generate_password(12)
 
-            # 先检查管理员 UID 列表
-            admin_uids = RegisterConfig.ADMIN_UIDS
-            if admin_uids:
-                uid_list = [int(u.strip()) for u in admin_uids.split(",") if u.strip().isdigit()]
-                is_admin = new_uid in uid_list
+                    is_admin = False
+                    is_whitelist = False
 
-            # 如果 UID 未匹配，再检查管理员用户名列表
-            if not is_admin:
-                admin_usernames = RegisterConfig.ADMIN_USERNAMES
-                if admin_usernames:
-                    name_list = [n.strip().lower() for n in admin_usernames.split(",") if n.strip()]
-                    is_admin = username.lower() in name_list
+                    admin_uids = RegisterConfig.ADMIN_UIDS
+                    if admin_uids:
+                        uid_list = [int(u.strip()) for u in admin_uids.split(",") if u.strip().isdigit()]
+                        is_admin = new_uid in uid_list
 
-            # 检查白名单 UID 列表
-            if not is_admin:
-                whitelist_uids = RegisterConfig.WHITE_LIST_UIDS
-                if whitelist_uids:
-                    uid_list = [int(u.strip()) for u in whitelist_uids.split(",") if u.strip().isdigit()]
-                    is_whitelist = new_uid in uid_list
+                    if not is_admin:
+                        admin_usernames = RegisterConfig.ADMIN_USERNAMES
+                        if admin_usernames:
+                            name_list = [n.strip().lower() for n in admin_usernames.split(",") if n.strip()]
+                            is_admin = username.lower() in name_list
 
-            # 如果 UID 未匹配，再检查白名单用户名列表
-            if not is_admin and not is_whitelist:
-                whitelist_usernames = RegisterConfig.WHITE_LIST_USERNAMES
-                if whitelist_usernames:
-                    name_list = [n.strip().lower() for n in whitelist_usernames.split(",") if n.strip()]
-                    is_whitelist = username.lower() in name_list
+                    if not is_admin:
+                        whitelist_uids = RegisterConfig.WHITE_LIST_UIDS
+                        if whitelist_uids:
+                            uid_list = [int(u.strip()) for u in whitelist_uids.split(",") if u.strip().isdigit()]
+                            is_whitelist = new_uid in uid_list
 
-            # 9999-12-31 的时间戳（管理员和白名单使用）
-            permanent_expire = 253402214400
-            created_at = timestamp()
-            has_emby_entitlement = pending_emby_days is not None
+                    if not is_admin and not is_whitelist:
+                        whitelist_usernames = RegisterConfig.WHITE_LIST_USERNAMES
+                        if whitelist_usernames:
+                            name_list = [n.strip().lower() for n in whitelist_usernames.split(",") if n.strip()]
+                            is_whitelist = username.lower() in name_list
 
-            # 管理员默认激活，到期时间为 9999 年
-            if is_admin:
-                user = UserModel(
-                    UID=new_uid,
-                    TELEGRAM_ID=telegram_id,
-                    USERNAME=username,
-                    EMAIL=email,
-                    EMBYID=None,  # 稍后创建 Emby 账户
-                    PASSWORD=hash_password(user_password),
-                    ROLE=Role.ADMIN.value,
-                    ACTIVE_STATUS=True,  # 管理员默认激活
-                    EXPIRED_AT=permanent_expire,
-                    CREATE_AT=created_at,
-                    REGISTER_TIME=created_at,
-                    PENDING_EMBY=has_emby_entitlement,
-                    PENDING_EMBY_DAYS=pending_emby_days,
-                )
-            elif is_whitelist:
-                # 白名单用户默认激活，到期时间为 9999 年
-                user = UserModel(
-                    UID=new_uid,
-                    TELEGRAM_ID=telegram_id,
-                    USERNAME=username,
-                    EMAIL=email,
-                    EMBYID=None,  # 稍后创建 Emby 账户
-                    PASSWORD=hash_password(user_password),
-                    ROLE=Role.WHITE_LIST.value,
-                    ACTIVE_STATUS=True,
-                    EXPIRED_AT=permanent_expire,
-                    CREATE_AT=created_at,
-                    REGISTER_TIME=created_at,
-                    PENDING_EMBY=has_emby_entitlement,
-                    PENDING_EMBY_DAYS=pending_emby_days,
-                )
-            else:
-                # 普通用户：已激活但无 Emby 账户
-                # EXPIRED_AT=0 是"未开通 Emby"的 sentinel，区别于 -1（永久）和正数（真实到期时间）。
-                # 一旦补建 Emby 成功，complete_emby_registration / 绑定流程会把它改成真实时间。
-                user = UserModel(
-                    UID=new_uid,
-                    TELEGRAM_ID=telegram_id,
-                    USERNAME=username,
-                    EMAIL=email,
-                    EMBYID=None,  # 无 Emby 账户
-                    PASSWORD=hash_password(user_password),
-                    ROLE=Role.NORMAL.value,
-                    ACTIVE_STATUS=True,  # 账户激活，可以登录
-                    EXPIRED_AT=0,
-                    CREATE_AT=created_at,
-                    REGISTER_TIME=created_at,
-                    PENDING_EMBY=has_emby_entitlement,
-                    PENDING_EMBY_DAYS=pending_emby_days,
-                )
-            await UserOperate.add_user(user)
+                    permanent_expire = 253402214400
+                    created_at = timestamp()
+                    has_emby_entitlement = pending_emby_days is not None
+
+                    if is_admin:
+                        user = UserModel(
+                            UID=new_uid,
+                            TELEGRAM_ID=telegram_id,
+                            USERNAME=username,
+                            EMAIL=email,
+                            EMBYID=None,
+                            PASSWORD=hash_password(user_password),
+                            ROLE=Role.ADMIN.value,
+                            ACTIVE_STATUS=True,
+                            EXPIRED_AT=permanent_expire,
+                            CREATE_AT=created_at,
+                            REGISTER_TIME=created_at,
+                            PENDING_EMBY=has_emby_entitlement,
+                            PENDING_EMBY_DAYS=pending_emby_days,
+                        )
+                    elif is_whitelist:
+                        user = UserModel(
+                            UID=new_uid,
+                            TELEGRAM_ID=telegram_id,
+                            USERNAME=username,
+                            EMAIL=email,
+                            EMBYID=None,
+                            PASSWORD=hash_password(user_password),
+                            ROLE=Role.WHITE_LIST.value,
+                            ACTIVE_STATUS=True,
+                            EXPIRED_AT=permanent_expire,
+                            CREATE_AT=created_at,
+                            REGISTER_TIME=created_at,
+                            PENDING_EMBY=has_emby_entitlement,
+                            PENDING_EMBY_DAYS=pending_emby_days,
+                        )
+                    else:
+                        user = UserModel(
+                            UID=new_uid,
+                            TELEGRAM_ID=telegram_id,
+                            USERNAME=username,
+                            EMAIL=email,
+                            EMBYID=None,
+                            PASSWORD=hash_password(user_password),
+                            ROLE=Role.NORMAL.value,
+                            ACTIVE_STATUS=True,
+                            EXPIRED_AT=0,
+                            CREATE_AT=created_at,
+                            REGISTER_TIME=created_at,
+                            PENDING_EMBY=has_emby_entitlement,
+                            PENDING_EMBY_DAYS=pending_emby_days,
+                        )
+
+                    session.add(user)
+                    await session.flush()
+
+            cache_count = current_count + 1 if user.ROLE == Role.NORMAL.value else current_count
+            await set_cached_registered_user_count(cache_count)
 
             logger.info(
                 f"系统用户注册: {username} (UID: {new_uid}, "
