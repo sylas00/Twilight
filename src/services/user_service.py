@@ -897,7 +897,7 @@ class UserService:
         emby_password: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
         """串行化同一用户/同一卡码的兑换，避免多次卡码并发串绑。"""
-        locks = await acquire_registration_lock(f"uid-{user.UID}", user.TELEGRAM_ID, reg_code=code_str)
+        locks = await acquire_registration_lock(f"uid-{user.UID}", user.TELEGRAM_ID, reg_code=code_str, timeout=0.5)
         if locks is None:
             return False, "当前卡码或账号正在处理中，请稍后重试", None
         try:

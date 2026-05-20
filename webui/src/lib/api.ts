@@ -424,15 +424,42 @@ class ApiClient {
     }
 
     return this.request<{
+      pending?: boolean;
+      request_id?: string;
+      status_token?: string;
+      status?: "queued" | "processing" | "success" | "failed";
+      queue_position?: number;
+      reused?: boolean;
       emby_password?: string;
-      expire_status: string;
-      expired_at: string | number;
-      role: number;
-      role_name: string;
+      expire_status?: string;
+      expired_at?: string | number;
+      role?: number;
+      role_name?: string;
     }>("/users/me/use-code", {
       method: "POST",
       body: JSON.stringify(payload),
     });
+  }
+
+  async getUseCodeStatus(requestId: string, statusToken: string) {
+    const query = new URLSearchParams({ request_id: requestId, status_token: statusToken });
+    return this.request<{
+      request_id: string;
+      uid: number;
+      status: "queued" | "processing" | "success" | "failed";
+      message?: string;
+      queue_position?: number | null;
+      created_at?: number;
+      updated_at?: number;
+      finished_at?: number;
+      data?: {
+        emby_password?: string;
+        expire_status: string;
+        expired_at: string | number;
+        role: number;
+        role_name: string;
+      };
+    }>(`/users/me/use-code/status?${query.toString()}`);
   }
 
   // Media

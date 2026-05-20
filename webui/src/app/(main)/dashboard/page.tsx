@@ -447,14 +447,43 @@ export default function DashboardPage() {
           : undefined
       );
       if (res.success) {
-        toast({ title: "注册码/续期码使用成功", description: regCodeInfo.type_name, variant: "success" });
-        setRegCode("");
-        setRegCodeInfo(null);
-        setShowConfirm(false);
-        setEmbyUsername("");
-        setEmbyPassword("");
-        await fetchUser();
-        await loadEmbyUrls();
+        if (res.data?.pending && res.data.request_id && res.data.status_token) {
+          toast({
+            title: res.data.reused ? "已有卡码请求处理中" : "卡码已加入处理队列",
+            description: res.data.queue_position ? `排队中（第 ${res.data.queue_position} 位）` : "稍后会自动完成",
+          });
+          setShowConfirm(false);
+
+          for (let i = 0; i < 90; i++) {
+            await new Promise((resolve) => setTimeout(resolve, 2000));
+            const statusRes = await api.getUseCodeStatus(res.data.request_id, res.data.status_token);
+            if (!statusRes.success || !statusRes.data) continue;
+            if (statusRes.data.status === "success") {
+              toast({ title: "注册码/续期码使用成功", description: statusRes.data.message || regCodeInfo.type_name, variant: "success" });
+              setRegCode("");
+              setRegCodeInfo(null);
+              setEmbyUsername("");
+              setEmbyPassword("");
+              await fetchUser();
+              await loadEmbyUrls();
+              return;
+            }
+            if (statusRes.data.status === "failed") {
+              toast({ title: "使用失败", description: statusRes.data.message || "卡码处理失败", variant: "destructive" });
+              return;
+            }
+          }
+          toast({ title: "卡码仍在队列中", description: "请稍后刷新页面查看结果" });
+        } else {
+          toast({ title: "注册码/续期码使用成功", description: regCodeInfo.type_name, variant: "success" });
+          setRegCode("");
+          setRegCodeInfo(null);
+          setShowConfirm(false);
+          setEmbyUsername("");
+          setEmbyPassword("");
+          await fetchUser();
+          await loadEmbyUrls();
+        }
       } else {
         toast({ title: "使用失败", description: res.message, variant: "destructive" });
       }

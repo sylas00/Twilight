@@ -5,6 +5,7 @@
 """
 
 import json
+import asyncio
 import hmac
 import logging
 import re
@@ -47,6 +48,25 @@ _IP_404_BAN_DURATION = 300  # 触发后的封禁时长（秒）
 
 _INVALID_CODE_CACHE: dict[str, float] = {}
 _IP_404_BAN: dict[str, float] = {}
+
+# Regcode paths are high-cost under bursts: DB checks + serialized locks + optional Emby calls.
+# Keep a small in-process admission gate so bursts fail fast instead of opening too many DB/socket FDs.
+_REGCODE_OP_SEMAPHORE = asyncio.Semaphore(8)
+
+
+async def _try_acquire_regcode_slot(timeout: float = 0.2) -> bool:
+    try:
+        await asyncio.wait_for(_REGCODE_OP_SEMAPHORE.acquire(), timeout=timeout)
+        return True
+    except asyncio.TimeoutError:
+        return False
+
+
+def _release_regcode_slot() -> None:
+    try:
+        _REGCODE_OP_SEMAPHORE.release()
+    except ValueError:
+        pass
 
 
 def _is_known_invalid_code(code: str) -> bool:
@@ -166,75 +186,97 @@ async def register():
     reg_code = (data.get("reg_code") or "").strip() or None
     email = data.get("email")
 
-    if not username:
-        return api_response(False, "缺少用户名", code=400)
-
-    # 注册时不允许直接提交 Telegram ID，必须走绑定码
-    if telegram_id is not None:
-        return api_response(False, "请使用 Telegram Bot 绑定码验证 Telegram ID", code=400)
-
-    if telegram_bind_code:
-        telegram_id = await _get_register_bind_telegram_id(telegram_bind_code)
-        if not telegram_id:
+    regcode_slot_acquired = False
+    if reg_code:
+        allowed_code, retry_after_code = rate_limit_check(
+            "user_register_regcode",
+            client_ip,
+            max_requests=3,
+            window_seconds=600,
+        )
+        if not allowed_code:
             return api_response(
                 False,
-                "Telegram 绑定码无效或尚未通过 Bot 验证，请先在 Bot 中完成绑定",
+                f"注册码注册过于频繁，请在 {retry_after_code} 秒后重试",
+                code=429,
+            )
+        regcode_slot_acquired = await _try_acquire_regcode_slot()
+        if not regcode_slot_acquired:
+            return api_response(False, "当前注册码使用请求较多，请稍后重试", code=429)
+
+    try:
+        if not username:
+            return api_response(False, "缺少用户名", code=400)
+
+        # 注册时不允许直接提交 Telegram ID，必须走绑定码
+        if telegram_id is not None:
+            return api_response(False, "请使用 Telegram Bot 绑定码验证 Telegram ID", code=400)
+
+        if telegram_bind_code:
+            telegram_id = await _get_register_bind_telegram_id(telegram_bind_code)
+            if not telegram_id:
+                return api_response(
+                    False,
+                    "Telegram 绑定码无效或尚未通过 Bot 验证，请先在 Bot 中完成绑定",
+                    code=400,
+                )
+
+        if telegram_id is not None and telegram_id != "":
+            if isinstance(telegram_id, str) and telegram_id.isdigit():
+                telegram_id = int(telegram_id)
+            if not isinstance(telegram_id, int) or telegram_id <= 0:
+                return api_response(False, "telegram_id 格式无效", code=400)
+        else:
+            telegram_id = None
+
+        if Config.FORCE_BIND_TELEGRAM and not telegram_id:
+            return api_response(False, "系统要求绑定 Telegram，请先获取绑定码并通过 Bot 验证", code=400)
+
+        # Web 端注册：始终要求设置密码
+        if not password:
+            return api_response(False, "请设置密码", code=400)
+        if len(password) < 8:
+            return api_response(False, "密码长度至少 8 位", code=400)
+
+        from src.core.utils import is_valid_username
+
+        if not is_valid_username(username):
+            return api_response(
+                False,
+                "用户名格式不正确（3-20位字母数字下划线，不能以数字开头）",
                 code=400,
             )
 
-    if telegram_id is not None and telegram_id != "":
-        if isinstance(telegram_id, str) and telegram_id.isdigit():
-            telegram_id = int(telegram_id)
-        if not isinstance(telegram_id, int) or telegram_id <= 0:
-            return api_response(False, "telegram_id 格式无效", code=400)
-    else:
-        telegram_id = None
+        if email:
+            from src.core.utils import is_valid_email
 
-    if Config.FORCE_BIND_TELEGRAM and not telegram_id:
-        return api_response(False, "系统要求绑定 Telegram，请先获取绑定码并通过 Bot 验证", code=400)
+            if not is_valid_email(email):
+                return api_response(False, "邮箱格式不正确", code=400)
 
-    # Web 端注册：始终要求设置密码
-    if not password:
-        return api_response(False, "请设置密码", code=400)
-    if len(password) < 8:
-        return api_response(False, "密码长度至少 8 位", code=400)
+        if reg_code:
+            result = await UserService.register_by_code(telegram_id, username, reg_code, email, password)
+        else:
+            result = await UserService.register_pending(telegram_id, username, email, password)
 
-    from src.core.utils import is_valid_username
+        if result.result.value == "success":
+            if telegram_bind_code:
+                await _delete_bind_code(telegram_bind_code)
 
-    if not is_valid_username(username):
-        return api_response(
-            False,
-            "用户名格式不正确（3-20位字母数字下划线，不能以数字开头）",
-            code=400,
-        )
+            user_info = await UserService.get_user_info(result.user) if result.user else None
+            return api_response(
+                True,
+                result.message,
+                {
+                    "username": result.user.USERNAME if result.user else None,
+                    "pending_emby": bool(getattr(result.user, "PENDING_EMBY", False)) if result.user else False,
+                    "user": user_info,
+                },
+            )
 
-    if email:
-        from src.core.utils import is_valid_email
-
-        if not is_valid_email(email):
-            return api_response(False, "邮箱格式不正确", code=400)
-
-    if reg_code:
-        result = await UserService.register_by_code(telegram_id, username, reg_code, email, password)
-    else:
-        result = await UserService.register_pending(telegram_id, username, email, password)
-
-    if result.result.value == "success":
-        if telegram_bind_code:
-            await _delete_bind_code(telegram_bind_code)
-
-        user_info = await UserService.get_user_info(result.user) if result.user else None
-        return api_response(
-            True,
-            result.message,
-            {
-                "username": result.user.USERNAME if result.user else None,
-                "pending_emby": bool(getattr(result.user, "PENDING_EMBY", False)) if result.user else False,
-                "user": user_info,
-            },
-        )
-
-    return api_response(False, result.message, code=400)
+        return api_response(False, result.message, code=400)
+    finally:
+        if regcode_slot_acquired:
+            _release_regcode_slot()
 
 
 @users_bp.route("/me/emby/register", methods=["POST"])
@@ -908,37 +950,44 @@ async def check_regcode():
             code=429,
         )
 
-    data = request.get_json() or {}
-    reg_code = data.get("reg_code", "").strip()
+    slot_acquired = await _try_acquire_regcode_slot(timeout=0.1)
+    if not slot_acquired:
+        return api_response(False, "当前注册码请求较多，请稍后重试", code=429)
 
-    if not reg_code:
-        return api_response(False, "缺少注册码", code=400)
+    try:
+        data = request.get_json() or {}
+        reg_code = data.get("reg_code", "").strip()
 
-    code_info = await RegCodeOperate.get_regcode_by_code(reg_code)
+        if not reg_code:
+            return api_response(False, "缺少注册码", code=400)
 
-    if not code_info:
-        return api_response(False, "注册码不存在", code=404)
+        code_info = await RegCodeOperate.get_regcode_by_code(reg_code)
 
-    if not code_info.ACTIVE:
-        return api_response(False, "注册码已禁用", code=400)
+        if not code_info:
+            return api_response(False, "注册码不存在", code=404)
 
-    # 检查是否已用完
-    if code_info.USE_COUNT_LIMIT > 0 and code_info.USE_COUNT >= code_info.USE_COUNT_LIMIT:
-        return api_response(False, "注册码已用完", code=400)
+        if not code_info.ACTIVE:
+            return api_response(False, "注册码已禁用", code=400)
 
-    type_names = {1: "注册", 2: "续期", 3: "白名单"}
-    days = UserService._normalize_code_days(code_info.DAYS, default=30)
+        # 检查是否已用完
+        if code_info.USE_COUNT_LIMIT > 0 and code_info.USE_COUNT >= code_info.USE_COUNT_LIMIT:
+            return api_response(False, "注册码已用完", code=400)
 
-    return api_response(
-        True,
-        "注册码有效",
-        {
-            "type": code_info.TYPE,
-            "type_name": type_names.get(code_info.TYPE, "未知"),
-            "days": days,
-            "valid": True,
-        },
-    )
+        type_names = {1: "注册", 2: "续期", 3: "白名单"}
+        days = UserService._normalize_code_days(code_info.DAYS, default=30)
+
+        return api_response(
+            True,
+            "注册码有效",
+            {
+                "type": code_info.TYPE,
+                "type_name": type_names.get(code_info.TYPE, "未知"),
+                "days": days,
+                "valid": True,
+            },
+        )
+    finally:
+        _release_regcode_slot()
 
 
 @users_bp.route("/me/renew", methods=["POST"])
@@ -1002,6 +1051,27 @@ async def use_code():
             }
         }
     """
+    from src.core.utils import rate_limit_check
+
+    client_ip = request.remote_addr or "unknown"
+    uid = getattr(g.current_user, "UID", "unknown")
+    allowed_uid, retry_after_uid = rate_limit_check(
+        "regcode_use_uid",
+        str(uid),
+        max_requests=6,
+        window_seconds=60,
+    )
+    if not allowed_uid:
+        return api_response(False, f"卡码使用过于频繁，请在 {retry_after_uid} 秒后重试", code=429)
+    allowed_ip, retry_after_ip = rate_limit_check(
+        "regcode_use_ip",
+        client_ip,
+        max_requests=120,
+        window_seconds=60,
+    )
+    if not allowed_ip:
+        return api_response(False, f"该 IP 卡码请求过于频繁，请在 {retry_after_ip} 秒后重试", code=429)
+
     data = request.get_json() or {}
     reg_code = data.get("reg_code", "").strip()
     emby_username = (data.get("emby_username") or "").strip() or None
@@ -1017,27 +1087,46 @@ async def use_code():
     if not reg_code:
         return api_response(False, "缺少注册码/续期码", code=400)
 
-    success, message, generated_emby_password = await UserService.use_code(
-        g.current_user,
-        reg_code,
+    from src.services import RegcodeUseQueueService
+
+    payload, message = await RegcodeUseQueueService.enqueue(
+        uid=int(g.current_user.UID),
+        reg_code=reg_code,
         emby_username=emby_username,
         emby_password=emby_password,
     )
+    if payload is None:
+        return api_response(False, message, code=429)
+    return api_response(True, message, {"pending": True, **payload})
 
-    if success:
-        user_info = await UserService.get_user_info(g.current_user)
-        return api_response(
-            True,
-            message,
-            {
-                "emby_password": generated_emby_password,
-                "expire_status": user_info["expire_status"],
-                "expired_at": user_info["expired_at"],
-                "role": user_info["role"],
-                "role_name": user_info["role_name"],
-            },
-        )
-    return api_response(False, message, code=400)
+
+@users_bp.route("/me/use-code/status", methods=["GET"])
+@require_auth
+async def get_use_code_status():
+    """查询卡码使用队列状态。"""
+    from src.core.utils import rate_limit_check
+    from src.services import RegcodeUseQueueService
+
+    request_id = (request.args.get("request_id") or "").strip()
+    status_token = (request.args.get("status_token") or "").strip()
+    if not request_id or not status_token:
+        return api_response(False, "缺少 request_id 或 status_token", code=400)
+
+    allowed, retry_after = rate_limit_check(
+        "regcode_use_status_uid",
+        str(g.current_user.UID),
+        max_requests=60,
+        window_seconds=60,
+    )
+    if not allowed:
+        return api_response(False, f"查询过于频繁，请在 {retry_after} 秒后重试", code=429)
+
+    status = await RegcodeUseQueueService.get_status(request_id, status_token)
+    if not status:
+        return api_response(False, "卡码请求不存在或凭证无效", code=404)
+    if int(status.get("uid") or 0) != int(g.current_user.UID):
+        return api_response(False, "无权查看该卡码请求", code=403)
+    return api_response(True, "获取成功", status)
 
 
 # ==================== 用户设备 ====================
