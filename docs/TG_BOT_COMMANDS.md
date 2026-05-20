@@ -139,6 +139,15 @@
 
 如果权限不足，按钮会提示操作失败。
 
+群组巡检与批量踢人使用有界并发，相关配置：
+
+| 配置项 | 说明 |
+| ------ | ---- |
+| `Telegram.group_check_concurrency` | 成员资格巡检 `get_chat_member` 并发数，建议 8-32 |
+| `Telegram.group_action_concurrency` | 禁用、踢出、封禁等写操作并发数，建议 4-12 |
+
+并发值过高可能触发 Telegram `RetryAfter` 限流；遇到限流时任务会退避并记录失败，等待下次巡检继续处理。
+
 ## 帮助文本自定义
 
 管理员可通过配置完整覆盖 Bot 帮助文本：

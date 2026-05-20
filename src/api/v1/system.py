@@ -1007,6 +1007,20 @@ async def get_config_schema():
                         "value": TelegramConfig.GROUP_CHECK_INTERVAL_MINUTES,
                     },
                     {
+                        "key": "group_check_concurrency",
+                        "label": "群组巡检并发数",
+                        "type": "int",
+                        "description": "批量 get_chat_member 的有界并发数，过高可能触发 Telegram 限流，建议 8-32",
+                        "value": TelegramConfig.GROUP_CHECK_CONCURRENCY,
+                    },
+                    {
+                        "key": "group_action_concurrency",
+                        "label": "群组操作并发数",
+                        "type": "int",
+                        "description": "批量禁用/踢出/封禁等写操作并发数，过高可能触发 Telegram 限流，建议 4-12",
+                        "value": TelegramConfig.GROUP_ACTION_CONCURRENCY,
+                    },
+                    {
                         "key": "ban_on_leave",
                         "label": "退群完全封禁模式",
                         "type": "bool",

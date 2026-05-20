@@ -104,6 +104,7 @@ Authorization: ApiKey <api_key>
 | 接口 | 维度 | 阈值 | 说明 |
 | ---- | ---- | ---- | ---- |
 | `POST /auth/login` 系列 | IP | 失败计数式 | 登录失败累计触发临时锁 IP，详见 `src/api/v1/auth.py::_check_login_rate_limit` |
+| `POST /auth/forgot-password/emby` | IP + Emby 用户名 | 5/10 分钟 + 5/30 分钟 | 验证 Emby 账号密码后重置 Web 密码；新密码只返回一次 |
 | `POST /users/register` | IP | 5 / 10 分钟 | 防批量注册 |
 | `GET  /users/check-available` | IP | 60 / 60 秒 | 防扫描可用用户名 |
 | `GET  /users/register/emby/status` | request_id + IP | 60/60s + 240/60s | Emby 注册队列轮询 |

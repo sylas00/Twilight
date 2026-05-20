@@ -31,6 +31,7 @@
 | 方法 | 路径 | 认证 | 说明 |
 | ---- | ---- | ---- | ---- |
 | POST | `/auth/login` | Public | 用户名密码登录 |
+| POST | `/auth/forgot-password/emby` | Public | 通过 Emby 账号密码验证后重置 Web 登录密码 |
 | POST | `/auth/login/telegram` | Public | Telegram 直登 |
 | POST | `/auth/login/apikey` | Public | API Key 换登录态 |
 | POST | `/auth/logout` | User | 注销当前会话 |

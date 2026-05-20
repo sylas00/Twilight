@@ -3,6 +3,7 @@ import time
 import hashlib
 import random
 import logging
+import json
 from typing import Optional, List, Union
 
 from sqlalchemy import select, func, String, Integer, Boolean, update
@@ -78,6 +79,47 @@ class RegCodeOperate:
                     raise
 
         return codes[0] if len(codes) == 1 else codes
+
+    @staticmethod
+    def get_note(reg_code: RegCodeModel) -> str:
+        if not reg_code.OTHER:
+            return ""
+        try:
+            data = json.loads(reg_code.OTHER)
+        except (json.JSONDecodeError, TypeError):
+            return ""
+        return data.get("note", "") if isinstance(data, dict) else ""
+
+    @staticmethod
+    async def update_note(code: str, note: str) -> bool:
+        note = (note or "").strip()
+        if len(note) > 120:
+            note = note[:120]
+        async with RegCodeSessionFactory() as session:
+            try:
+                result = await session.execute(select(RegCodeModel).filter_by(CODE=code).limit(1))
+                reg_code = result.scalar_one_or_none()
+                if not reg_code:
+                    return False
+                data = {}
+                if reg_code.OTHER:
+                    try:
+                        parsed = json.loads(reg_code.OTHER)
+                        if isinstance(parsed, dict):
+                            data = parsed
+                    except (json.JSONDecodeError, TypeError):
+                        data = {}
+                if note:
+                    data["note"] = note
+                else:
+                    data.pop("note", None)
+                reg_code.OTHER = json.dumps(data, ensure_ascii=False) if data else None
+                await session.commit()
+                return True
+            except SQLAlchemyError as e:
+                await session.rollback()
+                logger.error(f"数据库操作失败: {e}")
+                return False
 
     @staticmethod
     async def get_regcode_by_code(code: str) -> Optional[RegCodeModel]:

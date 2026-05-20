@@ -1207,13 +1207,15 @@ async def list_regcodes():
     """
     获取注册码列表
 
-    Query:
-        page: int - 页码（默认 1）
-        type: int - 类型筛选 (1=注册, 2=续期, 3=白名单)
-        active: bool - 是否只显示有效的注册码
+    Query: page, per_page, type, status, search, sort, order
     """
     page = request.args.get("page", 1, type=int)
+    per_page = min(max(request.args.get("per_page", 20, type=int), 1), 100)
     code_type = request.args.get("type", type=int)
+    status = (request.args.get("status") or "all").strip().lower()
+    search = (request.args.get("search") or "").strip().lower()
+    sort = (request.args.get("sort") or "created_time").strip().lower()
+    order = (request.args.get("order") or "desc").strip().lower()
     active_only = request.args.get("active", "false").lower() == "true"
 
     if code_type:
@@ -1221,12 +1223,50 @@ async def list_regcodes():
     else:
         codes = await RegCodeOperate.get_all_regcodes()
 
-    # 过滤有效的
+    # 兼容旧 active=true 参数。
     if active_only:
+        status = "available"
+
+    def _is_used_up(c) -> bool:
+        return c.USE_COUNT_LIMIT > 0 and c.USE_COUNT >= c.USE_COUNT_LIMIT
+
+    now = int(__import__("time").time())
+
+    def _is_expired(c) -> bool:
+        return c.VALIDITY_TIME > 0 and now > c.CREATED_TIME + c.VALIDITY_TIME * 3600
+
+    if status == "available":
+        codes = [c for c in codes if c.ACTIVE and not _is_used_up(c) and not _is_expired(c)]
+    elif status == "disabled":
+        codes = [c for c in codes if not c.ACTIVE]
+    elif status == "used_up":
+        codes = [c for c in codes if _is_used_up(c)]
+    elif status == "expired":
+        codes = [c for c in codes if _is_expired(c)]
+    elif status == "active":
         codes = [c for c in codes if c.ACTIVE]
 
+    if search:
+        codes = [
+            c for c in codes
+            if search in c.CODE.lower()
+            or search in (RegCodeOperate.get_note(c) or "").lower()
+            or search in (c.UID or "").lower()
+        ]
+
+    sort_getters = {
+        "code": lambda c: c.CODE,
+        "type": lambda c: c.TYPE,
+        "days": lambda c: c.DAYS if c.DAYS is not None else 0,
+        "use_count": lambda c: c.USE_COUNT,
+        "use_count_limit": lambda c: c.USE_COUNT_LIMIT,
+        "created_time": lambda c: c.CREATED_TIME,
+        "status": lambda c: (0 if c.ACTIVE and not _is_used_up(c) else 1),
+        "note": lambda c: RegCodeOperate.get_note(c),
+    }
+    codes.sort(key=sort_getters.get(sort, sort_getters["created_time"]), reverse=(order != "asc"))
+
     # 分页处理
-    per_page = 20
     total = len(codes)
     start = (page - 1) * per_page
     end = start + per_page
@@ -1246,6 +1286,8 @@ async def list_regcodes():
                     "use_count_limit": c.USE_COUNT_LIMIT,
                     "days": c.DAYS,
                     "active": c.ACTIVE,
+                    "status": "disabled" if not c.ACTIVE else "expired" if _is_expired(c) else "used_up" if _is_used_up(c) else "available",
+                    "note": RegCodeOperate.get_note(c),
                     "created_time": c.CREATED_TIME,
                     "used_by": c.UID,
                     "used_by_uids": [int(x) for x in (c.UID or "").split(",") if x.strip().isdigit()],
@@ -1537,6 +1579,21 @@ async def delete_regcode(code: str):
     if success:
         return api_response(True, "删除成功")
     return api_response(False, "注册码不存在或删除失败")
+
+
+@admin_bp.route("/regcodes/<code>", methods=["PUT"])
+@require_auth
+@require_admin
+async def update_regcode(code: str):
+    """更新单个注册码元信息。目前支持 note 备注。"""
+    data = request.get_json(silent=True) or {}
+    note = (data.get("note") or "").strip()
+    if len(note) > 120:
+        return api_response(False, "备注最多 120 个字符", code=400)
+    success = await RegCodeOperate.update_note(code, note)
+    if not success:
+        return api_response(False, "注册码不存在或更新失败", code=404)
+    return api_response(True, "更新成功", {"code": code, "note": note})
 
 
 # ==================== Emby 管理 ====================

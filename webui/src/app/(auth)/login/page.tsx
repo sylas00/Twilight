@@ -143,7 +143,13 @@ export default function LoginPage() {
               </div>
             </form>
  
-            <div className="mt-8 flex items-center justify-center gap-2 text-sm">
+            <div className="mt-5 text-center text-sm">
+              <Link href="/forgot-password" className="font-medium text-primary hover:underline">
+                忘记密码？使用 Emby 账号验证找回
+              </Link>
+            </div>
+
+            <div className="mt-5 flex items-center justify-center gap-2 text-sm">
               <span className="text-muted-foreground">还没有账号？</span>
               <Link
                 href="/register"

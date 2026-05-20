@@ -13,7 +13,7 @@ from typing import Optional, Callable, Any
 from flask import Blueprint, request, g, jsonify
 
 from src.config import APIConfig, Config, SecurityConfig
-from src.core.utils import verify_password, timestamp
+from src.core.utils import verify_password, timestamp, hash_password, generate_password, rate_limit_check
 from src.db.user import UserOperate, UserModel, Role, AuthTokenOperate
 from src.db.login_log import LoginLogOperate, LoginLogModel
 from src.services import UserService
@@ -450,6 +450,65 @@ async def login():
     )
     _set_auth_cookie(response, token)
     return response, code
+
+
+@auth_bp.route("/forgot-password/emby", methods=["POST"])
+async def forgot_password_by_emby():
+    """通过 Emby 用户名和密码验证身份后重置绑定的 Web 登录密码。"""
+    client_ip = request.remote_addr or "unknown"
+    allowed, retry_after = rate_limit_check("forgot_password_emby:ip", client_ip, max_requests=5, window_seconds=600)
+    if not allowed:
+        return api_response(False, f"请求过于频繁，请在 {retry_after} 秒后重试", code=429)
+
+    data = request.get_json(silent=True) or {}
+    emby_username = (data.get("emby_username") or "").strip()
+    emby_password = data.get("emby_password") or ""
+    if not emby_username or not emby_password:
+        return api_response(False, "缺少 Emby 用户名或密码", code=400)
+    if len(emby_username) > 100 or len(emby_password) > 200:
+        return api_response(False, "输入过长", code=400)
+
+    allowed_user, retry_after_user = rate_limit_check(
+        "forgot_password_emby:user",
+        emby_username.lower(),
+        max_requests=5,
+        window_seconds=1800,
+    )
+    if not allowed_user:
+        return api_response(False, f"该账号尝试过于频繁，请在 {retry_after_user} 秒后重试", code=429)
+
+    try:
+        from src.services.emby import get_emby_client
+
+        emby_user = await get_emby_client().authenticate_by_name(emby_username, emby_password)
+    except Exception as exc:
+        logger.warning("Emby 找回密码认证异常: %s", exc)
+        return api_response(False, "验证失败", code=401)
+
+    if not emby_user:
+        _record_login_failure(client_ip)
+        return api_response(False, "Emby 用户名或密码错误", code=401)
+
+    user = await UserOperate.get_user_by_embyid(emby_user.id)
+    if not user:
+        return api_response(False, "该 Emby 账号未绑定 Web 账号", code=404)
+    if not user.ACTIVE_STATUS:
+        return api_response(False, "Web 账号已被禁用，请联系管理员", code=403)
+
+    new_password = generate_password(18)
+    user.PASSWORD = hash_password(new_password)
+    await UserOperate.update_user(user)
+    await revoke_user_tokens(user.UID)
+    await _log_login_attempt(user.USERNAME, True, "Emby 验证找回 Web 密码")
+    _clear_login_failures(client_ip)
+    return api_response(
+        True,
+        "密码已重置，新密码只显示一次，请立即登录后修改",
+        {
+            "username": user.USERNAME,
+            "new_password": new_password,
+        },
+    )
 
 
 @auth_bp.route("/login/telegram", methods=["POST"])

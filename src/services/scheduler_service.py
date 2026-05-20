@@ -938,32 +938,42 @@ class SchedulerService:
                 # 以系统内绑定用户为基准做批量对照，不扫描群全量成员列表。
                 missing_map = await TelegramMembershipService.check_users_in_groups(tg_ids, strict=False)
 
-                for u in users:
-                    try:
+                try:
+                    action_concurrency = int(getattr(TelegramConfig, "GROUP_ACTION_CONCURRENCY", 8) or 8)
+                except (TypeError, ValueError):
+                    action_concurrency = 8
+                action_sem = asyncio.Semaphore(max(1, min(action_concurrency, 24)))
+
+                async def _handle_missing_user(u):
+                    async with action_sem:
                         try:
                             user_tg_id = int(u.TELEGRAM_ID)
                         except (TypeError, ValueError):
-                            continue
+                            return {"kind": "skip"}
 
                         missing = missing_map.get(user_tg_id, [])
                         if not missing:
-                            ctx.summary["in_group"] += 1
-                            continue
+                            return {"kind": "in_group"}
 
-                        # 拿到了「明确不在群」的判定 → 禁用
-                        success, msg = await UserService.disable_user(u, reason="未加入必需 Telegram 群组")
-                        if success:
-                            ctx.summary["disabled"] += 1
-                            ctx.log(
-                                f"  ⏹️ 已禁用 {u.USERNAME} (UID: {u.UID}, "
-                                f"TG: {u.TELEGRAM_ID}) — 缺失群组: "
-                                f"{', '.join(m.id for m in missing) or '未知'}"
-                            )
-                        else:
-                            ctx.summary["failed"] += 1
-                            ctx.log(f"  ⚠️ 禁用 {u.USERNAME} 失败: {msg}")
+                        item = {
+                            "kind": "missing",
+                            "username": u.USERNAME,
+                            "uid": u.UID,
+                            "telegram_id": user_tg_id,
+                            "missing": [m.id for m in missing],
+                            "disabled": False,
+                            "disable_error": None,
+                            "banned": 0,
+                            "ban_failed": 0,
+                            "ban_failed_ids": [],
+                        }
+                        try:
+                            success, msg = await UserService.disable_user(u, reason="未加入必需 Telegram 群组")
+                            item["disabled"] = bool(success)
+                            item["disable_error"] = None if success else msg
+                        except Exception as exc:  # pragma: no cover
+                            item["disable_error"] = str(exc)
 
-                        # 退群完全封禁模式：在所有 GROUP_ID 群里永久 ban，不解封
                         if ban_on_leave:
                             try:
                                 ban_result = await TelegramMembershipService.ban_user_permanently(
@@ -972,19 +982,43 @@ class SchedulerService:
                                 )
                                 banned_ids = ban_result.get("banned_groups") or []
                                 failed_groups = ban_result.get("failed_groups") or []
-                                if banned_ids:
-                                    ctx.summary["permanently_banned"] += 1
-                                    ctx.log(f"    🚫 已在 {len(banned_ids)} 个群永久封禁 " f"(TG: {user_tg_id})")
-                                if failed_groups:
-                                    ctx.summary["ban_failed"] += 1
-                                    failed_ids = ", ".join(item.get("id", "?") for item in failed_groups)
-                                    ctx.log(f"    ⚠️ 永封部分群失败 (TG: {user_tg_id}): " f"{failed_ids}")
+                                item["banned"] = 1 if banned_ids else 0
+                                item["ban_failed"] = 1 if failed_groups else 0
+                                item["ban_failed_ids"] = [fg.get("id", "?") for fg in failed_groups]
                             except Exception as ban_exc:  # pragma: no cover
-                                ctx.summary["ban_failed"] += 1
-                                ctx.log(f"    ❌ 永封 {u.USERNAME} (TG: {user_tg_id}) " f"异常: {ban_exc}")
-                    except Exception as exc:  # pragma: no cover
+                                item["ban_failed"] = 1
+                                item["ban_failed_ids"] = [str(ban_exc)]
+                        return item
+
+                action_results = await asyncio.gather(*(_handle_missing_user(u) for u in users))
+                for item in action_results:
+                    if item.get("kind") == "in_group":
+                        ctx.summary["in_group"] += 1
+                        continue
+                    if item.get("kind") != "missing":
+                        continue
+
+                    if item.get("disabled"):
+                        ctx.summary["disabled"] += 1
+                        ctx.log(
+                            f"  ⏹️ 已禁用 {item['username']} (UID: {item['uid']}, "
+                            f"TG: {item['telegram_id']}) — 缺失群组: "
+                            f"{', '.join(item.get('missing') or []) or '未知'}"
+                        )
+                    else:
                         ctx.summary["failed"] += 1
-                        ctx.log(f"  ❌ 巡检 {u.USERNAME} (UID: {u.UID}) 出错: {exc}")
+                        ctx.log(f"  ⚠️ 禁用 {item['username']} 失败: {item.get('disable_error') or '未知错误'}")
+
+                    if ban_on_leave:
+                        if item.get("banned"):
+                            ctx.summary["permanently_banned"] += 1
+                            ctx.log(f"    🚫 已永久封禁 (TG: {item['telegram_id']})")
+                        if item.get("ban_failed"):
+                            ctx.summary["ban_failed"] += 1
+                            ctx.log(
+                                f"    ⚠️ 永封部分群失败 (TG: {item['telegram_id']}): "
+                                f"{', '.join(item.get('ban_failed_ids') or [])}"
+                            )
 
             # 已禁用账号重新入群识别：只上报管理员，不自动恢复，避免误恢复风控账号。
             # 退群完全封禁模式下用户被永封根本进不来群里，本分支永远拿不到结果，

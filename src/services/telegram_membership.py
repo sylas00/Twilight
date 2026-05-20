@@ -139,9 +139,9 @@ class TelegramMembershipService:
 
         # 延迟导入 telegram.error，避免顶层依赖
         try:
-            from telegram.error import BadRequest, TelegramError, Forbidden
+            from telegram.error import BadRequest, TelegramError, Forbidden, RetryAfter
         except Exception:
-            BadRequest = TelegramError = Forbidden = Exception  # type: ignore
+            BadRequest = TelegramError = Forbidden = RetryAfter = Exception  # type: ignore
 
         async def _check_with_bot(bot) -> Dict[int, List[MissingGroup]]:
             result: Dict[int, List[MissingGroup]] = {tg_id: [] for tg_id in normalized_ids}
@@ -165,7 +165,11 @@ class TelegramMembershipService:
                     logger.warning(f"加载 TelegramRosterOperate 失败，跳过花名册同步: {exc}")
                     roster_writer = None
 
-            semaphore = asyncio.Semaphore(24)
+            try:
+                concurrency = int(getattr(TelegramConfig, "GROUP_CHECK_CONCURRENCY", 24) or 24)
+            except (TypeError, ValueError):
+                concurrency = 24
+            semaphore = asyncio.Semaphore(max(1, min(concurrency, 64)))
 
             async def _probe_one(tg_id: int, gid: Union[int, str]) -> Optional[MissingGroup]:
                 chat = group_meta.get(str(gid))
@@ -228,6 +232,10 @@ class TelegramMembershipService:
                             )
                         return None
                     except TelegramError as exc:
+                        retry_after = getattr(exc, "retry_after", None)
+                        if retry_after is not None:
+                            await asyncio.sleep(min(float(retry_after), 10.0))
+                            return None
                         logger.warning(f"检查群组 {gid} Telegram 异常 (tg_id={tg_id}): {exc}")
                         if strict:
                             return MissingGroup(
@@ -475,9 +483,9 @@ class TelegramMembershipService:
             return result
 
         try:
-            from telegram.error import BadRequest, Forbidden, TelegramError
+            from telegram.error import BadRequest, Forbidden, TelegramError, RetryAfter
         except Exception:
-            BadRequest = Forbidden = TelegramError = Exception  # type: ignore
+            BadRequest = Forbidden = TelegramError = RetryAfter = Exception  # type: ignore
 
         async def _do(bot) -> Dict[str, int | List[dict]]:
             # 把 Bot 自身 ID 加进排除集合
@@ -497,7 +505,11 @@ class TelegramMembershipService:
                 "details": [],
             }
 
-            sem = asyncio.Semaphore(8)
+            try:
+                concurrency = int(getattr(TelegramConfig, "GROUP_ACTION_CONCURRENCY", 8) or 8)
+            except (TypeError, ValueError):
+                concurrency = 8
+            sem = asyncio.Semaphore(max(1, min(concurrency, 24)))
 
             async def _one(tg_id: int) -> None:
                 if tg_id in excluded_ids:
@@ -511,6 +523,12 @@ class TelegramMembershipService:
                         local_result["not_in_group"] = int(local_result["not_in_group"]) + 1
                         return
                     except (Forbidden, TelegramError) as exc:
+                        retry_after = getattr(exc, "retry_after", None)
+                        if retry_after is not None:
+                            await asyncio.sleep(min(float(retry_after), 10.0))
+                            local_result["failed"] = int(local_result["failed"]) + 1
+                            local_result["details"].append({"tg_id": tg_id, "error": "Telegram 限流，稍后重试"})
+                            return
                         local_result["failed"] = int(local_result["failed"]) + 1
                         local_result["details"].append({"tg_id": tg_id, "error": f"查询成员失败: {exc}"})
                         return
@@ -530,6 +548,12 @@ class TelegramMembershipService:
                     try:
                         await bot.ban_chat_member(chat_id, tg_id)
                     except (BadRequest, Forbidden, TelegramError) as exc:
+                        retry_after = getattr(exc, "retry_after", None)
+                        if retry_after is not None:
+                            await asyncio.sleep(min(float(retry_after), 10.0))
+                            local_result["failed"] = int(local_result["failed"]) + 1
+                            local_result["details"].append({"tg_id": tg_id, "error": "Telegram 限流，稍后重试"})
+                            return
                         local_result["failed"] = int(local_result["failed"]) + 1
                         local_result["details"].append({"tg_id": tg_id, "error": f"踢出失败: {exc}"})
                         return
@@ -588,9 +612,9 @@ class TelegramMembershipService:
             return out
 
         try:
-            from telegram.error import BadRequest, Forbidden, TelegramError
+            from telegram.error import BadRequest, Forbidden, TelegramError, RetryAfter
         except Exception:
-            BadRequest = Forbidden = TelegramError = Exception  # type: ignore
+            BadRequest = Forbidden = TelegramError = RetryAfter = Exception  # type: ignore
 
         async def _ban_one(bot, gid) -> tuple[str, bool, Optional[str]]:
             try:
@@ -606,6 +630,14 @@ class TelegramMembershipService:
             except Forbidden as exc:
                 return str(gid), False, f"Forbidden: {exc}"
             except TelegramError as exc:
+                retry_after = getattr(exc, "retry_after", None)
+                if retry_after is not None:
+                    await asyncio.sleep(min(float(retry_after), 10.0))
+                    try:
+                        await bot.ban_chat_member(gid, tg_id, revoke_messages=False)
+                        return str(gid), True, None
+                    except Exception as retry_exc:
+                        return str(gid), False, f"RetryAfter retry failed: {retry_exc}"
                 return str(gid), False, f"TelegramError: {exc}"
             except Exception as exc:  # pragma: no cover - safety
                 return str(gid), False, f"unexpected: {exc}"

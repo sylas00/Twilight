@@ -1173,9 +1173,15 @@ class ApiClient {
     });
   }
 
-  async getRegcodes(page = 1) {
+  async getRegcodes(page = 1, params: { type?: string; status?: string; search?: string; sort?: string; order?: string } = {}) {
+    const query = new URLSearchParams({ page: String(page) });
+    if (params.type && params.type !== "all") query.set("type", params.type);
+    if (params.status && params.status !== "all") query.set("status", params.status);
+    if (params.search) query.set("search", params.search);
+    if (params.sort) query.set("sort", params.sort);
+    if (params.order) query.set("order", params.order);
     return this.request<{ regcodes: Regcode[]; total: number }>(
-      `/admin/regcodes?page=${page}`
+      `/admin/regcodes?${query.toString()}`
     );
   }
 
@@ -1189,6 +1195,20 @@ class ApiClient {
   async deleteRegcode(code: string) {
     return this.request(`/admin/regcodes/${code}`, {
       method: "DELETE",
+    });
+  }
+
+  async updateRegcode(code: string, data: { note?: string }) {
+    return this.request<{ code: string; note: string }>(`/admin/regcodes/${encodeURIComponent(code)}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async forgotPasswordByEmby(data: { emby_username: string; emby_password: string }) {
+    return this.request<{ username: string; new_password: string }>("/auth/forgot-password/emby", {
+      method: "POST",
+      body: JSON.stringify(data),
     });
   }
 
@@ -1769,6 +1789,8 @@ export interface Regcode {
   use_count?: number;
   use_count_limit?: number;
   active?: boolean;
+  status?: "available" | "disabled" | "used_up" | "expired";
+  note?: string;
   used: boolean;
   used_by?: number | string;
   used_by_uids?: number[];

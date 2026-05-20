@@ -7,6 +7,7 @@ from src import __version__
 
 PUBLIC_PATHS = {
     "/auth/login",
+    "/auth/forgot-password/emby",
     "/auth/login/telegram",
     "/auth/login/apikey",
     "/users/register",

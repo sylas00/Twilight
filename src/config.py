@@ -424,6 +424,8 @@ class TelegramConfig(BaseConfig):
     ENABLE_TG_PANEL: bool = False  # 是否开启 TG Bot 完整面板（关闭时仅允许绑定和查看基础信息）
     REQUIRE_GROUP_MEMBERSHIP: bool = False  # 是否强制要求绑定/已绑定用户保持在配置中的群组内
     GROUP_CHECK_INTERVAL_MINUTES: int = 30  # 定时检查间隔（分钟），开启上面开关后生效
+    GROUP_CHECK_CONCURRENCY: int = 24  # 群组成员资格巡检 get_chat_member 并发数
+    GROUP_ACTION_CONCURRENCY: int = 8  # 群组禁用/踢出/封禁等写操作并发数
     # 退群完全封禁模式：开启后，定时巡检发现某绑定用户已离开必需群组时，
     # 除禁用本地账号 + Emby 外，还会对该 TG 用户在所有 GROUP_ID 列出的群里
     # 执行 ban_chat_member（不 unban），使其无法重新加入。默认关闭，谨慎开启。

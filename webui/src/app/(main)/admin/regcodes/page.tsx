@@ -12,6 +12,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Download,
+  Save,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -50,6 +51,13 @@ export default function AdminRegcodesPage() {
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [selectedCodes, setSelectedCodes] = useState<Set<string>>(new Set());
+  const [filterType, setFilterType] = useState("all");
+  const [filterStatus, setFilterStatus] = useState("all");
+  const [search, setSearch] = useState("");
+  const [sort, setSort] = useState("created_time");
+  const [order, setOrder] = useState("desc");
+  const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({});
+  const [savingNote, setSavingNote] = useState<string | null>(null);
 
   // Create dialog
   const [createOpen, setCreateOpen] = useState(false);
@@ -65,7 +73,7 @@ export default function AdminRegcodesPage() {
   const [createdCodes, setCreatedCodes] = useState<string[]>([]);
 
   const loadRegcodesResource = useCallback(async () => {
-    const res = await api.getRegcodes(page);
+    const res = await api.getRegcodes(page, { type: filterType, status: filterStatus, search, sort, order });
     if (res.success && res.data) {
       const regcodesList = Array.isArray(res.data.regcodes)
         ? res.data.regcodes
@@ -73,13 +81,14 @@ export default function AdminRegcodesPage() {
           ? res.data
           : [];
       setRegcodes(regcodesList);
+      setNoteDrafts(Object.fromEntries(regcodesList.map((item) => [item.code, item.note || ""])));
       setTotal(res.data.total || regcodesList.length);
     } else {
       setRegcodes([]);
       setTotal(0);
     }
     return true;
-  }, [page]);
+  }, [page, filterType, filterStatus, search, sort, order]);
 
   const {
     isLoading,
@@ -158,6 +167,24 @@ export default function AdminRegcodesPage() {
     toast({ title: "已复制到剪贴板" });
   };
 
+  const handleSaveNote = async (code: string) => {
+    setSavingNote(code);
+    try {
+      const note = (noteDrafts[code] || "").trim();
+      const res = await api.updateRegcode(code, { note });
+      if (res.success) {
+        toast({ title: "备注已保存", variant: "success" });
+        setRegcodes((prev) => prev.map((item) => item.code === code ? { ...item, note } : item));
+      } else {
+        toast({ title: "保存失败", description: res.message, variant: "destructive" });
+      }
+    } catch (error: any) {
+      toast({ title: "保存失败", description: error.message, variant: "destructive" });
+    } finally {
+      setSavingNote(null);
+    }
+  };
+
   const selectedRegcodes = regcodes.filter((item) => selectedCodes.has(item.code));
 
   const toggleSelectAll = (checked: boolean) => {
@@ -207,6 +234,14 @@ export default function AdminRegcodesPage() {
       default:
         return <Badge variant="secondary">未知</Badge>;
     }
+  };
+
+  const getStatusBadge = (code: Regcode) => {
+    const status = code.status || (code.active === false ? "disabled" : "available");
+    if (status === "disabled") return <Badge variant="destructive">已禁用</Badge>;
+    if (status === "used_up") return <Badge variant="warning">已用完</Badge>;
+    if (status === "expired") return <Badge variant="secondary">已过期</Badge>;
+    return <Badge variant="success">可用</Badge>;
   };
 
   const pages = Math.ceil(total / 20);
@@ -354,6 +389,55 @@ export default function AdminRegcodesPage() {
       </div>
 
       <Card>
+        <CardContent className="grid gap-3 p-4 md:grid-cols-[1.2fr_0.8fr_0.8fr_0.8fr_0.7fr_auto]">
+          <Input
+            placeholder="搜索卡码 / 备注 / 使用 UID"
+            value={search}
+            onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+          />
+          <Select value={filterType} onValueChange={(v) => { setFilterType(v); setPage(1); }}>
+            <SelectTrigger><SelectValue placeholder="类型" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部类型</SelectItem>
+              <SelectItem value="1">注册码</SelectItem>
+              <SelectItem value="2">续期码</SelectItem>
+              <SelectItem value="3">白名单码</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={filterStatus} onValueChange={(v) => { setFilterStatus(v); setPage(1); }}>
+            <SelectTrigger><SelectValue placeholder="状态" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部状态</SelectItem>
+              <SelectItem value="available">可用</SelectItem>
+              <SelectItem value="active">启用中</SelectItem>
+              <SelectItem value="used_up">已用完</SelectItem>
+              <SelectItem value="expired">已过期</SelectItem>
+              <SelectItem value="disabled">已禁用</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={sort} onValueChange={setSort}>
+            <SelectTrigger><SelectValue placeholder="排序" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="created_time">创建时间</SelectItem>
+              <SelectItem value="code">卡码</SelectItem>
+              <SelectItem value="type">类型</SelectItem>
+              <SelectItem value="days">天数</SelectItem>
+              <SelectItem value="use_count">使用次数</SelectItem>
+              <SelectItem value="note">备注</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={order} onValueChange={setOrder}>
+            <SelectTrigger><SelectValue placeholder="顺序" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="desc">降序</SelectItem>
+              <SelectItem value="asc">升序</SelectItem>
+            </SelectContent>
+          </Select>
+          <Button variant="outline" onClick={() => void loadRegcodes()}>刷新</Button>
+        </CardContent>
+      </Card>
+
+      <Card>
         <CardContent className="p-0">
           {isLoading ? (
             <div className="flex h-64 items-center justify-center">
@@ -376,7 +460,7 @@ export default function AdminRegcodesPage() {
                       />
                     </th>
                     <th className="px-4 py-3 text-left text-sm font-medium">注册码</th>
-                    <th className="px-4 py-3 text-left text-sm font-medium">类型</th>
+                    <th className="px-4 py-3 text-left text-sm font-medium">类型 / 备注</th>
                     <th className="px-4 py-3 text-left text-sm font-medium">账号有效天数</th>
                     <th className="px-4 py-3 text-left text-sm font-medium">注册码有效期</th>
                     <th className="px-4 py-3 text-left text-sm font-medium">使用次数</th>
@@ -410,7 +494,23 @@ export default function AdminRegcodesPage() {
                           </Button>
                         </div>
                       </td>
-                      <td className="px-4 py-3">{getTypeBadge(code.type)}</td>
+                      <td className="px-4 py-3 min-w-[220px]">
+                        <div className="space-y-2">
+                          {getTypeBadge(code.type)}
+                          <div className="flex gap-1">
+                            <Input
+                              value={noteDrafts[code.code] ?? code.note ?? ""}
+                              maxLength={120}
+                              placeholder="备注 / 名称"
+                              className="h-8 text-xs"
+                              onChange={(e) => setNoteDrafts((prev) => ({ ...prev, [code.code]: e.target.value }))}
+                            />
+                            <Button size="icon" variant="ghost" className="h-8 w-8" disabled={savingNote === code.code} onClick={() => void handleSaveNote(code.code)}>
+                              {savingNote === code.code ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+                            </Button>
+                          </div>
+                        </div>
+                      </td>
                       <td className="px-4 py-3">{code.days <= 0 ? "永久" : `${code.days} 天`}</td>
                       <td className="px-4 py-3 text-sm">
                         {code.validity_time === -1 || code.validity_time === undefined 
@@ -421,17 +521,7 @@ export default function AdminRegcodesPage() {
                         {code.use_count || 0} / {code.use_count_limit === -1 ? '∞' : code.use_count_limit || '∞'}
                       </td>
                       <td className="px-4 py-3">
-                        <Badge variant={code.active === false ? "destructive" : "success"}>
-                          {(() => {
-                            if (code.active === false) return "已禁用";
-                            const limit = code.use_count_limit;
-                            // -1 / 0 / null / undefined 都视为无限制
-                            const limited = typeof limit === "number" && limit > 0;
-                            const used = code.use_count || 0;
-                            if (limited && used >= (limit as number)) return "已用完";
-                            return "可用";
-                          })()}
-                        </Badge>
+                        {getStatusBadge(code)}
                         {((code.used_by_uids?.length || 0) > 0 || (code.used_by_telegram_ids?.length || 0) > 0) && (
                           <div className="mt-1 space-y-0.5 text-xs text-muted-foreground">
                             {(code.used_by_uids?.length || 0) > 0 && <div>UID: {code.used_by_uids?.join(", ")}</div>}
