@@ -48,8 +48,8 @@ type Level = Announcement["level"];
 
 const RENDER_OPTIONS: Array<{ value: AnnouncementRenderMode; label: string; hint: string }> = [
   { value: "plain", label: "纯文本", hint: "保留换行，原样展示，所有标签都按字面显示" },
-  { value: "markdown", label: "Markdown", hint: "支持 # 标题、**粗体**、`代码`、列表、引用、[链接](URL) 等" },
-  { value: "bbcode", label: "BBCode", hint: "支持 [b][i][u][code][quote][url=...][color=#fff][size=14] 等白名单标签" },
+  { value: "markdown", label: "Markdown", hint: "支持标题、粗斜体、代码、引用、列表、任务列表、表格、图片、链接等" },
+  { value: "bbcode", label: "BBCode", hint: "支持 [b][i][u][code][quote][url][img][color][size][list][spoiler][center] 等白名单标签" },
 ];
 
 const LEVEL_OPTIONS: Array<{ value: Level; label: string }> = [
