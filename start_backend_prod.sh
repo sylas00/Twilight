@@ -21,6 +21,10 @@ fi
 HOST="$(strip_cr "${TWILIGHT_API_HOST:-0.0.0.0}")"
 PORT="$(strip_cr "${TWILIGHT_API_PORT:-5000}")"
 WORKERS="$(strip_cr "${TWILIGHT_UVICORN_WORKERS:-1}")"
+LIMIT_CONCURRENCY="$(strip_cr "${TWILIGHT_UVICORN_LIMIT_CONCURRENCY:-100}")"
+BACKLOG="$(strip_cr "${TWILIGHT_UVICORN_BACKLOG:-128}")"
+KEEP_ALIVE="$(strip_cr "${TWILIGHT_UVICORN_KEEP_ALIVE:-5}")"
+NOFILE="$(strip_cr "${TWILIGHT_NOFILE_LIMIT:-65535}")"
 WITH_BOT="$(strip_cr "${TWILIGHT_WITH_BOT:-1}")"
 FORCE_RESTART_BOT="$(strip_cr "${TWILIGHT_FORCE_RESTART_BOT:-0}")"
 BOT_LOCK_FILE="$(strip_cr "${TWILIGHT_BOT_LOCK_FILE:-$SCRIPT_DIR/db/telegram_bot.lock}")"
@@ -37,6 +41,16 @@ echo "=========================================="
 echo "Using Python: $PYTHON"
 echo "Mode: production (uvicorn)"
 echo "Host: $HOST  Port: $PORT  Workers: $WORKERS"
+echo "Uvicorn: limit_concurrency=$LIMIT_CONCURRENCY backlog=$BACKLOG keep_alive=${KEEP_ALIVE}s"
+
+if command -v ulimit >/dev/null 2>&1; then
+  CURRENT_NOFILE="$(ulimit -n || true)"
+  if ulimit -n "$NOFILE" 2>/dev/null; then
+    echo "NOFILE: $(ulimit -n)"
+  else
+    echo "WARNING: unable to raise NOFILE to $NOFILE (current: $CURRENT_NOFILE). Configure systemd LimitNOFILE or container ulimit."
+  fi
+fi
 if [[ "$WITH_BOT" == "1" ]]; then
   echo "Bot: enabled (separate process)"
   echo "Bot lock: $BOT_LOCK_FILE"
@@ -128,5 +142,12 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-"$PYTHON" -m uvicorn asgi:app --host "$HOST" --port "$PORT" --workers "$WORKERS" "$@"
+"$PYTHON" -m uvicorn asgi:app \
+  --host "$HOST" \
+  --port "$PORT" \
+  --workers "$WORKERS" \
+  --limit-concurrency "$LIMIT_CONCURRENCY" \
+  --backlog "$BACKLOG" \
+  --timeout-keep-alive "$KEEP_ALIVE" \
+  "$@"
 exit $?
