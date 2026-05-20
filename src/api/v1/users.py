@@ -41,7 +41,7 @@ users_bp = Blueprint("users", __name__, url_prefix="/users")
 # 但因为攻击者通常长链接打同一进程，单进程就足以挡住。
 _INVALID_CODE_TTL = 300  # 已知失效 code 的缓存秒数
 _INVALID_CODE_CACHE_MAX = 2048  # 缓存大小上限，防止恶意写满
-_IP_404_THRESHOLD = 20  # 60s 内同 IP 累计 404 阈值
+_IP_404_THRESHOLD = 60  # 60s 内同 IP 累计 404 阈值
 _IP_404_WINDOW = 60  # 计数窗口（秒）
 _IP_404_BAN_DURATION = 300  # 触发后的封禁时长（秒）
 
@@ -1741,12 +1741,12 @@ async def query_tg_register_bind_code_status():
         )
 
     # 第 2 层：双层限速，正常前端 2s 轮询不会触发。
-    # - 单 code：30 次 / 60s （前端 2s 一次 = 30 次/分钟，留 1× 余量）
-    # - 单 IP：120 次 / 60s （单 IP 多页签/多账号兼容，但拒绝大规模扫描）
+    # - 单 code：90 次 / 60s （给网络抖动、React 严格模式、重复点击留足余量）
+    # - 单 IP：600 次 / 60s （允许同公网出口多用户注册，但仍拒绝大规模扫描）
     allowed_code, retry_after_code = rate_limit_check(
         "tg_register_bind_code_status:code",
         code,
-        max_requests=30,
+        max_requests=90,
         window_seconds=60,
     )
     if not allowed_code:
@@ -1764,7 +1764,7 @@ async def query_tg_register_bind_code_status():
     allowed_ip, retry_after_ip = rate_limit_check(
         "tg_register_bind_code_status:ip",
         client_ip,
-        max_requests=120,
+        max_requests=600,
         window_seconds=60,
     )
     if not allowed_ip:

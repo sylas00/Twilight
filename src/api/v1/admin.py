@@ -1596,6 +1596,55 @@ async def update_regcode(code: str):
     return api_response(True, "更新成功", {"code": code, "note": note})
 
 
+@admin_bp.route("/regcodes/<code>/users", methods=["GET"])
+@require_auth
+@require_admin
+async def get_regcode_users(code: str):
+    """查看单个注册码的使用者详情。"""
+    reg_code = await RegCodeOperate.get_regcode_by_code(code)
+    if not reg_code:
+        return api_response(False, "注册码不存在", code=404)
+
+    uid_values = [int(x) for x in (reg_code.UID or "").split(",") if x.strip().isdigit()]
+    tg_values = [int(x) for x in (reg_code.TELEGRAM_ID or "").split(",") if x.strip().isdigit()]
+
+    users: list[dict] = []
+    seen_uids: set[int] = set()
+    for uid in uid_values:
+        user = await UserOperate.get_user_by_uid(uid)
+        if not user:
+            users.append({"uid": uid, "found": False, "source": "uid"})
+            continue
+        seen_uids.add(int(user.UID))
+        info = await UserService.get_user_info(user)
+        info["found"] = True
+        info["source"] = "uid"
+        users.append(info)
+
+    telegram_only: list[dict] = []
+    for tg_id in tg_values:
+        user = await UserOperate.get_user_by_telegram_id(tg_id)
+        if user and int(user.UID) not in seen_uids:
+            seen_uids.add(int(user.UID))
+            info = await UserService.get_user_info(user)
+            info["found"] = True
+            info["source"] = "telegram"
+            users.append(info)
+        elif not user:
+            telegram_only.append({"telegram_id": tg_id, "found": False, "source": "telegram"})
+
+    return api_response(
+        True,
+        "获取成功",
+        {
+            "code": code,
+            "use_count": reg_code.USE_COUNT,
+            "users": users,
+            "telegram_only": telegram_only,
+        },
+    )
+
+
 # ==================== Emby 管理 ====================
 
 

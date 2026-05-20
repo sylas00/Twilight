@@ -361,6 +361,7 @@ export default function DashboardPage() {
   const isAdmin = user?.role === 0;
   const isPending = !user?.emby_id && !user?.active;
   const isPendingEmby = Boolean(user?.pending_emby) && !user?.emby_id;
+  const isPendingEmbyFromRegcode = isPendingEmby && user?.pending_emby_days !== null && user?.pending_emby_days !== undefined;
 
   let expiredTimestamp: number | null = null;
   if (user?.expired_at !== undefined && user.expired_at !== null) {
@@ -478,12 +479,13 @@ export default function DashboardPage() {
     if (!registerAvailability) return null;
     if (!registerAvailability.emby_direct_register_enabled) return "管理员尚未开启自由注册";
     if (user?.emby_id) return "您已经绑定了 Emby 账号";
+    if (!user?.pending_emby) return "当前账号不在待开通 Emby 状态，请前往设置绑定已有 Emby 账号或联系管理员";
     if (!user?.telegram_id) return "请先在「设置 → Telegram」中完成 Telegram 绑定";
     const limit = Number(registerAvailability.emby_user_limit ?? -1);
     const used = Number(registerAvailability.emby_bound_users ?? 0);
     if (limit > 0 && used >= limit) return `Emby 已绑定用户数已达上限（${used}/${limit}）`;
     return null;
-  }, [registerAvailability, user?.emby_id, user?.telegram_id]);
+  }, [registerAvailability, user?.emby_id, user?.pending_emby, user?.telegram_id]);
 
   const showEmbyDirectRegisterCard = Boolean(
     registerAvailability?.emby_direct_register_enabled && !user?.emby_id,
@@ -639,7 +641,9 @@ export default function DashboardPage() {
           </h1>
           <p className="text-muted-foreground font-medium mt-1 text-sm sm:text-base">
             {isPendingEmby
-              ? "你的系统账号已建好，但还没绑定 Emby 账号 — 点击右上角弹窗或刷新页面即可补建"
+              ? isPendingEmbyFromRegcode
+                ? "你的系统账号已建好，但还没绑定 Emby 账号，可通过补建弹窗完成注册"
+                : "你的系统账号已建好，但还没绑定 Emby 账号，可在下方自由注册入口开通"
               : isPending
                 ? "当前账号可登录，若需媒体服务请联系管理员开通 Emby 账号"
                 : "欢迎回来，当前账号状态正常"}
@@ -979,6 +983,42 @@ export default function DashboardPage() {
         </div>
       </motion.div>
 
+      {/* Emby 自由注册：登录后可在仪表盘开通 */}
+      {showEmbyDirectRegisterCard && (
+        <motion.div variants={item} className="premium-card p-5 sm:p-6">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="p-2 bg-emerald-500/10 rounded-xl text-emerald-500">
+              <Gift className="h-5 w-5" />
+            </div>
+            <div>
+              <h3 className="text-base font-black tracking-tight">当前已开启 Emby 自由注册</h3>
+              <p className="text-[11px] text-muted-foreground font-bold uppercase tracking-tighter">
+                Direct Emby Registration
+              </p>
+            </div>
+          </div>
+
+          <div className="space-y-3 text-sm">
+            <p className="text-muted-foreground">
+              {directRegisterBlockedReason
+                ? directRegisterBlockedReason
+                : "当前已开启自由注册，点击按钮填写 Emby 用户名和密码即可开通。"}
+            </p>
+
+            <Button
+              className="rounded-xl font-black"
+              disabled={Boolean(directRegisterBlockedReason)}
+              onClick={() => {
+                setShowDirectRegisterDialog(true);
+              }}
+            >
+              <UserPlus className="mr-2 h-4 w-4" />
+              立即开通 Emby
+            </Button>
+          </div>
+        </motion.div>
+      )}
+
       {embyRegisterStored && embyRegisterStatus && (
         <motion.div variants={item} className="premium-card p-5 sm:p-6 border-emerald-500/20 bg-emerald-500/5">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -1008,42 +1048,6 @@ export default function DashboardPage() {
                 </Button>
               )}
             </div>
-          </div>
-        </motion.div>
-      )}
-
-      {/* Emby 自由注册：登录后可在仪表盘开通 */}
-      {showEmbyDirectRegisterCard && (
-        <motion.div variants={item} className="premium-card p-5 sm:p-6">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="p-2 bg-emerald-500/10 rounded-xl text-emerald-500">
-              <Gift className="h-5 w-5" />
-            </div>
-            <div>
-              <h3 className="text-base font-black tracking-tight">当前已开启 Emby 自由注册</h3>
-              <p className="text-[11px] text-muted-foreground font-bold uppercase tracking-tighter">
-                Direct Emby Registration
-              </p>
-            </div>
-          </div>
-
-          <div className="space-y-3 text-sm">
-            <p className="text-muted-foreground">
-              {directRegisterBlockedReason
-                ? directRegisterBlockedReason
-                : "无需注册码即可开通 Emby 账号；请选择开通时长后填写 Emby 用户名和密码。"}
-            </p>
-
-            <Button
-              className="rounded-xl font-black"
-              disabled={Boolean(directRegisterBlockedReason)}
-              onClick={() => {
-                setShowDirectRegisterDialog(true);
-              }}
-            >
-              <UserPlus className="mr-2 h-4 w-4" />
-              立即开通 Emby
-            </Button>
           </div>
         </motion.div>
       )}

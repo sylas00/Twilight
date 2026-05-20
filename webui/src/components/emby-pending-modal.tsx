@@ -19,8 +19,8 @@ import { api } from "@/lib/api";
 import { passwordStrengthLabel, validatePasswordStrength } from "@/lib/password";
 
 /**
- * 全站挂载的 Modal：当用户系统账号已建但 Emby 未绑定时（pending_emby=true）
- * 每次进入受认证页面都会弹出引导用户补建 Emby 账号。可以暂时关闭逛网站。
+ * 全站挂载的 Modal：仅引导已使用注册码但 Emby 补建未完成的用户继续补建。
+ * 自由注册用户改为在仪表盘手动点击入口开通，避免未开启自由注册时自动弹窗。
  */
 export function EmbyPendingModal() {
   const { user, fetchUser } = useAuthStore();
@@ -32,19 +32,19 @@ export function EmbyPendingModal() {
   const [showPwd, setShowPwd] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
-  const isPending = Boolean(user?.pending_emby) && !user?.emby_id;
+  const isPendingFromRegcode = Boolean(user?.pending_emby) && !user?.emby_id && user?.pending_emby_days !== null && user?.pending_emby_days !== undefined;
 
   useEffect(() => {
-    if (isPending) {
+    if (isPendingFromRegcode) {
       // 每次 user 变更且仍处于 pending 时，把 modal 打开
       setOpen(true);
       setEmbyUsername(user?.username || "");
     } else {
       setOpen(false);
     }
-  }, [isPending, user?.uid, user?.username]);
+  }, [isPendingFromRegcode, user?.uid, user?.username]);
 
-  if (!isPending) return null;
+  if (!isPendingFromRegcode) return null;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

@@ -176,6 +176,8 @@
 | POST | `/admin/emby/sync` | Admin | 同步 Emby 用户 |
 | GET | `/admin/regcodes` | Admin | 注册码列表 |
 | POST | `/admin/regcodes` | Admin | 创建注册码 |
+| GET | `/admin/regcodes/{code}/users` | Admin | 查看注册码使用者详情 |
+| PUT | `/admin/regcodes/{code}` | Admin | 更新注册码备注 |
 | DELETE | `/admin/regcodes/{code}` | Admin | 删除注册码 |
 | GET | `/admin/media-requests` | Admin | 求片管理列表 |
 | PUT | `/admin/media-requests/{request_id}` | Admin | 更新求片 |

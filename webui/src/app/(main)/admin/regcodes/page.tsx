@@ -13,6 +13,7 @@ import {
   ChevronRight,
   Download,
   Save,
+  Users,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -41,7 +42,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { useAsyncResource } from "@/hooks/use-async-resource";
 import { PageError } from "@/components/layout/page-state";
-import { api, type Regcode } from "@/lib/api";
+import { api, type Regcode, type UserInfo } from "@/lib/api";
 import { formatDate } from "@/lib/utils";
 
 export default function AdminRegcodesPage() {
@@ -58,6 +59,11 @@ export default function AdminRegcodesPage() {
   const [order, setOrder] = useState("desc");
   const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({});
   const [savingNote, setSavingNote] = useState<string | null>(null);
+  const [usageOpen, setUsageOpen] = useState(false);
+  const [usageCode, setUsageCode] = useState<Regcode | null>(null);
+  const [usageLoading, setUsageLoading] = useState(false);
+  const [usageUsers, setUsageUsers] = useState<Array<Partial<UserInfo> & { found: boolean; source: "uid" | "telegram" }>>([]);
+  const [usageTelegramOnly, setUsageTelegramOnly] = useState<Array<{ telegram_id: number; found: false; source: "telegram" }>>([]);
 
   // Create dialog
   const [createOpen, setCreateOpen] = useState(false);
@@ -185,6 +191,27 @@ export default function AdminRegcodesPage() {
     }
   };
 
+  const openUsageDialog = async (code: Regcode) => {
+    setUsageCode(code);
+    setUsageOpen(true);
+    setUsageUsers([]);
+    setUsageTelegramOnly([]);
+    setUsageLoading(true);
+    try {
+      const res = await api.getRegcodeUsers(code.code);
+      if (res.success && res.data) {
+        setUsageUsers(res.data.users || []);
+        setUsageTelegramOnly(res.data.telegram_only || []);
+      } else {
+        toast({ title: "加载使用者失败", description: res.message, variant: "destructive" });
+      }
+    } catch (error: any) {
+      toast({ title: "加载使用者失败", description: error.message, variant: "destructive" });
+    } finally {
+      setUsageLoading(false);
+    }
+  };
+
   const selectedRegcodes = regcodes.filter((item) => selectedCodes.has(item.code));
 
   const toggleSelectAll = (checked: boolean) => {
@@ -245,6 +272,12 @@ export default function AdminRegcodesPage() {
   };
 
   const pages = Math.ceil(total / 20);
+
+  const usedCount = (code: Regcode) => {
+    const byUid = code.used_by_uids?.length || 0;
+    const byTg = code.used_by_telegram_ids?.length || 0;
+    return Math.max(byUid, byTg, code.use_count || 0);
+  };
 
   if (error) {
     return <PageError message={error} onRetry={() => void loadRegcodes()} />;
@@ -522,11 +555,16 @@ export default function AdminRegcodesPage() {
                       </td>
                       <td className="px-4 py-3">
                         {getStatusBadge(code)}
-                        {((code.used_by_uids?.length || 0) > 0 || (code.used_by_telegram_ids?.length || 0) > 0) && (
-                          <div className="mt-1 space-y-0.5 text-xs text-muted-foreground">
-                            {(code.used_by_uids?.length || 0) > 0 && <div>UID: {code.used_by_uids?.join(", ")}</div>}
-                            {(code.used_by_telegram_ids?.length || 0) > 0 && <div>TG: {code.used_by_telegram_ids?.join(", ")}</div>}
-                          </div>
+                        {usedCount(code) > 0 && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="mt-1 h-7 px-2 text-xs text-primary"
+                            onClick={() => void openUsageDialog(code)}
+                          >
+                            <Users className="mr-1 h-3.5 w-3.5" />
+                            {usedCount(code)} 人使用
+                          </Button>
                         )}
                       </td>
                       <td className="px-4 py-3 text-sm text-muted-foreground">
@@ -574,6 +612,56 @@ export default function AdminRegcodesPage() {
           </Button>
         </div>
       )}
+
+      <Dialog open={usageOpen} onOpenChange={setUsageOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>卡码使用者</DialogTitle>
+            <DialogDescription>
+              {usageCode?.code}
+            </DialogDescription>
+          </DialogHeader>
+          {usageLoading ? (
+            <div className="flex h-32 items-center justify-center">
+              <Loader2 className="h-6 w-6 animate-spin text-primary" />
+            </div>
+          ) : usageUsers.length === 0 && usageTelegramOnly.length === 0 ? (
+            <div className="rounded-xl border border-dashed p-6 text-center text-sm text-muted-foreground">
+              暂无使用者记录
+            </div>
+          ) : (
+            <div className="max-h-[60vh] space-y-3 overflow-y-auto pr-1">
+              {usageUsers.map((user, index) => (
+                <div key={`${user.uid || "missing"}-${index}`} className="rounded-xl border bg-muted/20 p-4">
+                  {user.found ? (
+                    <div className="grid gap-2 text-sm sm:grid-cols-2">
+                      <div className="font-medium">{user.username || "未知用户"}</div>
+                      <div className="text-muted-foreground">UID: {user.uid}</div>
+                      <div>角色: {user.role_name || user.role}</div>
+                      <div>状态: {user.active ? "启用" : "禁用"}</div>
+                      <div>Telegram: {user.telegram_id ? "已绑定" : "未绑定"}</div>
+                      <div>Emby: {user.emby_id ? "已绑定" : user.pending_emby ? "待补建" : "未绑定"}</div>
+                      <div className="sm:col-span-2 text-muted-foreground">到期: {user.expire_status || "-"}</div>
+                    </div>
+                  ) : (
+                    <div className="text-sm text-muted-foreground">UID {user.uid} 的本地用户已不存在</div>
+                  )}
+                </div>
+              ))}
+              {usageTelegramOnly.map((item) => (
+                <div key={`tg-${item.telegram_id}`} className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm">
+                  <div className="font-medium">仅记录到 Telegram 使用者</div>
+                  <div className="mt-1 text-muted-foreground">TGID: {item.telegram_id}</div>
+                  <div className="mt-1 text-muted-foreground">当前没有本地用户绑定该 Telegram ID。</div>
+                </div>
+              ))}
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setUsageOpen(false)}>关闭</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

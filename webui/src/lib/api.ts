@@ -1205,6 +1205,15 @@ class ApiClient {
     });
   }
 
+  async getRegcodeUsers(code: string) {
+    return this.request<{
+      code: string;
+      use_count: number;
+      users: Array<(Partial<UserInfo> & { found: boolean; source: "uid" | "telegram" })>;
+      telegram_only: Array<{ telegram_id: number; found: false; source: "telegram" }>;
+    }>(`/admin/regcodes/${encodeURIComponent(code)}/users`);
+  }
+
   async forgotPasswordByEmby(data: { emby_username: string; emby_password: string }) {
     return this.request<{ username: string; new_password: string }>("/auth/forgot-password/emby", {
       method: "POST",
