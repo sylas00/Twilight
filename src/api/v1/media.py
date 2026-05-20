@@ -10,6 +10,7 @@ import logging
 from flask import Blueprint, request, g
 
 from src.api.v1.auth import require_auth, require_admin, api_response
+from src.core.request_utils import get_real_client_ip
 from src.services import MediaService, MediaRequestService, MediaSource, InventoryService
 from src.db.bangumi import ReqStatus
 
@@ -728,7 +729,7 @@ async def external_update_request():
     from src.config import SecurityConfig
     from src.core.utils import rate_limit_check
 
-    client_ip = request.remote_addr or "unknown"
+    client_ip = get_real_client_ip()
 
     # IP 限流：不论是否带 secret，先挡一道
     allowed, retry_after = rate_limit_check(

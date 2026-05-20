@@ -319,13 +319,70 @@ def singleton(cls):
     return get_instance
 
 
-# ==================== 限流（内存实现） ====================
+# ==================== 限流（内存 + Redis 双层实现） ====================
 
 # 命名空间 → key → (count, window_started_at)
 # key 通常是 IP / UID / "endpoint:ip" 组合；同一进程内有效，重启清零。
 _RATE_BUCKETS: dict[str, dict[str, list[int]]] = {}
 # 每个命名空间最多跟踪多少 key，避免被人塞爆内存
 _RATE_MAX_KEYS_PER_BUCKET = 50000
+
+# Redis 限流客户端（延迟初始化）
+_rate_redis_client = None
+_rate_redis_checked = False
+
+# Redis 滑动窗口限流 Lua 脚本：原子性 INCR + EXPIRE
+_REDIS_RATE_LIMIT_SCRIPT = """
+local key = KEYS[1]
+local max_requests = tonumber(ARGV[1])
+local window = tonumber(ARGV[2])
+local current = tonumber(redis.call('GET', key) or '0')
+if current >= max_requests then
+    local ttl = redis.call('TTL', key)
+    if ttl < 0 then ttl = window end
+    return {0, ttl}
+end
+local new_count = redis.call('INCR', key)
+if new_count == 1 then
+    redis.call('EXPIRE', key, window)
+end
+if new_count > max_requests then
+    local ttl = redis.call('TTL', key)
+    if ttl < 0 then ttl = window end
+    return {0, ttl}
+end
+return {1, 0}
+"""
+
+
+def _get_rate_redis():
+    """获取限流专用的 Redis 客户端（同步版本，用于限流场景）。"""
+    global _rate_redis_client, _rate_redis_checked
+    if _rate_redis_checked:
+        return _rate_redis_client
+    _rate_redis_checked = True
+
+    from src.config import Config
+    if not Config.REDIS_URL:
+        return None
+
+    try:
+        import redis as redis_sync
+        _rate_redis_client = redis_sync.Redis.from_url(
+            Config.REDIS_URL,
+            decode_responses=True,
+            encoding="utf-8",
+            socket_connect_timeout=2,
+            socket_timeout=3,
+        )
+        # 测试连接
+        _rate_redis_client.ping()
+        logger.info("限流 Redis 连接成功")
+    except Exception as exc:
+        logger.warning("限流 Redis 连接失败，回退内存限流：%s", exc)
+        _rate_redis_client = None
+
+    return _rate_redis_client
 
 
 def _rate_bucket(namespace: str) -> dict[str, list[int]]:
@@ -349,6 +406,35 @@ def _rate_evict(bucket: dict[str, list[int]], window_seconds: int, now: int) -> 
         bucket.pop(k, None)
 
 
+def _rate_limit_check_redis(
+    namespace: str,
+    key: str,
+    max_requests: int,
+    window_seconds: int,
+) -> Optional[tuple[bool, int]]:
+    """尝试使用 Redis 做分布式限流。返回 None 表示 Redis 不可用，应回退内存。"""
+    redis_client = _get_rate_redis()
+    if redis_client is None:
+        return None
+
+    redis_key = f"tw:ratelimit:{namespace}:{key}"
+    try:
+        result = redis_client.eval(
+            _REDIS_RATE_LIMIT_SCRIPT,
+            1,
+            redis_key,
+            str(max_requests),
+            str(window_seconds),
+        )
+        allowed = int(result[0]) == 1
+        retry_after = int(result[1]) if not allowed else 0
+        return allowed, max(retry_after, 1) if not allowed else 0
+    except Exception as exc:
+        # Redis 异常时静默回退到内存限流
+        logger.debug("Redis 限流异常，回退内存：%s", exc)
+        return None
+
+
 def rate_limit_check(
     namespace: str,
     key: str,
@@ -356,17 +442,26 @@ def rate_limit_check(
     max_requests: int,
     window_seconds: int,
 ) -> tuple[bool, int]:
-    """检查并消费一次配额。
+    """检查并消费一次配额（Redis 优先，回退内存）。
 
     返回 `(allowed, retry_after_seconds)`：
     - `allowed=True`：消费成功，调用者继续处理；retry_after 为 0。
     - `allowed=False`：被限流；retry_after 是窗口剩余秒数（>= 1）。
 
     阈值 <= 0 视为禁用（始终允许）。
+
+    当 Redis 可用时，限流状态跨 Worker 共享，多进程部署下也能正确限流。
+    Redis 不可用时自动回退到进程内存限流（单 Worker 有效）。
     """
     if max_requests <= 0 or window_seconds <= 0:
         return True, 0
 
+    # 优先尝试 Redis 分布式限流
+    redis_result = _rate_limit_check_redis(namespace, key, max_requests, window_seconds)
+    if redis_result is not None:
+        return redis_result
+
+    # 回退到内存限流
     now = timestamp()
     bucket = _rate_bucket(namespace)
     _rate_evict(bucket, window_seconds, now)
@@ -385,6 +480,15 @@ def rate_limit_check(
 
 def rate_limit_reset(namespace: str, key: str) -> None:
     """显式重置一个 key 的计数，登录成功等场景使用。"""
+    # 重置 Redis 中的计数
+    redis_client = _get_rate_redis()
+    if redis_client is not None:
+        try:
+            redis_client.delete(f"tw:ratelimit:{namespace}:{key}")
+        except Exception:
+            pass
+
+    # 同时重置内存中的计数
     bucket = _RATE_BUCKETS.get(namespace)
     if bucket:
         bucket.pop(key, None)

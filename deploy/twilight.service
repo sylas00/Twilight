@@ -1,0 +1,48 @@
+[Unit]
+Description=Twilight Emby User Management System - API
+After=network.target
+
+[Service]
+Type=exec
+User=root
+Group=root
+WorkingDirectory=/root/Twilight
+ExecStart=/root/Twilight/.venv/bin/python -m uvicorn asgi:app \
+    --host 127.0.0.1 \
+    --port 5000 \
+    --workers 1 \
+    --limit-concurrency 500 \
+    --backlog 2048 \
+    --timeout-keep-alive 5 \
+    --access-log \
+    --log-level info
+
+# 环境变量
+Environment=TWILIGHT_API_AUTOSTART_SCHEDULER=0
+Environment=TWILIGHT_CONFIG_FILE=/root/Twilight/config.toml
+EnvironmentFile=-/root/Twilight/.env
+
+# 资源限制
+LimitNOFILE=65535
+LimitNPROC=4096
+MemoryMax=1G
+MemoryHigh=768M
+
+# 重启策略
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# 优雅关闭
+TimeoutStopSec=30
+KillMode=mixed
+KillSignal=SIGTERM
+
+# 日志
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=twilight
+
+[Install]
+WantedBy=multi-user.target

@@ -18,6 +18,7 @@ import string as _string
 from flask import Blueprint, request, g, send_file
 
 from src.api.v1.auth import require_auth, api_response
+from src.core.request_utils import get_real_client_ip
 from src.db.user import UserOperate, Role, TelegramBindCodeOperate
 from src.core.utils import parse_bool
 from src.services import UserService
@@ -158,7 +159,7 @@ async def register():
     from src.core.utils import rate_limit_check
 
     # 公开端点：注册接口防批量创建，按 IP 限 5 次/10 分钟。
-    client_ip = request.remote_addr or "unknown"
+    client_ip = get_real_client_ip()
     allowed, retry_after = rate_limit_check(
         "user_register",
         client_ip,
@@ -399,7 +400,7 @@ async def get_emby_register_status():
         return api_response(False, "缺少 request_id 或 status_token", code=400)
 
     # 轮询端点：按 request_id 限频 + 按 IP 兜底，防止被无限刷。
-    client_ip = request.remote_addr or "unknown"
+    client_ip = get_real_client_ip()
     allowed_req, retry_after_req = rate_limit_check(
         "emby_register_status:req",
         request_id,
@@ -463,7 +464,7 @@ async def check_registration_available():
     from src.core.utils import rate_limit_check
 
     # 公开端点：注册页可能多次刷新查询，给个相对宽松的 IP 限速。
-    client_ip = request.remote_addr or "unknown"
+    client_ip = get_real_client_ip()
     allowed, retry_after = rate_limit_check(
         "register_check_available",
         client_ip,
@@ -615,7 +616,42 @@ async def change_my_username():
 @users_bp.route("/me/password", methods=["PUT"])
 @require_auth
 async def reset_my_password():
-    """重置密码"""
+    """重置密码（需验证当前密码）
+
+    Request:
+        {
+            "current_password": "old_password"  // 必填，验证身份
+        }
+
+    Response:
+        {
+            "success": true,
+            "data": { "new_password": "随机生成的新密码" }
+        }
+    """
+    from src.core.utils import verify_password, rate_limit_check
+
+    # 防止被盗 token 频繁重置密码
+    uid = str(g.current_user.UID)
+    allowed, retry_after = rate_limit_check(
+        "password_reset_self",
+        uid,
+        max_requests=3,
+        window_seconds=3600,
+    )
+    if not allowed:
+        return api_response(False, f"密码重置过于频繁，请在 {retry_after} 秒后重试", code=429)
+
+    data = request.get_json() or {}
+    current_password = data.get("current_password", "")
+
+    if not current_password:
+        return api_response(False, "请提供当前密码以验证身份", code=400)
+
+    # 验证当前密码
+    if not g.current_user.PASSWORD or not verify_password(current_password, g.current_user.PASSWORD):
+        return api_response(False, "当前密码错误", code=401)
+
     success, message, new_password = await UserService.reset_password(g.current_user)
 
     if success:
@@ -936,7 +972,7 @@ async def check_regcode():
     from src.core.utils import rate_limit_check
 
     # 公开端点，按 IP 限流防止枚举注册码（10 次 / 分钟）
-    client_ip = request.remote_addr or "unknown"
+    client_ip = get_real_client_ip()
     allowed, retry_after = rate_limit_check(
         "regcode_check",
         client_ip,
@@ -1053,7 +1089,7 @@ async def use_code():
     """
     from src.core.utils import rate_limit_check
 
-    client_ip = request.remote_addr or "unknown"
+    client_ip = get_real_client_ip()
     uid = getattr(g.current_user, "UID", "unknown")
     allowed_uid, retry_after_uid = rate_limit_check(
         "regcode_use_uid",
@@ -1290,7 +1326,7 @@ async def get_telegram_status():
         {
             "bound": bool(user.TELEGRAM_ID),
             "telegram_id": masked_id,
-            "telegram_id_full": user.TELEGRAM_ID,  # 完整 ID（用于前端判断）
+            "has_telegram_id": bool(user.TELEGRAM_ID),  # 前端判断是否已绑定
             "telegram_username": telegram_username,  # Telegram 用户名
             "force_bind": force_bind,
             "can_unbind": not force_bind and bool(user.TELEGRAM_ID),
@@ -1740,7 +1776,7 @@ async def generate_tg_register_bind_code():
 
     # 公开端点：按 IP 限制单位时间内生成的绑定码数量（5 次 / 10 分钟），
     # 防止单 IP 把全局 _MAX_BIND_CODES 配额填满造成 DoS。
-    client_ip = request.remote_addr or "unknown"
+    client_ip = get_real_client_ip()
     allowed, retry_after = rate_limit_check(
         "tg_register_bind_code",
         client_ip,
@@ -1802,7 +1838,7 @@ async def query_tg_register_bind_code_status():
     from src.config import Config, TelegramConfig
     from src.core.utils import rate_limit_check
 
-    client_ip = request.remote_addr or "unknown"
+    client_ip = get_real_client_ip()
 
     # 第 0 层：IP 因连续 404 进入短期封禁名单 → 直接拒绝，不消费配额、不查 DB。
     # 这是真正能挡住"明知 404 还死命刷"的客户端的杀手锏。

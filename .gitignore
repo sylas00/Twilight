@@ -165,6 +165,7 @@ test_api.py
 test_external.py
 test_import.py
 OPTIMIZATION_SUMMARY.md
+DEPLOY_LOCAL.txt
 /tests
 config.toml
 /.claude

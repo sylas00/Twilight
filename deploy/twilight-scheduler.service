@@ -1,0 +1,37 @@
+[Unit]
+Description=Twilight Scheduler Service
+After=network.target twilight.service
+PartOf=twilight.service
+
+[Service]
+Type=exec
+User=root
+Group=root
+WorkingDirectory=/root/Twilight
+ExecStart=/root/Twilight/.venv/bin/python main.py scheduler
+
+Environment=TWILIGHT_SCHEDULER_LOCK_FILE=/root/Twilight/db/scheduler.lock
+Environment=TWILIGHT_CONFIG_FILE=/root/Twilight/config.toml
+EnvironmentFile=-/root/Twilight/.env
+
+# 资源限制
+LimitNOFILE=65535
+MemoryMax=512M
+MemoryHigh=384M
+
+# 重启策略
+Restart=always
+RestartSec=10
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+TimeoutStopSec=30
+KillMode=mixed
+KillSignal=SIGTERM
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=twilight-scheduler
+
+[Install]
+WantedBy=multi-user.target

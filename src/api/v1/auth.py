@@ -14,6 +14,7 @@ from flask import Blueprint, request, g, jsonify
 
 from src.config import APIConfig, Config, SecurityConfig
 from src.core.utils import verify_password, timestamp, hash_password, generate_password, rate_limit_check
+from src.core.request_utils import get_real_client_ip
 from src.db.user import UserOperate, UserModel, Role, AuthTokenOperate
 from src.db.login_log import LoginLogOperate, LoginLogModel
 from src.services import UserService
@@ -376,7 +377,7 @@ async def login():
         return api_response(False, "密码过长", code=400)
 
     # IP 速率限制检查
-    client_ip = request.remote_addr or "unknown"
+    client_ip = get_real_client_ip()
     rate_limit_msg = _check_login_rate_limit(client_ip)
     if rate_limit_msg:
         return api_response(False, rate_limit_msg, code=429)
@@ -455,7 +456,7 @@ async def login():
 @auth_bp.route("/forgot-password/emby", methods=["POST"])
 async def forgot_password_by_emby():
     """通过 Emby 用户名和密码验证身份后重置绑定的 Web 登录密码。"""
-    client_ip = request.remote_addr or "unknown"
+    client_ip = get_real_client_ip()
     allowed, retry_after = rate_limit_check("forgot_password_emby:ip", client_ip, max_requests=5, window_seconds=600)
     if not allowed:
         return api_response(False, f"请求过于频繁，请在 {retry_after} 秒后重试", code=429)
@@ -525,7 +526,7 @@ async def login_telegram():
         return api_response(False, "Telegram 直登已禁用，请使用用户名密码登录", code=403)
 
     # IP 速率限制检查
-    client_ip = request.remote_addr or "unknown"
+    client_ip = get_real_client_ip()
     rate_limit_msg = _check_login_rate_limit(client_ip)
     if rate_limit_msg:
         return api_response(False, rate_limit_msg, code=429)
@@ -607,7 +608,7 @@ async def login_apikey():
         return api_response(False, "API Key 直登已禁用，请使用标准登录流程", code=403)
 
     # IP 速率限制检查
-    client_ip = request.remote_addr or "unknown"
+    client_ip = get_real_client_ip()
     rate_limit_msg = _check_login_rate_limit(client_ip)
     if rate_limit_msg:
         return api_response(False, rate_limit_msg, code=429)
@@ -828,7 +829,7 @@ async def _log_login_attempt(username: str, success: bool, reason: str = ""):
         log = LoginLogModel(
             UID=user.UID,
             EMBY_USER_ID=user.EMBYID or "",
-            IP_ADDRESS=request.remote_addr or "unknown",
+            IP_ADDRESS=get_real_client_ip(),
             DEVICE_NAME=request.headers.get("User-Agent", "unknown")[:200],  # 限制长度
             LOGIN_TIME=timestamp(),
             IS_BLOCKED=not success,  # 登录失败时标记为被拦截

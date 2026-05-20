@@ -16,6 +16,7 @@ import logging
 from flask import Blueprint, request, g
 
 from src.api.v1.auth import require_auth, api_response
+from src.core.request_utils import get_real_client_ip
 from src.config import RegisterConfig
 from src.core.utils import (
     is_valid_username,
@@ -210,7 +211,7 @@ async def check_invite_code():
 
     from src.core.utils import rate_limit_check
 
-    client_ip = request.remote_addr or "unknown"
+    client_ip = get_real_client_ip()
     allowed, retry_after = rate_limit_check(
         "invite_check",
         client_ip,
