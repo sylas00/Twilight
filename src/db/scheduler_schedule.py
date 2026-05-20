@@ -256,5 +256,7 @@ class SchedulerScheduleOperate:
                     existing.IS_CUSTOM = 0
                     existing.UPDATED_AT = int(time.time())
                     return True
-                result = await session.execute(delete(SchedulerScheduleModel).where(SchedulerScheduleModel.JOB_ID == job_id))
+                result = await session.execute(
+                    delete(SchedulerScheduleModel).where(SchedulerScheduleModel.JOB_ID == job_id)
+                )
                 return bool(result.rowcount)

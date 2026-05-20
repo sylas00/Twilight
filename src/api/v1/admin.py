@@ -653,9 +653,12 @@ async def sync_user_bindings():
                     dup.TELEGRAM_ID = None
                     await UserOperate.update_user(dup)
                     result["telegram_repaired"] += 1
-                result["details"].append({"uid": dup.UID, "scope": "telegram", "action": "duplicate_cleared", "telegram_id": tg_id})
+                result["details"].append(
+                    {"uid": dup.UID, "scope": "telegram", "action": "duplicate_cleared", "telegram_id": tg_id}
+                )
             keeper = rows[0]
             try:
+
                 async def _resolve_chat(bot):
                     return await bot.get_chat(tg_id)
 
@@ -690,7 +693,9 @@ async def sync_user_bindings():
                                 u.OTHER = json.dumps(other_data) if other_data else ""
                         await UserOperate.update_user(u)
                         result["emby_repaired"] += 1
-                        result["details"].append({"uid": u.UID, "scope": "emby", "action": "missing_remote_cleared", "emby_id": old_emby_id})
+                        result["details"].append(
+                            {"uid": u.UID, "scope": "emby", "action": "missing_remote_cleared", "emby_id": old_emby_id}
+                        )
                     continue
                 if getattr(u, "PENDING_EMBY", False):
                     u.PENDING_EMBY = False
@@ -1244,9 +1249,7 @@ async def list_regcodes():
                     "created_time": c.CREATED_TIME,
                     "used_by": c.UID,
                     "used_by_uids": [int(x) for x in (c.UID or "").split(",") if x.strip().isdigit()],
-                    "used_by_telegram_ids": [
-                        int(x) for x in (c.TELEGRAM_ID or "").split(",") if x.strip().isdigit()
-                    ],
+                    "used_by_telegram_ids": [int(x) for x in (c.TELEGRAM_ID or "").split(",") if x.strip().isdigit()],
                 }
                 for c in paginated_codes
             ],

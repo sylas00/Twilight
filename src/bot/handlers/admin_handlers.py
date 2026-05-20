@@ -864,7 +864,9 @@ def register(bot):
     @require_admin
     async def cmd_twfind(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not context.args:
-            await update.message.reply_text("用法: `/twfind <用户名/UID/TGID/TG用户名/Emby标识>`", parse_mode="Markdown")
+            await update.message.reply_text(
+                "用法: `/twfind <用户名/UID/TGID/TG用户名/Emby标识>`", parse_mode="Markdown"
+            )
             return
         query = " ".join(context.args).strip()
         users, total = await UserOperate.get_all_users(include_inactive=True, search=query, limit=10, offset=0)
@@ -941,7 +943,9 @@ def register(bot):
         if not context.args:
             await update.message.reply_text("用法: `/twsyncuser <用户>`", parse_mode="Markdown")
             return
-        users, _ = await UserOperate.get_all_users(include_inactive=True, search=" ".join(context.args), limit=2, offset=0)
+        users, _ = await UserOperate.get_all_users(
+            include_inactive=True, search=" ".join(context.args), limit=2, offset=0
+        )
         if len(users) != 1:
             await update.message.reply_text("请提供能唯一匹配一个用户的关键词")
             return
