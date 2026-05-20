@@ -34,9 +34,21 @@ def _bot_config_signature() -> tuple[Any, ...]:
         str(TelegramConfig.BOT_TOKEN or ""),
         str(TelegramConfig.TELEGRAM_API_URL or ""),
         str(TelegramConfig.PROXY_URL or ""),
-        tuple(TelegramBot._normalize_ids(TelegramConfig.ADMIN_ID)) if "TelegramBot" in globals() else str(TelegramConfig.ADMIN_ID),
-        tuple(TelegramBot._normalize_ids(TelegramConfig.GROUP_ID)) if "TelegramBot" in globals() else str(TelegramConfig.GROUP_ID),
-        tuple(TelegramBot._normalize_ids(TelegramConfig.CHANNEL_ID)) if "TelegramBot" in globals() else str(TelegramConfig.CHANNEL_ID),
+        (
+            tuple(TelegramBot._normalize_ids(TelegramConfig.ADMIN_ID))
+            if "TelegramBot" in globals()
+            else str(TelegramConfig.ADMIN_ID)
+        ),
+        (
+            tuple(TelegramBot._normalize_ids(TelegramConfig.GROUP_ID))
+            if "TelegramBot" in globals()
+            else str(TelegramConfig.GROUP_ID)
+        ),
+        (
+            tuple(TelegramBot._normalize_ids(TelegramConfig.CHANNEL_ID))
+            if "TelegramBot" in globals()
+            else str(TelegramConfig.CHANNEL_ID)
+        ),
         bool(TelegramConfig.FORCE_SUBSCRIBE),
     )
 
