@@ -422,6 +422,8 @@ class ApiClient {
       lines: Array<{ name: string; url: string }>;
       whitelist_lines?: Array<{ name: string; url: string }>;
       requires_emby_account?: boolean;
+      requires_renewal?: boolean;
+      emby_disabled_by_expiry?: boolean;
     }>(`/system/emby-urls`);
   }
 
@@ -771,6 +773,13 @@ class ApiClient {
 
   async renewUser(uid: number, days: number) {
     return this.request(`/admin/users/${uid}/renew`, {
+      method: "POST",
+      body: JSON.stringify({ days }),
+    });
+  }
+
+  async cancelUserPermanent(uid: number, days: number) {
+    return this.request<{ uid: number; days: number; expired_at: number; role: number; role_name: string; downgraded_whitelist: boolean }>(`/admin/users/${uid}/cancel-permanent`, {
       method: "POST",
       body: JSON.stringify({ days }),
     });
@@ -1710,6 +1719,7 @@ export interface UserInfo {
   is_pending?: boolean;  // 是否待激活
   pending_emby?: boolean;  // 系统账号已建但待补建 Emby
   pending_emby_days?: number | null;  // 注册码授予的开通天数（待 Emby 补建）
+  emby_disabled_by_expiry?: boolean;  // 到期后仅禁用 Emby，系统账号仍可登录
 }
 
 export interface ApiKeyItem {

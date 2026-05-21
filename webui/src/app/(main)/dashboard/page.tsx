@@ -101,6 +101,7 @@ export default function DashboardPage() {
   const [myRequests, setMyRequests] = useState<MediaRequest[]>([]);
   const [lineSlots, setLineSlots] = useState<LineSlot[]>([]);
   const [linesRequireEmby, setLinesRequireEmby] = useState(false);
+  const [linesRequireRenewal, setLinesRequireRenewal] = useState(false);
   const [lineLatencyMap, setLineLatencyMap] = useState<Record<string, LineLatencyInfo>>({});
   const [isLatencyTesting, setIsLatencyTesting] = useState(false);
   const [signinSummary, setSigninSummary] = useState<SigninSummary | null>(null);
@@ -128,6 +129,8 @@ export default function DashboardPage() {
     lines?: Array<{ name: string; url: string }>;
     whitelist_lines?: Array<{ name: string; url: string }>;
     requires_emby_account?: boolean;
+    requires_renewal?: boolean;
+    emby_disabled_by_expiry?: boolean;
   }) => {
     const lines = (data.lines || []).map((line, index) => ({
       key: `line:${index}:${line.url}`,
@@ -143,6 +146,7 @@ export default function DashboardPage() {
     }));
     setLineSlots([...lines, ...wl]);
     setLinesRequireEmby(Boolean(data.requires_emby_account));
+    setLinesRequireRenewal(Boolean(data.requires_renewal || data.emby_disabled_by_expiry));
   }, []);
 
   const loadEmbyUrls = useCallback(async () => {
@@ -381,6 +385,7 @@ export default function DashboardPage() {
   const isPermanent = !isPendingEmby && (isAdmin || expiredTimestamp === null);
   const safeExpiredTimestamp = expiredTimestamp ?? 0;
   const isExpired = !isPermanent && !isPendingEmby && safeExpiredTimestamp < Date.now();
+  const embyDisabledByExpiry = Boolean(user?.emby_disabled_by_expiry || isExpired);
   const daysLeft = !isPermanent && !isPendingEmby
     ? Math.max(0, Math.ceil((safeExpiredTimestamp - Date.now()) / (1000 * 60 * 60 * 24)))
     : 0;
@@ -928,8 +933,21 @@ export default function DashboardPage() {
         </motion.div>
       )}
 
-      {/* 线路延迟 —— 仅在用户已绑定 Emby 时显示，避免预先泄露线路 */}
-      {!linesRequireEmby && (
+      {linesRequireRenewal || embyDisabledByExpiry ? (
+        <motion.div variants={item} className="premium-card border-destructive/30 p-5 sm:p-6">
+          <div className="flex items-start gap-3">
+            <div className="rounded-xl bg-destructive/10 p-2 text-destructive">
+              <AlertCircle className="h-5 w-5" />
+            </div>
+            <div>
+              <h3 className="text-base font-black tracking-tight">Emby 已到期</h3>
+              <p className="mt-1 text-sm text-muted-foreground">
+                系统账号仍可登录查看信息，但 Emby 账号已被禁用，续期后会自动恢复线路访问。
+              </p>
+            </div>
+          </div>
+        </motion.div>
+      ) : !linesRequireEmby && (
       <motion.div variants={item} className="premium-card p-5 sm:p-6">
         <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
           <div className="flex items-center gap-3 min-w-0">

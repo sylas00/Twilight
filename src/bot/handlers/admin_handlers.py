@@ -298,14 +298,11 @@ def register(bot):
             await answer_callback_safe(query, f"✅ 已禁用 {username}")
 
         elif action == "unban":
-            if user.EMBYID:
-                try:
-                    emby = get_emby_client()
-                    await emby.set_user_enabled(user.EMBYID, True)
-                except Exception as e:
-                    logger.warning(f"解禁 Emby 用户失败: {e}")
             user.ACTIVE_STATUS = True
             await UserOperate.update_user(user)
+            ok, msg = await UserService.sync_user_to_emby(user)
+            if not ok:
+                logger.warning("解禁后同步 Emby 用户失败: %s", msg)
             await answer_callback_safe(query, f"✅ 已解禁 {username}")
 
         elif action == "del":
@@ -724,14 +721,9 @@ def register(bot):
                 await UserOperate.update_user(user)
                 await update.message.reply_text(f"✅ 已禁用用户: `{text}`", parse_mode="Markdown")
             else:
-                if user.EMBYID:
-                    try:
-                        emby = get_emby_client()
-                        await emby.set_user_enabled(user.EMBYID, True)
-                    except Exception:
-                        pass
                 user.ACTIVE_STATUS = True
                 await UserOperate.update_user(user)
+                await UserService.sync_user_to_emby(user)
                 await update.message.reply_text(f"✅ 已解禁用户: `{text}`", parse_mode="Markdown")
             _clear_admin_state(uid)
 
@@ -1219,13 +1211,11 @@ def register(bot):
             await UserOperate.update_user(user)
             message = "已禁用用户"
         elif action == "enable":
-            if user.EMBYID:
-                try:
-                    await get_emby_client().set_user_enabled(user.EMBYID, True)
-                except Exception as exc:
-                    logger.warning("群组启用 Emby 用户失败: %s", exc)
             user.ACTIVE_STATUS = True
             await UserOperate.update_user(user)
+            ok, msg = await UserService.sync_user_to_emby(user)
+            if not ok:
+                logger.warning("群组启用后同步 Emby 用户失败: %s", msg)
             message = "已启用用户"
         elif action == "delete":
             ok, msg = await UserService.delete_user(user, delete_emby=True)

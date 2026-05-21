@@ -79,6 +79,7 @@ export default function AdminUsersPage() {
   const [renewOpen, setRenewOpen] = useState(false);
   const [renewDays, setRenewDays] = useState("30");
   const [renewPermanent, setRenewPermanent] = useState(false);
+  const [renewMode, setRenewMode] = useState<"renew" | "cancelPermanent">("renew");
   const [selectedUser, setSelectedUser] = useState<UserInfo | null>(null);
   const [isActionLoading, setIsActionLoading] = useState(false);
   
@@ -330,9 +331,12 @@ export default function AdminUsersPage() {
 
     setIsActionLoading(true);
     try {
-      const res = await api.renewUser(selectedUser.uid, renewPermanent ? -1 : parseInt(renewDays, 10));
+      const days = renewPermanent ? -1 : parseInt(renewDays, 10);
+      const res = renewMode === "cancelPermanent"
+        ? await api.cancelUserPermanent(selectedUser.uid, days)
+        : await api.renewUser(selectedUser.uid, days);
       if (res.success) {
-        toast({ title: "续期成功", variant: "success" });
+        toast({ title: renewMode === "cancelPermanent" ? "已取消永久" : "续期成功", variant: "success" });
         setRenewOpen(false);
         setSelectedUser(null);
         invalidateUsersCache();
@@ -1155,6 +1159,7 @@ export default function AdminUsersPage() {
         <DropdownMenuItem
           onClick={() => {
             setSelectedUser(user);
+            setRenewMode("renew");
             setRenewPermanent(false);
             setRenewDays("30");
             setRenewOpen(true);
@@ -1163,6 +1168,20 @@ export default function AdminUsersPage() {
           <RefreshCw className="mr-2 h-4 w-4" />
           续期
         </DropdownMenuItem>
+        {(user.expired_at === -1 || user.expired_at === "-1") && user.role !== 0 && Boolean(user.emby_id) && (
+          <DropdownMenuItem
+            onClick={() => {
+              setSelectedUser(user);
+              setRenewMode("cancelPermanent");
+              setRenewPermanent(false);
+              setRenewDays("30");
+              setRenewOpen(true);
+            }}
+          >
+            <CalendarClock className="mr-2 h-4 w-4" />
+            取消永久到期
+          </DropdownMenuItem>
+        )}
         <DropdownMenuItem onClick={() => handleResetPassword(user)}>
           <Key className="mr-2 h-4 w-4" />
           重置密码
@@ -2223,14 +2242,16 @@ export default function AdminUsersPage() {
       }}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>用户续期</DialogTitle>
+            <DialogTitle>{renewMode === "cancelPermanent" ? "取消永久有效期" : "用户续期"}</DialogTitle>
             <DialogDescription>
-              为用户 {selectedUser?.username} 延长账号时间
+              {renewMode === "cancelPermanent"
+                ? `将用户 ${selectedUser?.username} 改为指定天数后到期`
+                : `为用户 ${selectedUser?.username} 延长账号时间`}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             <div className="space-y-2">
-              <Label>续期天数</Label>
+              <Label>{renewMode === "cancelPermanent" ? "改为多少天后到期" : "续期天数"}</Label>
               <Input
                 type="number"
                 placeholder="输入续期天数"
@@ -2239,7 +2260,7 @@ export default function AdminUsersPage() {
                 disabled={renewPermanent}
               />
             </div>
-            <label className="flex items-center gap-2 rounded-md border bg-muted/30 p-3 text-sm">
+            {renewMode !== "cancelPermanent" && <label className="flex items-center gap-2 rounded-md border bg-muted/30 p-3 text-sm">
               <input
                 type="checkbox"
                 checked={renewPermanent}
@@ -2247,7 +2268,7 @@ export default function AdminUsersPage() {
                 className="h-4 w-4"
               />
               设置为永久有效
-            </label>
+            </label>}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setRenewOpen(false)}>
@@ -2255,7 +2276,7 @@ export default function AdminUsersPage() {
             </Button>
             <Button onClick={handleRenew} disabled={isActionLoading}>
               {isActionLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              确认续期
+              {renewMode === "cancelPermanent" ? "确认取消永久" : "确认续期"}
             </Button>
           </DialogFooter>
         </DialogContent>

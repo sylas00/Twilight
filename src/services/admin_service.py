@@ -85,10 +85,10 @@ class BatchOperationService:
                     errors.append(f"UID {uid}: 用户不存在")
                     continue
 
-                if user.EMBYID:
-                    await emby.set_user_enabled(user.EMBYID, True)
-
                 await UserOperate.update_user(uid=uid, active_status=True)
+                user.ACTIVE_STATUS = True
+                if user.EMBYID:
+                    await emby.set_user_enabled(user.EMBYID, UserService.should_enable_emby_access(user))
                 success += 1
 
             except Exception as e:

@@ -106,6 +106,7 @@ async def list_users():
 
         # EMBYID 非空即视为已绑定；历史数据可能残留 PENDING_EMBY=True，不能因此把到期显示成未绑定。
         emby_bound = bool(user.EMBYID)
+        emby_disabled_by_expiry = UserService.is_emby_access_expired(user)
         user_list.append(
             {
                 "uid": user.UID,
@@ -121,6 +122,7 @@ async def list_users():
                 "pending_emby": bool(getattr(user, "PENDING_EMBY", False)) and not emby_bound,
                 "pending_emby_days": getattr(user, "PENDING_EMBY_DAYS", None) if not emby_bound else None,
                 "expired_at": user.EXPIRED_AT if emby_bound else None,
+                "emby_disabled_by_expiry": emby_disabled_by_expiry,
                 "register_time": user.REGISTER_TIME,
                 "created_at": user.CREATE_AT or user.REGISTER_TIME,
                 "last_login_time": user.LAST_LOGIN_TIME,
@@ -1123,6 +1125,76 @@ async def renew_user(uid: int):
 
     success, message = await UserService.renew_user(user, days)
     return api_response(success, message)
+
+
+@admin_bp.route("/users/<int:uid>/cancel-permanent", methods=["POST"])
+@require_auth
+@require_admin
+async def cancel_user_permanent_expiry(uid: int):
+    """取消用户 Emby 账号永久有效期，并设置为从现在起 N 天后到期。
+
+    Request:
+        {
+            "days": 30
+        }
+    """
+    from src.core.utils import timestamp, days_to_seconds
+
+    user = await UserOperate.get_user_by_uid(uid)
+    if not user:
+        return api_response(False, "用户不存在", code=404)
+    if not user.EMBYID:
+        return api_response(False, "该用户未绑定 Emby 账号，不能设置 Emby 到期时间", code=400)
+    if user.ROLE == Role.ADMIN.value:
+        return api_response(False, "不允许取消管理员账号的永久有效期", code=403)
+
+    current_expired_at = int(user.EXPIRED_AT or 0)
+    if current_expired_at != -1 and current_expired_at < 253402214400:
+        return api_response(False, "该用户当前不是永久有效期", code=400)
+
+    data = request.get_json(silent=True) or {}
+    try:
+        days = int(data.get("days", 30))
+    except (TypeError, ValueError):
+        return api_response(False, "days 必须是整数", code=400)
+    if days <= 0:
+        return api_response(False, "取消永久有效期时 days 必须大于 0", code=400)
+    if days > 3650:
+        return api_response(False, "days 不能超过 3650", code=400)
+
+    previous_role = user.ROLE
+    user.EXPIRED_AT = timestamp() + days_to_seconds(days)
+    if user.ROLE == Role.WHITE_LIST.value:
+        user.ROLE = Role.NORMAL.value
+    if not user.ACTIVE_STATUS:
+        user.ACTIVE_STATUS = True
+    await UserOperate.update_user(user)
+    try:
+        await UserService.sync_user_to_emby(user)
+    except Exception as exc:
+        logger.warning("取消永久后同步 Emby 状态失败 uid=%s: %s", user.UID, exc)
+
+    logger.warning(
+        "管理员 %s 取消用户永久有效期 uid=%s username=%s days=%s previous_role=%s new_expired_at=%s",
+        getattr(g.current_user, "USERNAME", None),
+        user.UID,
+        user.USERNAME,
+        days,
+        previous_role,
+        user.EXPIRED_AT,
+    )
+    return api_response(
+        True,
+        f"已取消永久有效期，改为 {days} 天后到期" + ("；白名单角色已降级为普通用户" if previous_role == Role.WHITE_LIST.value else ""),
+        {
+            "uid": user.UID,
+            "days": days,
+            "expired_at": user.EXPIRED_AT,
+            "role": user.ROLE,
+            "role_name": Role(user.ROLE).name if user.ROLE in [r.value for r in Role] else "UNKNOWN",
+            "downgraded_whitelist": previous_role == Role.WHITE_LIST.value,
+        },
+    )
 
 
 @admin_bp.route("/emby/force-set-password", methods=["POST"])

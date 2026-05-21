@@ -23,6 +23,7 @@ import {
   Globe,
   Star,
   Bot,
+  AlertCircle,
 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -118,6 +119,7 @@ export default function SettingsPage() {
   const [embyLines, setEmbyLines] = useState<Array<{ name: string; url: string }>>([]);
   const [whitelistLines, setWhitelistLines] = useState<Array<{ name: string; url: string }>>([]);
   const [linesRequireEmby, setLinesRequireEmby] = useState(false);
+  const [linesRequireRenewal, setLinesRequireRenewal] = useState(false);
   const [copiedIndex, setCopiedIndex] = useState<string | null>(null);
   const [lineLatencyMap, setLineLatencyMap] = useState<Record<string, { status: "idle" | "testing" | "ok" | "timeout" | "error"; latencyMs?: number }>>({});
   const [isLatencyTesting, setIsLatencyTesting] = useState(false);
@@ -246,6 +248,7 @@ export default function SettingsPage() {
       setEmbyLines(res.data.lines || []);
       setWhitelistLines(res.data.whitelist_lines || []);
       setLinesRequireEmby(Boolean(res.data.requires_emby_account));
+      setLinesRequireRenewal(Boolean(res.data.requires_renewal || res.data.emby_disabled_by_expiry));
     }
   }, []);
 
@@ -928,8 +931,21 @@ export default function SettingsPage() {
         </Card>
       </motion.div>
 
-      {/* 服务器线路 —— 仅在用户已绑定 Emby 时显示，避免预先泄露线路 */}
-      {!linesRequireEmby && (
+      {linesRequireRenewal ? (
+        <motion.div variants={item}>
+          <Card className="glass-card border-destructive/30">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-destructive">
+                <AlertCircle className="h-5 w-5" />
+                Emby 已到期
+              </CardTitle>
+              <CardDescription>
+                系统账号仍可登录；Emby 已禁用，续期后恢复线路访问。
+              </CardDescription>
+            </CardHeader>
+          </Card>
+        </motion.div>
+      ) : !linesRequireEmby && (
       <motion.div variants={item}>
         <Card className="glass-card">
           <CardHeader>

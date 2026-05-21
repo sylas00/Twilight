@@ -58,6 +58,22 @@ class UserService:
     """用户业务服务"""
 
     @staticmethod
+    def is_emby_access_expired(user: UserModel) -> bool:
+        """Return whether the bound Emby account is past its paid expiry."""
+        if not user or not user.EMBYID:
+            return False
+        try:
+            expired_at = int(user.EXPIRED_AT or 0)
+        except (TypeError, ValueError):
+            return True
+        return expired_at > 0 and expired_at < timestamp()
+
+    @staticmethod
+    def should_enable_emby_access(user: UserModel) -> bool:
+        """Emby is enabled only when the system account is active and not expired."""
+        return bool(user and user.ACTIVE_STATUS and not UserService.is_emby_access_expired(user))
+
+    @staticmethod
     def _normalize_code_days(days: Optional[int], default: int = 30) -> int:
         """规范化卡码天数：0/-1 都视为永久（-1）。"""
         try:
@@ -816,17 +832,20 @@ class UserService:
             user.EXPIRED_AT = -1
             await UserOperate.update_user(user)
         else:
+            current_time = timestamp()
+            base_expired_at = int(user.EXPIRED_AT or 0)
+            new_expired_at = (current_time if base_expired_at < current_time else base_expired_at) + days_to_seconds(days)
             await UserOperate.renew_user_expire_time(user, days)
+            user.EXPIRED_AT = new_expired_at
 
-        # 如果用户被禁用，重新启用
+        # 如果用户被禁用，重新启用系统账号；续期后无论原本是否禁用 Emby，都按最新到期状态同步。
         if not user.ACTIVE_STATUS:
             user.ACTIVE_STATUS = True
             await UserOperate.update_user(user)
 
-            # 同时启用 Emby 账户
-            if user.EMBYID:
-                emby = get_emby_client()
-                await emby.set_user_enabled(user.EMBYID, True)
+        if user.EMBYID:
+            emby = get_emby_client()
+            await emby.set_user_enabled(user.EMBYID, UserService.should_enable_emby_access(user))
 
         logger.info(f"用户续期成功: {user.USERNAME}, days={days}")
         if days <= 0:
@@ -860,7 +879,7 @@ class UserService:
 
             if user.EMBYID:
                 emby = get_emby_client()
-                await emby.set_user_enabled(user.EMBYID, True)
+                await emby.set_user_enabled(user.EMBYID, UserService.should_enable_emby_access(user))
 
             logger.info(f"用户已启用: {user.USERNAME}")
             return True, "用户已启用"
@@ -1322,10 +1341,11 @@ class UserService:
 
         try:
             emby = get_emby_client()
-            await emby.set_user_enabled(user.EMBYID, user.ACTIVE_STATUS)
+            emby_enabled = UserService.should_enable_emby_access(user)
+            await emby.set_user_enabled(user.EMBYID, emby_enabled)
             logger.info(
                 f"用户状态已同步到 Emby: {user.USERNAME} (UID: {user.UID}), "
-                f"状态: {'启用' if user.ACTIVE_STATUS else '禁用'}"
+                f"状态: {'启用' if emby_enabled else '禁用'}"
             )
             return True, "同步成功"
         except Exception as e:
@@ -1411,8 +1431,11 @@ class UserService:
         is_pending_emby = bool(getattr(user, "PENDING_EMBY", False)) and not user.EMBYID
         # 未绑定 Emby（无 EMBYID 或处于 pending）时，覆盖默认的 expire_status 文案，
         # 避免展示"已过期"/"剩余 x"误导，同时让前端可以靠这串直接判断渲染。
+        emby_disabled_by_expiry = UserService.is_emby_access_expired(user)
         if is_pending_emby or not user.EMBYID:
             expire_status = "未绑定 Emby"
+        elif emby_disabled_by_expiry:
+            expire_status = "已到期，Emby 已禁用"
         else:
             expire_status = format_expire_time(user.EXPIRED_AT)
 
@@ -1437,6 +1460,7 @@ class UserService:
             "emby_bound": emby_bound,
             "pending_emby": is_pending_emby,
             "pending_emby_days": getattr(user, "PENDING_EMBY_DAYS", None),
+            "emby_disabled_by_expiry": emby_disabled_by_expiry,
         }
 
         return info

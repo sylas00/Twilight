@@ -753,7 +753,7 @@ class SchedulerService:
 
     @staticmethod
     async def check_expired_users(ctx: RunContext):
-        """检查过期用户并禁用"""
+        """检查过期用户并禁用其 Emby 账号，保留系统账号登录能力。"""
         ctx.log("🔍 开始检查过期用户...")
         try:
             expired_users = await UserOperate.get_expired_users()
@@ -771,8 +771,6 @@ class SchedulerService:
                 try:
                     if user.EMBYID:
                         await emby.set_user_enabled(user.EMBYID, False)
-                    user.ACTIVE_STATUS = False
-                    await UserOperate.update_user(user)
                     return True, user, None
                 except Exception as e:
                     return False, user, e
@@ -786,7 +784,7 @@ class SchedulerService:
                 ok, user, err = result
                 if ok:
                     ctx.summary["disabled"] += 1
-                    ctx.log(f"  ⏹️ 已禁用: {user.USERNAME} (UID: {user.UID})")
+                    ctx.log(f"  ⏹️ 已禁用 Emby: {user.USERNAME} (UID: {user.UID})")
                 else:
                     ctx.summary["failed"] += 1
                     ctx.log(f"  ❌ 禁用失败: {user.USERNAME} - {err}")

@@ -519,6 +519,7 @@ async def get_emby_urls():
     返回结构化数据: { lines: [{name, url, tag?}], whitelist_lines?: [{name, url, tag?}] }
     """
     from src.db.user import Role
+    from src.services.user_service import UserService
 
     user = getattr(g, "current_user", None)
     is_admin = bool(user and user.ROLE == Role.ADMIN.value)
@@ -536,6 +537,17 @@ async def get_emby_urls():
             {
                 "lines": [],
                 "requires_emby_account": True,
+            },
+        )
+
+    if user and not is_admin and UserService.is_emby_access_expired(user):
+        return api_response(
+            True,
+            "Emby 账号已到期并禁用，续期后恢复线路访问",
+            {
+                "lines": [],
+                "requires_renewal": True,
+                "emby_disabled_by_expiry": True,
             },
         )
 
