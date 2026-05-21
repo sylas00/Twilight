@@ -50,6 +50,8 @@
 | [后端 API](docs/BACKEND_API.md) | REST API 规范与重点接口 |
 | [API Key 外部接入](docs/API_KEY_API.md) | 外部系统调用说明 |
 | [安全加固](docs/SECURITY.md) | 生产安全检查清单 |
+| [版本更新与规划](docs/VERSION_HISTORY.md) | 当前版本、功能地图与后续规划 |
+| [开发者流程](docs/DEVELOPER_WORKFLOW.md) | 分支、验证、合并与发布流程 |
 
 服务启动后可访问 `/api/v1/docs` 查看 Swagger UI。
 

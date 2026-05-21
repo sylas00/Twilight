@@ -13,6 +13,7 @@ from src.api.routes import api, admin_api
 from src.api.v1 import register_v1_blueprints
 from src.config import Config, APIConfig, normalize_storage_settings
 from src.core.utils import setup_logging, timestamp
+from src import __version__
 from src.core.request_utils import get_real_client_ip  # noqa: F401 - re-export for convenience
 
 
@@ -119,7 +120,7 @@ def create_app() -> Flask:
         return jsonify(
             {
                 "name": "Twilight API",
-                "version": "1.0.0",
+                "version": __version__,
                 "api_versions": ["v1"],
                 "docs": "/api/v1/docs",
             }
