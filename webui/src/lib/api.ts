@@ -427,6 +427,17 @@ class ApiClient {
     }>(`/system/emby-urls`);
   }
 
+  async getMyLibraries() {
+    return this.request<EmbyLibraryAccess>("/users/me/libraries");
+  }
+
+  async updateMyLibraryVisibility(action: "show" | "hide", libraryNames?: string[]) {
+    return this.request<EmbyLibraryAccess>("/users/me/libraries/visibility", {
+      method: "PUT",
+      body: JSON.stringify({ action, library_names: libraryNames }),
+    });
+  }
+
   async checkRegcode(regCode: string) {
     return this.request<{ type: number; type_name: string; days: number; valid: boolean }>("/users/regcode/check", {
       method: "POST",
@@ -778,6 +789,36 @@ class ApiClient {
     });
   }
 
+  async getUserLibraries(uid: number) {
+    return this.request<EmbyLibraryAccess>(`/admin/users/${uid}/libraries`);
+  }
+
+  async updateUserLibraries(uid: number, payload: {
+    action?: "set" | "show" | "hide" | "enable_all" | "disable_all";
+    library_ids?: string[];
+    library_names?: string[];
+    enable_all?: boolean;
+  }) {
+    return this.request<EmbyLibraryAccess>(`/admin/users/${uid}/libraries`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async setUserLibrarySelfService(uid: number, enabled: boolean) {
+    return this.request<{ uid: number; library_self_service: boolean }>(`/admin/users/${uid}/library-self-service`, {
+      method: "PUT",
+      body: JSON.stringify({ enabled }),
+    });
+  }
+
+  async bulkEnableLibrarySelfService() {
+    return this.request<{ updated: number }>("/admin/users/library-self-service/bulk-enable", {
+      method: "POST",
+      body: JSON.stringify({ confirm: "ENABLE_LIBRARY_SELF_SERVICE" }),
+    });
+  }
+
   async cancelUserPermanent(uid: number, days: number) {
     return this.request<{ uid: number; days: number; expired_at: number; role: number; role_name: string; downgraded_whitelist: boolean }>(`/admin/users/${uid}/cancel-permanent`, {
       method: "POST",
@@ -842,6 +883,19 @@ class ApiClient {
     return this.request(`/admin/telegram/rebind-requests/${id}/reject`, {
       method: "POST",
       body: JSON.stringify({ admin_note }),
+    });
+  }
+
+  async batchReviewTelegramRebindRequests(ids: number[], action: "approve" | "reject", admin_note?: string) {
+    return this.request<{
+      action: "approve" | "reject";
+      total: number;
+      success: number;
+      failed: number;
+      results: Array<{ id: number; success: boolean; message: string }>;
+    }>(`/admin/telegram/rebind-requests/batch`, {
+      method: "POST",
+      body: JSON.stringify({ ids, action, admin_note }),
     });
   }
 
@@ -1569,6 +1623,20 @@ class ApiClient {
     });
   }
 
+  async createInviteRenewCode(payload: { target_uid: number; days: number; validity_hours?: number; note?: string }) {
+    return this.request<{
+      code: string;
+      target_uid: number;
+      target_username: string;
+      days: number;
+      validity_hours: number;
+      max_code_days: number;
+    }>("/invite/renew-codes", {
+      method: "POST",
+      body: JSON.stringify(payload || {}),
+    });
+  }
+
   async revokeInviteCode(code: string) {
     return this.request(`/invite/codes/${encodeURIComponent(code)}`, {
       method: "DELETE",
@@ -1714,12 +1782,15 @@ export interface UserInfo {
   emby_bound?: boolean;  // 后端判定的「已绑定 Emby」：EMBYID 非空
   avatar?: string;
   bgm_mode: boolean;
+  bgm_token_set?: boolean;
+  bgm_sync_ready?: boolean;
   created_at?: string | number;
   register_time?: number;
   is_pending?: boolean;  // 是否待激活
   pending_emby?: boolean;  // 系统账号已建但待补建 Emby
   pending_emby_days?: number | null;  // 注册码授予的开通天数（待 Emby 补建）
   emby_disabled_by_expiry?: boolean;  // 到期后仅禁用 Emby，系统账号仍可登录
+  library_self_service?: boolean;  // 是否允许在个人设置中自助显隐管理员开放的媒体库
 }
 
 export interface ApiKeyItem {
@@ -1761,6 +1832,7 @@ export interface UserSettings {
     device_limit_enabled: boolean;
     max_devices: number;
     max_streams: number;
+    bangumi_sync_enabled?: boolean;
   };
 }
 
@@ -1896,6 +1968,24 @@ export interface EmbyInfo {
   total_sessions?: number;
   operating_system?: string;
   message?: string;
+}
+
+export interface EmbyLibraryItem {
+  id: string;
+  name: string;
+  type?: string;
+}
+
+export interface EmbyLibraryAccess {
+  has_emby: boolean;
+  enable_all: boolean;
+  enabled_ids: string[];
+  blocked_names: string[];
+  all_libraries: EmbyLibraryItem[];
+  libraries: EmbyLibraryItem[];
+  default_hidden_libraries: string[];
+  self_service_libraries: string[];
+  self_service_enabled: boolean;
 }
 
 export interface EmbySession {
@@ -2140,6 +2230,7 @@ export interface InviteConfig {
   invite_limit: number;
   require_emby: boolean;
   default_days: number;
+  permanent_invite_max_days?: number;
 }
 
 export interface InviteCodeItem {
@@ -2160,11 +2251,22 @@ export interface InviteMyStatus {
   enabled: boolean;
   is_root: boolean;
   parent: { uid: number; username: string } | null;
-  children: Array<{ uid: number; username: string; active: boolean; has_emby: boolean }>;
+  children: Array<{
+    uid: number;
+    username: string;
+    active: boolean;
+    has_emby: boolean;
+    expired_at?: number | null;
+    expire_status?: string;
+    emby_expired?: boolean;
+    can_generate_renew_code?: boolean;
+  }>;
   depth: number;
   max_depth: number;
   can_invite: boolean;
   invite_block_reason?: string;
+  max_code_days?: number;
+  max_code_days_reason?: string;
 }
 
 export interface InviteForestNode {

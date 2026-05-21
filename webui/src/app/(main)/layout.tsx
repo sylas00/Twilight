@@ -26,24 +26,48 @@ interface BackgroundConfig {
   darkOpacity?: number;
 }
 
-// 把可能是裸 URL/路径的图片值规范化为合法的 CSS background-image 值
+const SAFE_BG_CSS_FUNCTION = /^(linear-gradient|radial-gradient|conic-gradient|repeating-linear-gradient|repeating-radial-gradient)\s*\(/i;
+const SAFE_BG_DATA_IMAGE = /^data:image\/(png|jpe?g|gif|webp|avif|bmp)(;|,)/i;
+
+function escapeCssUrlValue(value: string): string {
+  return value.replace(/"/g, '\\"');
+}
+
+function sanitizeBgUrl(raw: string): string {
+  const value = raw.trim();
+  if (!value || /[\u0000-\u001F\u007F]/.test(value) || value.startsWith("//")) {
+    return "";
+  }
+  if (/^https?:\/\//i.test(value) || value.startsWith("/") || value.startsWith("./") || value.startsWith("../")) {
+    return escapeCssUrlValue(value);
+  }
+  if (value.startsWith("blob:") || SAFE_BG_DATA_IMAGE.test(value)) {
+    return escapeCssUrlValue(value);
+  }
+  if (/^[a-z][a-z0-9+.-]*:/i.test(value)) {
+    return "";
+  }
+  return escapeCssUrlValue(value);
+}
+
+// 把可能是裸 URL/路径的图片值规范化为合法且受限的 CSS background-image 值
 function normalizeBgImageValue(raw: string): string {
   const value = (raw || "").trim();
   if (!value) return "";
-  // 已经是 url(...) / 渐变等受控 CSS 函数，直接用
-  if (/^(url|linear-gradient|radial-gradient|conic-gradient|repeating-)\s*\(/i.test(value)) {
+  // 渐变类 CSS 函数不涉及外部资源，可直接使用。
+  if (SAFE_BG_CSS_FUNCTION.test(value)) {
     return value;
   }
-  // 显式包含双引号或单引号，按裸 URL 处理
-  const escaped = value.replace(/"/g, '\\"');
-  return `url("${escaped}")`;
+  const urlMatch = value.match(/^url\(\s*(['"]?)(.*?)\1\s*\)$/i);
+  const safeUrl = sanitizeBgUrl(urlMatch ? urlMatch[2] : value);
+  return safeUrl ? `url("${safeUrl}")` : "";
 }
 
 function buildBgStyleFromConfig(
   bgConfig: BackgroundConfig,
   isDark: boolean,
 ): Record<string, string> {
-  const css = (isDark ? bgConfig.darkBg : bgConfig.lightBg) || "";
+  const css = normalizeBgImageValue((isDark ? bgConfig.darkBg : bgConfig.lightBg) || "");
   const imgRaw = (isDark ? bgConfig.darkBgImage : bgConfig.lightBgImage) || "";
   const flow = Boolean(isDark ? bgConfig.darkFlow : bgConfig.lightFlow);
   const blur = Number((isDark ? bgConfig.darkBlur : bgConfig.lightBlur) ?? 0);

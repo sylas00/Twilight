@@ -64,55 +64,72 @@ class RegcodeUseQueueService:
         cls._ensure_started()
         assert cls._queue is not None
         assert cls._state_lock is not None
+        emby_username_clean = (emby_username or "").strip()
+        capacity_lock = None
+        if emby_username_clean:
+            capacity_lock = await UserService.acquire_emby_capacity_lock()
+            if capacity_lock is None:
+                return None, "Emby 名额检查繁忙，请稍后重试"
 
-        async with cls._state_lock:
-            cls._cleanup_expired_status_locked()
-            existing_request_id = cls._pending_by_uid.get(int(uid))
-            if existing_request_id:
-                item = cls._status.get(existing_request_id)
-                if item:
-                    return {
-                        "request_id": existing_request_id,
-                        "status_token": item.get("status_token"),
-                        "status": item.get("status"),
-                        "queue_position": cls._queue_position_unlocked(existing_request_id),
-                        "reused": True,
-                    }, "您已有正在处理的卡码请求"
+        try:
+            async with cls._state_lock:
+                cls._cleanup_expired_status_locked()
+                existing_request_id = cls._pending_by_uid.get(int(uid))
+                if existing_request_id:
+                    item = cls._status.get(existing_request_id)
+                    if item:
+                        return {
+                            "request_id": existing_request_id,
+                            "status_token": item.get("status_token"),
+                            "status": item.get("status"),
+                            "queue_position": cls._queue_position_unlocked(existing_request_id),
+                            "reused": True,
+                        }, "您已有正在处理的卡码请求"
 
-            if cls._queue.full():
-                return None, "卡码处理队列已满，请稍后重试"
+                if cls._queue.full():
+                    return None, "卡码处理队列已满，请稍后重试"
 
-            request_id = f"rcq_{secrets.token_hex(8)}"
-            status_token = secrets.token_urlsafe(20)
-            now = cls._now()
-            task = _RegcodeUseTask(
-                request_id=request_id,
-                status_token=status_token,
-                uid=int(uid),
-                reg_code=reg_code,
-                emby_username=emby_username,
-                emby_password=emby_password,
-                created_at=now,
-            )
-            cls._pending_by_uid[int(uid)] = request_id
-            cls._status[request_id] = {
-                "request_id": request_id,
-                "status_token": status_token,
-                "uid": int(uid),
-                "status": "queued",
-                "message": "已进入卡码处理队列",
-                "queue_position": cls._queue.qsize() + 1,
-                "created_at": now,
-                "updated_at": now,
-            }
-            cls._queue.put_nowait(task)
-            return {
-                "request_id": request_id,
-                "status_token": status_token,
-                "status": "queued",
-                "queue_position": cls._status[request_id]["queue_position"],
-                "reused": False,
-            }, "已加入卡码处理队列"
+                if emby_username_clean:
+                    if int(uid) in UserService.get_emby_capacity_queue_pending_uids():
+                        return None, "您已有正在处理的 Emby 创建请求"
+                    cap_ok, cap_msg = await UserService.check_emby_user_capacity()
+                    if not cap_ok:
+                        return None, cap_msg
+
+                request_id = f"rcq_{secrets.token_hex(8)}"
+                status_token = secrets.token_urlsafe(20)
+                now = cls._now()
+                task = _RegcodeUseTask(
+                    request_id=request_id,
+                    status_token=status_token,
+                    uid=int(uid),
+                    reg_code=reg_code,
+                    emby_username=emby_username_clean or None,
+                    emby_password=emby_password,
+                    created_at=now,
+                )
+                cls._pending_by_uid[int(uid)] = request_id
+                cls._status[request_id] = {
+                    "request_id": request_id,
+                    "status_token": status_token,
+                    "uid": int(uid),
+                    "emby_username": emby_username_clean,
+                    "status": "queued",
+                    "message": "已进入卡码处理队列",
+                    "queue_position": cls._queue.qsize() + 1,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+                cls._queue.put_nowait(task)
+                return {
+                    "request_id": request_id,
+                    "status_token": status_token,
+                    "status": "queued",
+                    "queue_position": cls._status[request_id]["queue_position"],
+                    "reused": False,
+                }, "已加入卡码处理队列"
+        finally:
+            await UserService.release_emby_capacity_lock(capacity_lock)
 
     @classmethod
     def _queue_position_unlocked(cls, request_id: str) -> Optional[int]:
@@ -131,6 +148,30 @@ class RegcodeUseQueueService:
     @classmethod
     def in_flight_count(cls) -> int:
         return len(cls._pending_by_uid)
+
+    @classmethod
+    def emby_capacity_pending_uids(cls, *, exclude_uid: Optional[int] = None) -> set[int]:
+        """UIDs in the regcode queue that may create an Emby account."""
+        uids: set[int] = set()
+        for uid, request_id in cls._pending_by_uid.items():
+            try:
+                parsed_uid = int(uid)
+            except (TypeError, ValueError):
+                continue
+            if exclude_uid is not None:
+                try:
+                    if parsed_uid == int(exclude_uid):
+                        continue
+                except (TypeError, ValueError):
+                    pass
+            item = cls._status.get(request_id)
+            if item and (item.get("emby_username") or "").strip():
+                uids.add(parsed_uid)
+        return uids
+
+    @classmethod
+    def emby_create_in_flight_count(cls, *, exclude_uid: Optional[int] = None) -> int:
+        return len(cls.emby_capacity_pending_uids(exclude_uid=exclude_uid))
 
     @classmethod
     async def get_status(cls, request_id: str, status_token: str) -> Optional[Dict[str, Any]]:

@@ -4,8 +4,6 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import {
   User,
-  Shield,
-  Bell,
   RefreshCw,
   Copy,
   Eye,
@@ -29,6 +27,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
@@ -45,7 +44,7 @@ import { useAsyncResource } from "@/hooks/use-async-resource";
 import { PageError, PageLoading } from "@/components/layout/page-state";
 import { useAuthStore } from "@/store/auth";
 import { useSystemStore } from "@/store/system";
-import { api, type UserSettings, type TelegramStatus, type EmbyStatus } from "@/lib/api";
+import { api, type UserSettings, type TelegramStatus, type EmbyStatus, type EmbyLibraryAccess } from "@/lib/api";
 import { passwordStrengthLabel, validatePasswordStrength } from "@/lib/password";
 
 const container = {
@@ -75,6 +74,8 @@ export default function SettingsPage() {
   const [bindCodeExpiry, setBindCodeExpiry] = useState<number>(0);
   const [isTgLoading, setIsTgLoading] = useState(false);
   const [isRebindLoading, setIsRebindLoading] = useState(false);
+  const [rebindDialogOpen, setRebindDialogOpen] = useState(false);
+  const [rebindReason, setRebindReason] = useState("");
 
   // Emby dialogs
   const [bindEmbyOpen, setBindEmbyOpen] = useState(false);
@@ -83,6 +84,8 @@ export default function SettingsPage() {
   const [embyPassword, setEmbyPassword] = useState("");
   const [showEmbyPassword, setShowEmbyPassword] = useState(false);
   const [isEmbyLoading, setIsEmbyLoading] = useState(false);
+  const [libraryAccess, setLibraryAccess] = useState<EmbyLibraryAccess | null>(null);
+  const [isLibraryLoading, setIsLibraryLoading] = useState(false);
 
   // Email dialog
   const [editEmailOpen, setEditEmailOpen] = useState(false);
@@ -114,6 +117,7 @@ export default function SettingsPage() {
     () => validatePasswordStrength(newEmbyPassword),
     [newEmbyPassword]
   );
+  const bangumiSyncEnabled = Boolean(settings?.system_config?.bangumi_sync_enabled);
 
   // Emby URLs
   const [embyLines, setEmbyLines] = useState<Array<{ name: string; url: string }>>([]);
@@ -253,7 +257,10 @@ export default function SettingsPage() {
   }, []);
 
   const loadSettingsResource = useCallback(async () => {
-    const settingsRes = await api.getMySettings();
+    const [settingsRes, librariesRes] = await Promise.all([
+      api.getMySettings(),
+      api.getMyLibraries().catch(() => null),
+    ]);
     if (settingsRes.success && settingsRes.data) {
       setSettings(settingsRes.data);
       setBgmMode(settingsRes.data.bgm_mode);
@@ -261,8 +268,37 @@ export default function SettingsPage() {
       setEmbyStatus(settingsRes.data.emby_status ?? null);
       setTelegramStatus(settingsRes.data.telegram as TelegramStatus);
     }
+    if (librariesRes?.success && librariesRes.data) {
+      setLibraryAccess(librariesRes.data);
+    }
     return true;
   }, []);
+
+  const isSelfServiceLibraryVisible = useCallback((name: string) => {
+    const key = name.trim().toLowerCase();
+    return Boolean(libraryAccess?.libraries?.some((lib) => lib.name.trim().toLowerCase() === key));
+  }, [libraryAccess]);
+
+  const handleLibraryVisibility = async (name: string, action: "show" | "hide") => {
+    if (!libraryAccess?.self_service_enabled) {
+      toast({ title: "无权操作", description: "管理员尚未为你开启媒体库自助显隐权限", variant: "destructive" });
+      return;
+    }
+    setIsLibraryLoading(true);
+    try {
+      const res = await api.updateMyLibraryVisibility(action, [name]);
+      if (res.success && res.data) {
+        setLibraryAccess(res.data);
+        toast({ title: action === "show" ? "媒体库已显示" : "媒体库已隐藏", variant: "success" });
+      } else {
+        toast({ title: "更新失败", description: res.message, variant: "destructive" });
+      }
+    } catch (error: any) {
+      toast({ title: "更新失败", description: error.message, variant: "destructive" });
+    } finally {
+      setIsLibraryLoading(false);
+    }
+  };
 
   const {
     isLoading,
@@ -271,7 +307,12 @@ export default function SettingsPage() {
   } = useAsyncResource(loadSettingsResource, { immediate: true });
 
   const handleSaveBgmSettings = async () => {
-    if (bgmMode && !bgmToken && !bgmTokenSet) {
+    const nextBgmToken = bgmToken.trim();
+    if (!bangumiSyncEnabled) {
+      toast({ title: "功能未启用", description: "管理员尚未开启 Bangumi 点格子", variant: "destructive" });
+      return;
+    }
+    if (bgmMode && !nextBgmToken && !bgmTokenSet) {
       toast({ title: "请输入 Bangumi Token", description: "启用 BGM 同步前需要填写个人 Token", variant: "destructive" });
       return;
     }
@@ -280,19 +321,46 @@ export default function SettingsPage() {
     try {
       const res = await api.updateMySettings({
         bgm_mode: bgmMode,
-        bgm_token: bgmToken || undefined,
+        bgm_token: nextBgmToken || undefined,
       });
 
       if (res.success) {
+        const nextTokenSet = bgmTokenSet || Boolean(nextBgmToken);
         setBgmToken("");
-        setBgmTokenSet(bgmTokenSet || Boolean(bgmToken));
-        setSettings((prev) => prev ? { ...prev, bgm_mode: bgmMode, bgm_token_set: bgmTokenSet || Boolean(bgmToken) } : prev);
+        setBgmTokenSet(nextTokenSet);
+        setSettings((prev) => prev ? { ...prev, bgm_mode: bgmMode, bgm_token_set: nextTokenSet } : prev);
         toast({ title: "保存成功", description: "Bangumi 同步设置已更新", variant: "success" });
       } else {
         toast({ title: "保存失败", description: res.message, variant: "destructive" });
       }
     } catch (error: any) {
       toast({ title: "保存失败", description: error.message, variant: "destructive" });
+    } finally {
+      setIsBgmLoading(false);
+    }
+  };
+
+  const handleClearBgmToken = async () => {
+    if (!bgmTokenSet) return;
+
+    setIsBgmLoading(true);
+    try {
+      const res = await api.updateMySettings({
+        bgm_mode: false,
+        bgm_token: "",
+      });
+
+      if (res.success) {
+        setBgmMode(false);
+        setBgmToken("");
+        setBgmTokenSet(false);
+        setSettings((prev) => prev ? { ...prev, bgm_mode: false, bgm_token_set: false } : prev);
+        toast({ title: "已清除", description: "Bangumi Token 已移除，同步已关闭", variant: "success" });
+      } else {
+        toast({ title: "清除失败", description: res.message, variant: "destructive" });
+      }
+    } catch (error: any) {
+      toast({ title: "清除失败", description: error.message, variant: "destructive" });
     } finally {
       setIsBgmLoading(false);
     }
@@ -321,11 +389,17 @@ export default function SettingsPage() {
   };
 
   const handleRequestTelegramRebind = async () => {
+    if (rebindReason.length > 500) {
+      toast({ title: "备注过长", description: "最多 500 字符", variant: "destructive" });
+      return;
+    }
     setIsRebindLoading(true);
     try {
-      const res = await api.requestTelegramRebind();
+      const res = await api.requestTelegramRebind(rebindReason.trim() || undefined);
       if (res.success) {
         toast({ title: "换绑请求已提交", description: res.message, variant: "success" });
+        setRebindDialogOpen(false);
+        setRebindReason("");
         loadData();
       } else {
         toast({ title: "换绑请求提交失败", description: res.message, variant: "destructive" });
@@ -700,7 +774,7 @@ export default function SettingsPage() {
                     {telegramStatus.can_change && (
                       <Button
                         variant="outline"
-                        onClick={handleRequestTelegramRebind}
+                        onClick={() => setRebindDialogOpen(true)}
                         disabled={isRebindLoading}
                       >
                         {isRebindLoading ? (
@@ -858,6 +932,77 @@ export default function SettingsPage() {
           </CardContent>
         </Card>
       </motion.div>
+
+      {/* Media Library Visibility */}
+      {user?.emby_id && (
+        <motion.div variants={item}>
+          <Card className="glass-card">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Eye className="h-5 w-5" />
+                媒体库显隐
+              </CardTitle>
+              <CardDescription>
+                管理员开放的指定媒体库，可在这里自行显示或隐藏
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {!libraryAccess ? (
+                <div className="flex items-center gap-2 rounded-lg bg-accent/50 p-4 text-sm text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  正在加载媒体库权限
+                </div>
+              ) : !libraryAccess.self_service_enabled ? (
+                <div className="flex items-start gap-3 rounded-lg bg-accent/50 p-4 text-sm text-muted-foreground">
+                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                  管理员尚未为你开启媒体库自助显隐权限。
+                </div>
+              ) : libraryAccess.self_service_libraries.length === 0 ? (
+                <div className="flex items-start gap-3 rounded-lg bg-accent/50 p-4 text-sm text-muted-foreground">
+                  <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                  管理员尚未开放可自助显隐的媒体库。
+                </div>
+              ) : (
+                <div className="grid gap-3 md:grid-cols-2">
+                  {libraryAccess.self_service_libraries.map((name) => {
+                    const visible = isSelfServiceLibraryVisible(name);
+                    return (
+                      <div key={name} className="flex items-center justify-between gap-3 rounded-lg border bg-card/60 p-4">
+                        <div className="min-w-0">
+                          <p className="truncate font-medium">{name}</p>
+                          <p className={visible ? "text-sm text-emerald-500" : "text-sm text-muted-foreground"}>
+                            {visible ? "当前显示" : "当前隐藏"}
+                          </p>
+                        </div>
+                        <Button
+                          variant={visible ? "outline" : "default"}
+                          size="sm"
+                          disabled={isLibraryLoading}
+                          onClick={() => void handleLibraryVisibility(name, visible ? "hide" : "show")}
+                        >
+                          {isLibraryLoading ? (
+                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          ) : visible ? (
+                            <EyeOff className="mr-2 h-4 w-4" />
+                          ) : (
+                            <Eye className="mr-2 h-4 w-4" />
+                          )}
+                          {visible ? "隐藏" : "显示"}
+                        </Button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              {libraryAccess?.default_hidden_libraries?.length ? (
+                <p className="text-xs text-muted-foreground">
+                  默认隐藏库：{libraryAccess.default_hidden_libraries.join("、")}
+                </p>
+              ) : null}
+            </CardContent>
+          </Card>
+        </motion.div>
+      )}
 
       {/* API Key Management */}
       {user?.emby_id && (
@@ -1054,23 +1199,26 @@ export default function SettingsPage() {
       </motion.div>
       )}
 
-      {/* Preferences */}
+      {/* Bangumi Sync */}
+      {bangumiSyncEnabled && (
       <motion.div variants={item}>
         <Card className="glass-card">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <Shield className="h-5 w-5" />
-              偏好设置
+              <Key className="h-5 w-5" />
+              Bangumi 点格子
             </CardTitle>
+            <CardDescription>
+              使用你自己的 Bangumi Access Token 同步观看进度，系统不会使用管理员全局 Token 代同步。
+            </CardDescription>
           </CardHeader>
           <CardContent className="space-y-6">
-            {/* Bangumi Sync */}
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <div className="space-y-0.5">
                   <Label>Bangumi 同步</Label>
                   <p className="text-sm text-muted-foreground">
-                    启用后会将观看记录同步到 Bangumi，需要填写个人 Token。
+                    启用后会在 Emby 看完番剧时自动同步 Bangumi 点格子。Token 只保存在服务端，不会回显明文。
                   </p>
                 </div>
                 <Switch checked={bgmMode} onCheckedChange={setBgmMode} />
@@ -1086,12 +1234,23 @@ export default function SettingsPage() {
                   />
                 </div>
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                  <Button
-                    onClick={handleSaveBgmSettings}
-                    disabled={isBgmLoading}
-                  >
-                    {isBgmLoading ? "保存中..." : "保存 Bangumi 设置"}
-                  </Button>
+                  <div className="flex flex-col gap-2 sm:flex-row">
+                    <Button
+                      onClick={handleSaveBgmSettings}
+                      disabled={isBgmLoading}
+                    >
+                      {isBgmLoading ? "保存中..." : "保存 Bangumi 设置"}
+                    </Button>
+                    {bgmTokenSet && (
+                      <Button
+                        variant="outline"
+                        onClick={handleClearBgmToken}
+                        disabled={isBgmLoading}
+                      >
+                        清除 Token
+                      </Button>
+                    )}
+                  </div>
                   {bgmTokenSet && (
                     <p className="text-sm text-muted-foreground">
                       当前已配置 Bangumi Token，可直接启用同步。
@@ -1105,6 +1264,7 @@ export default function SettingsPage() {
           </CardContent>
         </Card>
       </motion.div>
+      )}
 
       {/* Bind Emby Dialog */}
       <Dialog open={bindEmbyOpen} onOpenChange={(open) => {
@@ -1398,6 +1558,36 @@ export default function SettingsPage() {
             >
               {isEmbyPwdLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               确认修改
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={rebindDialogOpen} onOpenChange={setRebindDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>提交 Telegram 换绑请求</DialogTitle>
+            <DialogDescription>
+              管理员批准后会解绑当前 Telegram，你可以重新绑定新的 Telegram 账号。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label>备注给管理员（可选）</Label>
+            <Textarea
+              value={rebindReason}
+              onChange={(event) => setRebindReason(event.target.value.slice(0, 500))}
+              placeholder="例如：原 Telegram 账号无法登录，需要换绑到新账号"
+              rows={4}
+            />
+            <p className="text-xs text-muted-foreground">{rebindReason.length}/500</p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRebindDialogOpen(false)} disabled={isRebindLoading}>
+              取消
+            </Button>
+            <Button onClick={handleRequestTelegramRebind} disabled={isRebindLoading}>
+              {isRebindLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              提交申请
             </Button>
           </DialogFooter>
         </DialogContent>

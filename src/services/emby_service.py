@@ -133,9 +133,11 @@ class EmbyService:
                         user.OTHER = json.dumps(other_data)
                         await UserOperate.update_user(user)
 
-                    # 同步启用/禁用状态：如果 Emby 已禁用但本地仍启用，则修正本地状态；否则按本地状态同步到 Emby
+                    from src.services.user_service import UserService
+
+                    # 同步启用/禁用状态：过期导致的 Emby 禁用不应反向禁用系统账号。
                     emby_disabled = bool(emby_user.policy.get("IsDisabled", False))
-                    if emby_disabled and user.ACTIVE_STATUS:
+                    if emby_disabled and user.ACTIVE_STATUS and not UserService.is_emby_access_expired(user):
                         logger.info(f"Emby 账户已被禁用，更新本地状态: {user.USERNAME} (UID: {user.UID})")
                         user.ACTIVE_STATUS = False
                         await UserOperate.update_user(user)
@@ -150,8 +152,6 @@ class EmbyService:
                                 logger.info(f"已关闭下载权限: {user.USERNAME} (UID: {user.UID})")
                         except EmbyError as exc:
                             logger.warning(f"关闭下载权限失败 {user.USERNAME} (UID: {user.UID}): {exc}")
-
-                    from src.services.user_service import UserService
 
                     ok, msg = await UserService.sync_user_to_emby(user)
                     if ok:
@@ -191,10 +191,13 @@ class EmbyService:
                 if emby_user:
                     # 检查同步状态
                     emby_disabled = bool(emby_user.policy.get("IsDisabled", False))
+                    from src.services.user_service import UserService
+
+                    expected_disabled = not UserService.should_enable_emby_access(user)
                     if emby_user.name != user.USERNAME:
                         is_synced = False
                         message = "用户名不同步"
-                    elif emby_disabled != (not user.ACTIVE_STATUS):
+                    elif emby_disabled != expected_disabled:
                         is_synced = False
                         message = "账户启用状态与 Emby 不一致"
 
@@ -237,8 +240,6 @@ class EmbyService:
             if user.EMBYID:
                 try:
                     await emby.set_user_enabled(user.EMBYID, False)
-                    user.ACTIVE_STATUS = False
-                    await UserOperate.update_user(user)
                     disabled_count += 1
                 except EmbyError as e:
                     logger.error(f"禁用用户 {user.USERNAME} 失败: {e}")
@@ -367,6 +368,42 @@ class EmbyService:
             return []
 
     @staticmethod
+    def _normalize_library_names(names: Any) -> List[str]:
+        """清理媒体库名称列表，去重保序。"""
+        if not names:
+            return []
+        if isinstance(names, str):
+            raw_items = [names]
+        else:
+            raw_items = list(names) if isinstance(names, (list, tuple, set)) else []
+
+        result: List[str] = []
+        seen: set[str] = set()
+        for item in raw_items:
+            value = str(item or "").strip()
+            key = value.lower()
+            if not value or key in seen:
+                continue
+            result.append(value)
+            seen.add(key)
+        return result
+
+    @staticmethod
+    def default_hidden_library_names() -> List[str]:
+        """配置中的默认隐藏媒体库。"""
+        return EmbyService._normalize_library_names(EmbyConfig.EMBY_DEFAULT_HIDDEN_LIBRARIES)
+
+    @staticmethod
+    def self_service_library_names() -> List[str]:
+        """配置中允许用户自行显示/隐藏的媒体库。"""
+        return EmbyService._normalize_library_names(EmbyConfig.EMBY_SELF_SERVICE_LIBRARIES)
+
+    @staticmethod
+    def can_self_service_libraries(user: UserModel) -> bool:
+        """用户是否被管理员授予媒体库自助显隐入口权限。"""
+        return bool(getattr(user, "LIBRARY_SELF_SERVICE", False))
+
+    @staticmethod
     async def resolve_library_names_to_ids(library_names: List[str]) -> Tuple[List[str], List[str]]:
         """
         将媒体库名称列表解析为 Emby 内部 ID 列表
@@ -428,6 +465,51 @@ class EmbyService:
             return False, f"操作失败: {e}"
 
     @staticmethod
+    async def set_user_library_visibility(user: UserModel, library_names: List[str], visible: bool) -> Tuple[bool, str]:
+        """按名称增量显示或隐藏用户的指定媒体库。"""
+        if not user.EMBYID:
+            return False, "用户没有关联的 Emby 账户"
+
+        names = EmbyService._normalize_library_names(library_names)
+        if not names:
+            return False, "媒体库名称不能为空"
+
+        emby = get_emby_client()
+        try:
+            success = await (
+                emby.show_folders_by_names(user.EMBYID, names)
+                if visible
+                else emby.hide_folders_by_names(user.EMBYID, names)
+            )
+            if success:
+                return True, "媒体库已显示" if visible else "媒体库已隐藏"
+            return False, "更新失败"
+        except EmbyError as e:
+            logger.error(f"更新媒体库显隐失败: {e}")
+            return False, f"操作失败: {e}"
+
+    @staticmethod
+    async def apply_default_hidden_libraries_by_emby_id(emby_id: str) -> bool:
+        """对指定 Emby 用户应用默认隐藏库配置；配置为空时直接成功。"""
+        names = EmbyService.default_hidden_library_names()
+        if not emby_id or not names:
+            return True
+        try:
+            return await get_emby_client().hide_folders_by_names(emby_id, names)
+        except EmbyError as e:
+            logger.warning(f"应用默认隐藏媒体库失败 emby_id={emby_id}: {e}")
+            return False
+
+    @staticmethod
+    async def apply_default_hidden_libraries(user: UserModel) -> bool:
+        """为普通用户应用默认隐藏库；管理员/白名单不自动收紧。"""
+        if not user or not user.EMBYID:
+            return True
+        if user.ROLE in (Role.ADMIN.value, Role.WHITE_LIST.value):
+            return True
+        return await EmbyService.apply_default_hidden_libraries_by_emby_id(user.EMBYID)
+
+    @staticmethod
     async def get_user_library_access(user: UserModel) -> Tuple[List[str], bool]:
         """
         获取用户媒体库访问权限
@@ -451,6 +533,61 @@ class EmbyService:
         except EmbyError as e:
             logger.error(f"获取媒体库权限失败: {e}")
             return [], False
+
+    @staticmethod
+    async def get_user_library_access_detail(
+        user: UserModel,
+        *,
+        include_self_service_config: bool = False,
+    ) -> Dict[str, Any]:
+        """获取用户媒体库权限详情，供前端管理和自助显隐使用。"""
+        all_libraries = await EmbyService.get_libraries_info()
+        default_hidden = EmbyService.default_hidden_library_names()
+        self_service_enabled = EmbyService.can_self_service_libraries(user)
+        self_service_config = EmbyService.self_service_library_names()
+        self_service = self_service_config if (include_self_service_config or self_service_enabled) else []
+
+        if not user.EMBYID:
+            return {
+                "has_emby": False,
+                "enable_all": False,
+                "enabled_ids": [],
+                "blocked_names": [],
+                "all_libraries": [],
+                "libraries": [],
+                "default_hidden_libraries": default_hidden,
+                "self_service_libraries": self_service,
+                "self_service_enabled": self_service_enabled,
+            }
+
+        enabled_ids: List[str] = []
+        enable_all = False
+        blocked_names: List[str] = []
+        try:
+            state = await get_emby_client().get_current_folder_state(user.EMBYID)
+            if state is not None:
+                enabled_ids, enable_all, blocked_names = state
+        except EmbyError as e:
+            logger.error(f"获取媒体库权限详情失败: {e}")
+
+        blocked_keys = {(name or "").strip().lower() for name in blocked_names}
+        if enable_all:
+            visible_libraries = [lib for lib in all_libraries if (lib.get("name") or "").strip().lower() not in blocked_keys]
+        else:
+            enabled_set = set(enabled_ids)
+            visible_libraries = [lib for lib in all_libraries if lib.get("id") in enabled_set]
+
+        return {
+            "has_emby": True,
+            "enable_all": enable_all,
+            "enabled_ids": enabled_ids,
+            "blocked_names": blocked_names,
+            "all_libraries": all_libraries,
+            "libraries": visible_libraries,
+            "default_hidden_libraries": default_hidden,
+            "self_service_libraries": self_service,
+            "self_service_enabled": self_service_enabled,
+        }
 
     # ==================== 设备管理 ====================
 

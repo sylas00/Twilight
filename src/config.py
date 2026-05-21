@@ -407,6 +407,10 @@ class EmbyConfig(BaseConfig):
     EMBY_PASSWORD: str = ""  # 管理员密码（API Key 无效时的备用认证）
     EMBY_URL_LIST: List[str] = ["Direct : http://127.0.0.1:8096/", "Sample : http://192.168.1.1:8096/"]
     EMBY_URL_LIST_FOR_WHITELIST: List[str] = ["Direct : http://127.0.0.1:8096/", "Sample : http://192.168.1.1:8096/"]
+    # 新建/补建普通用户 Emby 账号后默认隐藏的媒体库名称；留空不改媒体库策略。
+    EMBY_DEFAULT_HIDDEN_LIBRARIES: List[str] = []
+    # 管理员开放给“已授予自助显隐权限的用户”自行显示/隐藏的媒体库名称；留空则无法自助操作。
+    EMBY_SELF_SERVICE_LIBRARIES: List[str] = []
 
 
 class TelegramConfig(BaseConfig):
@@ -432,6 +436,9 @@ class TelegramConfig(BaseConfig):
     # 依赖：Bot 必须是群管理员且具有"封禁成员"权限；BAN_ON_LEAVE 开启后
     # 巡检任务会跳过"重新入群识别"分支（永封后该分支永远不会命中）。
     BAN_ON_LEAVE: bool = False
+    # 回群自动启用：关闭时只记录回群候选，管理员手动恢复；开启后巡检确认回群且未到期时自动启用。
+    # BAN_ON_LEAVE=true 时永封模式优先，本配置不会生效。
+    AUTO_ENABLE_REJOINED: bool = False
     # —— Bot 文案自定义（留空使用内置默认）。所有字符串都按 Markdown 渲染，
     # 注意自行转义 _ * [ 等特殊字符；其中可以用 {server_name}/{user_name}/{bot_username} 占位符。
     BOT_START_TEXT: str = ""  # /start 完整文本，留空使用内置默认
@@ -464,11 +471,11 @@ class RegisterConfig(BaseConfig):
     ALLOW_NO_EMBY_VIEW: bool = True  # 是否允许无 Emby 账户的用户查看部分信息
     EMBY_DIRECT_REGISTER_ENABLED: bool = False  # 是否开启 Emby 自由注册
     EMBY_DIRECT_REGISTER_DAYS: int = 30  # Emby 自由注册统一开通天数（管理员单值，-1=永久）
-    # 已绑定 Emby 的本站用户总上限（-1=不限制）。所有路径都走这一个值：
+    # 已绑定 / 待开通 / 队列待创建 Emby 的本站用户总上限（-1=不限制）。所有路径都走这一个值：
     #   1) /users/me/emby/register 自由注册队列
     #   2) /users/me/emby/bind 绑定已有 Emby 账号
     #   3) 管理员 /admin/users/{uid}/bind-emby 强制绑定
-    # 拒绝再拆出"绑定专属上限"——业务上"已绑用户数"是同一个计数，多上限只会让运维心累。
+    # 拒绝再拆出"绑定专属上限"——业务上 Emby 容量是同一个计数，多上限只会让运维心累。
     EMBY_USER_LIMIT: int = -1
     EMBY_DIRECT_REGISTER_WORKERS: int = 8  # Emby 自由注册队列 worker 数
     EMBY_DIRECT_REGISTER_MAX_QUEUE: int = 1000  # Emby 自由注册队列最大排队数
@@ -610,6 +617,7 @@ class BangumiSyncConfig(BaseConfig):
 
     _section = "BangumiSync"
     ENABLED: bool = False  # 是否启用 Bangumi 同步
+    WEBHOOK_SECRET: str = ""  # Emby Webhook 共享密钥；配置后请求必须携带 ?token= 或 X-Twilight-Bangumi-Token
     AUTO_ADD_COLLECTION: bool = True  # 同步时是否自动添加到收藏（设为"在看"）
     PRIVATE_COLLECTION: bool = False  # 观看记录是否设为私有
     BLOCK_KEYWORDS: List[str] = []  # 屏蔽关键词列表

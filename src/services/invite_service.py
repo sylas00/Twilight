@@ -24,6 +24,7 @@ from typing import Optional
 
 from src.config import RegisterConfig
 from src.core.registration_lock import acquire_lock, release_lock
+from src.core.utils import timestamp
 from src.db.invite import (
     InviteCodeOperate,
     InviteRelationOperate,
@@ -35,9 +36,36 @@ logger = logging.getLogger(__name__)
 
 
 class InviteService:
+    DEFAULT_PERMANENT_INVITE_MAX_DAYS = 365
+
     @staticmethod
     def is_enabled() -> bool:
         return bool(RegisterConfig.INVITE_ENABLED)
+
+    @staticmethod
+    def max_code_days_for_inviter(inviter: UserModel) -> tuple[int, str]:
+        """Return max days an inviter can grant through invite/renew codes.
+
+        Permanent accounts are intentionally capped at 365 days. Non-permanent
+        accounts can only grant whole days not exceeding their own remaining time.
+        """
+        if not inviter:
+            return 0, "无效的邀请人"
+        try:
+            expired_at = int(getattr(inviter, "EXPIRED_AT", 0) or 0)
+        except (TypeError, ValueError):
+            return 0, "邀请人有效期异常"
+
+        if expired_at in (-1, 253402214400) or expired_at >= 253402214400:
+            return InviteService.DEFAULT_PERMANENT_INVITE_MAX_DAYS, ""
+        if expired_at <= 0:
+            return 0, "邀请人尚未开通 Emby 或有效期异常"
+
+        remaining_seconds = expired_at - timestamp()
+        if remaining_seconds <= 0:
+            return 0, "邀请人 Emby 有效期已到期，不能生成邀请码"
+        max_days = (remaining_seconds + 86399) // 86400
+        return int(min(max_days, InviteService.DEFAULT_PERMANENT_INVITE_MAX_DAYS)), ""
 
     @staticmethod
     def max_depth() -> int:
@@ -191,6 +219,9 @@ class InviteService:
             return False, "账户已被禁用，无法生成邀请码"
         if RegisterConfig.INVITE_REQUIRE_EMBY and not inviter.EMBYID:
             return False, "请先绑定 Emby 账号后再生成邀请码"
+        max_days, reason = InviteService.max_code_days_for_inviter(inviter)
+        if max_days <= 0:
+            return False, reason or "当前有效期不足，无法生成邀请码"
 
         max_depth = InviteService.max_depth()
         ancestor_depth = await InviteService.get_ancestor_depth(inviter.UID)
@@ -245,6 +276,10 @@ class InviteService:
             return False, "不能使用自己生成的邀请码", None
         if await InviteRelationOperate.get_parent_uid(invitee_uid) is not None:
             return False, "当前账号已存在邀请关系，不能重复使用邀请码", None
+        if invitee_uid > 0:
+            invitee_subtree = await InviteService.collect_subtree_uids(invitee_uid, max_levels=None)
+            if inviter_uid in invitee_subtree:
+                return False, "不能使用自己下级生成的邀请码，避免邀请树形成环", None
 
         inviter = await UserOperate.get_user_by_uid(inviter_uid)
         if not inviter:
@@ -252,6 +287,18 @@ class InviteService:
         can_use, reason = await InviteService.ensure_existing_code_can_be_used(inviter)
         if not can_use:
             return False, reason or "邀请人当前不可继续邀请", None
+
+        try:
+            code_days = int(code_info.DAYS or 0)
+        except (TypeError, ValueError):
+            code_days = 0
+        max_code_days, max_reason = InviteService.max_code_days_for_inviter(inviter)
+        if code_days <= 0:
+            return False, "邀请树邀请码不能授予永久有效期", None
+        if max_code_days <= 0:
+            return False, max_reason or "邀请人当前有效期不足", None
+        if code_days > max_code_days:
+            return False, f"邀请码有效期超过邀请人当前可授权上限（{max_code_days} 天）", None
 
         ancestor_depth = await InviteService.get_ancestor_depth(inviter_uid)
         if ancestor_depth + 1 > InviteService.max_depth():

@@ -106,6 +106,9 @@ routes.txt
 Thumbs.db
 *.lnk
 desktop.ini
+*.bat
+*.cmd
+*.ps1
 
 # ==================== Keys & Credentials ====================
 *.pem

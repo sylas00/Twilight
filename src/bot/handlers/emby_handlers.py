@@ -23,7 +23,6 @@ from src.bot.handlers.common import (
     back_button,
     close_button,
 )
-from src.db.user import UserOperate, Role
 from src.services.emby_service import EmbyService
 from src.services.stats_service import StatsService
 
@@ -185,19 +184,11 @@ def register(bot):
     @require_private
     @require_admin
     async def cmd_kick(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """踢出用户会话"""
-        if not context.args:
-            await update.message.reply_text("用法: `/kick <用户名>`", parse_mode="Markdown")
-            return
-        user = await UserOperate.get_user_by_username(context.args[0])
-        if not user or not user.EMBYID:
-            await update.message.reply_text("❌ 用户不存在或未绑定 Emby")
-            return
-        try:
-            success, count = await EmbyService.kick_user_sessions(user)
-            await update.message.reply_text(f"✅ 已踢出 `{context.args[0]}` 的 {count} 个会话", parse_mode="Markdown")
-        except Exception as e:
-            await update.message.reply_text(f"❌ {e}")
+        """踢出用户会话 - 私聊写操作已关闭"""
+        await update.message.reply_text(
+            "🔒 Telegram 管理私聊已收敛为只读查询。\n\n踢出播放会话等写操作请在 Web 后台执行。",
+            parse_mode="Markdown",
+        )
 
     # ======================== 注册处理器 ========================
 

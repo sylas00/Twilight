@@ -173,6 +173,71 @@ class RegCodeOperate:
         return data.get("note", "") if isinstance(data, dict) else ""
 
     @staticmethod
+    def get_invite_renew_meta(reg_code: RegCodeModel) -> dict:
+        data = RegCodeOperate._other_dict(reg_code)
+        if not data.get("invite_renew"):
+            return {}
+        return data
+
+    @staticmethod
+    async def create_invite_renew_code(
+        *,
+        owner_uid: int,
+        target_uid: int,
+        day: int,
+        validity_hours: int = 168,
+        note: Optional[str] = None,
+    ) -> str:
+        try:
+            parsed_day = int(day)
+        except (TypeError, ValueError):
+            parsed_day = 30
+        if parsed_day <= 0:
+            raise ValueError("续期天数必须大于 0")
+        try:
+            parsed_validity = int(validity_hours)
+        except (TypeError, ValueError):
+            parsed_validity = 168
+        parsed_validity = max(1, min(parsed_validity, 24 * 30))
+        clean_note = (note or "").strip()[:120]
+        other = {
+            "invite_renew": True,
+            "owner_uid": int(owner_uid),
+            "target_uid": int(target_uid),
+        }
+        if clean_note:
+            other["note"] = clean_note
+
+        async with RegCodeSessionFactory() as session:
+            generated_in_batch: set[str] = set()
+            code = RegCodeOperate._generate_code(
+                parsed_validity,
+                1,
+                parsed_day,
+                Type.RENEW.value,
+                1,
+            )
+            for _retry in range(8):
+                exists = await session.execute(select(RegCodeModel.CODE).where(RegCodeModel.CODE == code).limit(1))
+                if exists.scalar_one_or_none() is None and code not in generated_in_batch:
+                    break
+                code = RegCodeOperate._generate_code(parsed_validity, 1, parsed_day, Type.RENEW.value, 1)
+            else:
+                raise ValueError("生成卡码重复次数过多，请调整格式或随机算法")
+
+            reg_code = RegCodeModel(
+                CODE=code,
+                VALIDITY_TIME=parsed_validity,
+                TYPE=Type.RENEW.value,
+                USE_COUNT_LIMIT=1,
+                DAYS=parsed_day,
+                OTHER=json.dumps(other, ensure_ascii=False),
+            )
+            session.add(reg_code)
+            await session.commit()
+            return code
+
+    @staticmethod
     async def update_note(code: str, note: str) -> bool:
         note = (note or "").strip()
         if len(note) > 120:

@@ -14,6 +14,8 @@ import {
   Crown,
   AlertTriangle,
   ShieldCheck,
+  KeyRound,
+  CalendarClock,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -51,6 +53,12 @@ export default function InviteCenterPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [days, setDays] = useState<string>("30");
   const [note, setNote] = useState("");
+  const [renewOpen, setRenewOpen] = useState(false);
+  const [renewTarget, setRenewTarget] = useState<InviteMyStatus["children"][number] | null>(null);
+  const [renewDays, setRenewDays] = useState("30");
+  const [renewNote, setRenewNote] = useState("");
+  const [renewing, setRenewing] = useState(false);
+  const [generatedRenewCode, setGeneratedRenewCode] = useState<null | { code: string; target_username: string; days: number; validity_hours: number }>(null);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -84,10 +92,21 @@ export default function InviteCenterPage() {
     setCreating(true);
     try {
       const parsedDays = Number(days);
-      const payload: { days?: number; note?: string } = {};
-      if (!Number.isNaN(parsedDays)) {
-        payload.days = parsedDays;
+      const maxDays = status?.max_code_days ?? 0;
+      if (maxDays <= 0) {
+        toast({ title: "当前不能生成邀请码", description: status?.max_code_days_reason, variant: "destructive" });
+        return;
       }
+      if (Number.isNaN(parsedDays) || parsedDays <= 0) {
+        toast({ title: "请输入有效天数", description: "邀请树邀请码不能设置为永久", variant: "destructive" });
+        return;
+      }
+      if (parsedDays > maxDays) {
+        toast({ title: "天数超出上限", description: `最多可生成 ${maxDays} 天`, variant: "destructive" });
+        return;
+      }
+      const payload: { days?: number; note?: string } = {};
+      payload.days = parsedDays;
       if (note.trim()) payload.note = note.trim();
       const res = await api.createInviteCode(payload);
       if (res.success) {
@@ -106,6 +125,57 @@ export default function InviteCenterPage() {
       });
     } finally {
       setCreating(false);
+    }
+  };
+
+  const openRenewDialog = (child: InviteMyStatus["children"][number]) => {
+    const maxDays = status?.max_code_days ?? 30;
+    setRenewTarget(child);
+    setRenewDays(String(Math.min(30, Math.max(1, maxDays))));
+    setRenewNote("");
+    setGeneratedRenewCode(null);
+    setRenewOpen(true);
+  };
+
+  const handleCreateRenewCode = async () => {
+    if (!renewTarget) return;
+    const maxDays = status?.max_code_days ?? 0;
+    const parsedDays = Number(renewDays);
+    if (Number.isNaN(parsedDays) || parsedDays <= 0) {
+      toast({ title: "请输入有效续期天数", variant: "destructive" });
+      return;
+    }
+    if (maxDays <= 0 || parsedDays > maxDays) {
+      toast({ title: "续期天数超出上限", description: `最多可生成 ${maxDays} 天`, variant: "destructive" });
+      return;
+    }
+
+    setRenewing(true);
+    try {
+      const res = await api.createInviteRenewCode({
+        target_uid: renewTarget.uid,
+        days: parsedDays,
+        note: renewNote.trim() || undefined,
+      });
+      if (res.success && res.data) {
+        setGeneratedRenewCode({
+          code: res.data.code,
+          target_username: res.data.target_username,
+          days: res.data.days,
+          validity_hours: res.data.validity_hours,
+        });
+        toast({ title: "专属续期码已生成", variant: "success" });
+      } else {
+        toast({ title: "生成失败", description: res.message, variant: "destructive" });
+      }
+    } catch (err) {
+      toast({
+        title: "生成失败",
+        description: err instanceof Error ? err.message : "网络异常",
+        variant: "destructive",
+      });
+    } finally {
+      setRenewing(false);
     }
   };
 
@@ -145,6 +215,7 @@ export default function InviteCenterPage() {
     () => codes.filter((c) => c.active && c.use_count < (c.use_count_limit === -1 ? Infinity : c.use_count_limit)).length,
     [codes],
   );
+  const maxCodeDays = status?.max_code_days ?? 0;
 
   if (loading && !config) {
     return (
@@ -191,7 +262,11 @@ export default function InviteCenterPage() {
           </Button>
           <Button
             size="sm"
-            onClick={() => setCreateOpen(true)}
+            onClick={() => {
+              const defaultDays = config?.default_days && config.default_days > 0 ? config.default_days : maxCodeDays || 30;
+              setDays(String(Math.min(defaultDays, maxCodeDays || defaultDays)));
+              setCreateOpen(true);
+            }}
             disabled={!status?.can_invite}
           >
             <Plus className="mr-1 h-4 w-4" />
@@ -256,7 +331,9 @@ export default function InviteCenterPage() {
                 )}
               </p>
               <p className="text-xs text-muted-foreground">
-                {status.can_invite ? "条件已满足" : status.invite_block_reason || "条件不满足"}
+                {status.can_invite
+                  ? `最多可授权 ${status.max_code_days ?? "-"} 天`
+                  : status.invite_block_reason || status.max_code_days_reason || "条件不满足"}
               </p>
             </CardContent>
           </Card>
@@ -281,13 +358,25 @@ export default function InviteCenterPage() {
                     <p className="text-sm font-medium truncate">{c.username}</p>
                     <p className="text-[11px] text-muted-foreground">UID #{c.uid}</p>
                   </div>
-                  <div className="flex shrink-0 gap-1">
+                  <div className="flex shrink-0 flex-wrap justify-end gap-1">
                     <Badge variant={c.active ? "success" : "secondary"} className="text-[10px]">
                       {c.active ? "启用" : "禁用"}
                     </Badge>
                     <Badge variant={c.has_emby ? "outline" : "secondary"} className="text-[10px]">
                       {c.has_emby ? "Emby ✓" : "无 Emby"}
                     </Badge>
+                    {c.emby_expired && (
+                      <Badge variant="destructive" className="text-[10px]">已到期</Badge>
+                    )}
+                  </div>
+                  <div className="mt-2 flex flex-wrap items-center justify-between gap-2 border-t pt-2 text-[11px] text-muted-foreground md:col-span-2">
+                    <span>{c.expire_status || "-"}</span>
+                    {c.can_generate_renew_code && (
+                      <Button size="sm" variant="outline" className="h-7 px-2 text-[11px]" onClick={() => openRenewDialog(c)}>
+                        <KeyRound className="mr-1 h-3 w-3" />
+                        生成专属续期码
+                      </Button>
+                    )}
                   </div>
                 </div>
               ))}
@@ -379,10 +468,10 @@ export default function InviteCenterPage() {
                 value={days}
                 onChange={(e) => setDays(e.target.value)}
                 inputMode="numeric"
-                placeholder="例如 30；填 0 或 -1 表示永久"
+                placeholder="例如 30"
               />
               <p className="text-[10px] text-muted-foreground">
-                被邀请人通过该码创建 Emby 账号后的有效期；管理员/白名单不受影响。
+                被邀请人通过该码创建 Emby 账号后的有效期；不能超过你的可授权上限 {maxCodeDays || "-"} 天，不能设置为永久。
               </p>
             </div>
             <div className="space-y-1.5">
@@ -403,6 +492,60 @@ export default function InviteCenterPage() {
               生成
             </Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={renewOpen} onOpenChange={setRenewOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>生成专属续期码</DialogTitle>
+            <DialogDescription>
+              续期码只允许 {renewTarget?.username || "该下级"} 使用。其他账号使用会被立即禁用。
+            </DialogDescription>
+          </DialogHeader>
+          {generatedRenewCode ? (
+            <div className="space-y-4">
+              <div className="rounded-lg border bg-muted/40 p-3">
+                <p className="text-xs text-muted-foreground">专属续期码</p>
+                <code className="mt-1 block break-all rounded bg-background px-2 py-2 font-mono text-sm">
+                  {generatedRenewCode.code}
+                </code>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  目标：{generatedRenewCode.target_username} · 续期 {generatedRenewCode.days} 天 · 卡码有效 {generatedRenewCode.validity_hours} 小时
+                </p>
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => void handleCopy(generatedRenewCode.code)}>
+                  <Copy className="mr-2 h-4 w-4" />
+                  复制
+                </Button>
+                <Button onClick={() => setRenewOpen(false)}>完成</Button>
+              </DialogFooter>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-300">
+                <CalendarClock className="mr-1 inline h-3.5 w-3.5" />
+                该码绑定目标 UID #{renewTarget?.uid}，不要发给其他人。
+              </div>
+              <div className="space-y-1.5">
+                <Label>续期天数</Label>
+                <Input value={renewDays} onChange={(e) => setRenewDays(e.target.value)} inputMode="numeric" />
+                <p className="text-[10px] text-muted-foreground">最多 {maxCodeDays || "-"} 天，由你的剩余有效期决定。</p>
+              </div>
+              <div className="space-y-1.5">
+                <Label>备注（可选）</Label>
+                <Textarea rows={2} maxLength={120} value={renewNote} onChange={(e) => setRenewNote(e.target.value)} />
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setRenewOpen(false)}>取消</Button>
+                <Button onClick={handleCreateRenewCode} disabled={renewing}>
+                  {renewing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <KeyRound className="mr-2 h-4 w-4" />}
+                  生成续期码
+                </Button>
+              </DialogFooter>
+            </div>
+          )}
         </DialogContent>
       </Dialog>
     </motion.div>

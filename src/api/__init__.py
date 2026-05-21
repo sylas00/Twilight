@@ -145,6 +145,8 @@ def create_app() -> Flask:
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+        response.headers.setdefault("X-Permitted-Cross-Domain-Policies", "none")
 
         # 认证相关接口禁止缓存，避免令牌与敏感响应被浏览器缓存
         if request.path.startswith("/api/v1/auth"):

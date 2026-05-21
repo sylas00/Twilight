@@ -18,8 +18,10 @@ from src.db.user import UserModel, UserOperate, Role, TelegramRebindRequestOpera
 from src.services.emby import get_emby_client, EmbyError
 from src.core.utils import generate_password, hash_password, timestamp, days_to_seconds, is_valid_username
 from src.core.registration_lock import (
+    acquire_lock,
     acquire_global_registration_lock,
     acquire_registration_lock,
+    release_lock,
     release_global_registration_lock,
     release_registration_lock,
     get_cached_registered_user_count,
@@ -56,6 +58,34 @@ class RegisterResponse:
 
 class UserService:
     """用户业务服务"""
+
+    EMBY_CAPACITY_LOCK_KEY = "tw:emby:capacity"
+
+    @staticmethod
+    async def acquire_emby_capacity_lock(timeout: float = 5.0, ttl: int = 90) -> Optional[str]:
+        """Serialize capacity-sensitive Emby grant/create paths across workers with Redis when configured."""
+        return await acquire_lock(UserService.EMBY_CAPACITY_LOCK_KEY, timeout=timeout, ttl=ttl)
+
+    @staticmethod
+    async def release_emby_capacity_lock(token: Optional[str]) -> None:
+        if token:
+            await release_lock(UserService.EMBY_CAPACITY_LOCK_KEY, token)
+
+    @staticmethod
+    async def check_normal_user_capacity_for_grant(user: UserModel) -> Tuple[bool, str]:
+        """Check USER_LIMIT only when an existing unrecognized user will be promoted to normal."""
+        if not user or user.ROLE != Role.UNRECOGNIZED.value:
+            return True, ""
+        try:
+            limit = int(RegisterConfig.USER_LIMIT)
+        except (TypeError, ValueError):
+            limit = 0
+        if limit <= 0:
+            return False, "用户数量上限配置无效"
+        current = await UserService.get_registered_user_count(use_cache=False)
+        if current >= limit:
+            return False, f"已达到用户数量上限 ({limit})"
+        return True, ""
 
     @staticmethod
     def is_emby_access_expired(user: UserModel) -> bool:
@@ -123,21 +153,59 @@ class UserService:
         return await UserOperate.get_emby_bound_users_count()
 
     @staticmethod
-    async def check_emby_user_capacity(*, extra_pending: int = 0) -> Tuple[bool, str]:
+    def get_emby_capacity_queue_pending_uids(*, exclude_uid: Optional[int] = None) -> set[int]:
+        """Return queued UIDs that have reserved or may soon consume an Emby slot."""
+        pending_uids: set[int] = set()
+        for module_name, class_name in (
+            ("src.services.emby_register_queue", "EmbyRegisterQueueService"),
+            ("src.services.regcode_use_queue", "RegcodeUseQueueService"),
+        ):
+            try:
+                module = __import__(module_name, fromlist=[class_name])
+                service = getattr(module, class_name)
+                pending_uids.update(service.emby_capacity_pending_uids(exclude_uid=exclude_uid))
+            except Exception as exc:  # pragma: no cover - queue modules are best-effort capacity hints
+                logger.debug("读取 Emby 队列占用失败 %s.%s: %s", module_name, class_name, exc)
+        if exclude_uid is not None:
+            try:
+                pending_uids.discard(int(exclude_uid))
+            except (TypeError, ValueError):
+                pass
+        return pending_uids
+
+    @staticmethod
+    def get_emby_capacity_queue_pending_count(*, exclude_uid: Optional[int] = None) -> int:
+        return len(UserService.get_emby_capacity_queue_pending_uids(exclude_uid=exclude_uid))
+
+    @staticmethod
+    async def check_emby_user_capacity(
+        *,
+        extra_pending: int = 0,
+        exclude_uid: Optional[int] = None,
+    ) -> Tuple[bool, str]:
         """检查 Emby 绑定用户总量是否达到上限。
 
-        :param extra_pending: 额外把队列里"已占名额但还没写库"的人头算进来，让自由注册
-            队列和绑定路径在并发场景下不再各自踩同一个名额。调用方在 *进入临界区时* 传入
-            从队列拿到的 in-flight 数即可（普通同步路径传 0）。
+        :param extra_pending: 调用方额外传入的占用量；常规队列占用会在本函数内统一读取。
+        :param exclude_uid: 当前正在消费自身队列预留名额的 UID，避免把自己算成额外占用。
         """
         limit = UserService.get_emby_user_limit()
         if limit <= 0:
             return True, ""
 
         current = await UserService.get_emby_bound_user_count()
-        projected = current + max(0, int(extra_pending))
+        queue_pending = UserService.get_emby_capacity_queue_pending_count(exclude_uid=exclude_uid)
+        try:
+            extra = max(0, int(extra_pending or 0))
+        except (TypeError, ValueError):
+            extra = 0
+        projected = current + queue_pending + extra
         if projected >= limit:
-            return False, f"Emby 已绑定用户数已达上限（{projected}/{limit}）"
+            parts = [f"已绑定/待开通 {current}"]
+            if queue_pending:
+                parts.append(f"队列待创建 {queue_pending}")
+            if extra:
+                parts.append(f"额外预留 {extra}")
+            return False, f"Emby 名额已达上限（{'，'.join(parts)}，合计 {projected}/{limit}）"
         return True, ""
 
     @staticmethod
@@ -266,6 +334,9 @@ class UserService:
         if not user:
             return False, "关联用户不存在"
 
+        if user.TELEGRAM_ID != request.OLD_TELEGRAM_ID:
+            return False, "用户当前 Telegram 与申请时不一致，请刷新核实后再处理"
+
         if user.TELEGRAM_ID:
             await UserOperate.unbind_telegram_user(user)
 
@@ -302,6 +373,48 @@ class UserService:
             return False, "更新请求状态失败"
 
         return True, "已拒绝换绑请求"
+
+    @staticmethod
+    async def batch_review_telegram_rebind_requests(
+        request_ids: list[int],
+        action: str,
+        reviewer_uid: int,
+        admin_note: Optional[str] = None,
+    ) -> dict:
+        action = (action or "").strip().lower()
+        clean_ids = []
+        seen = set()
+        for raw_id in request_ids:
+            try:
+                request_id = int(raw_id)
+            except (TypeError, ValueError):
+                continue
+            if request_id <= 0 or request_id in seen:
+                continue
+            seen.add(request_id)
+            clean_ids.append(request_id)
+
+        results = []
+        success_count = 0
+        failed_count = 0
+        for request_id in clean_ids:
+            if action == "approve":
+                ok, msg = await UserService.approve_telegram_rebind_request(request_id, reviewer_uid, admin_note)
+            else:
+                ok, msg = await UserService.reject_telegram_rebind_request(request_id, reviewer_uid, admin_note)
+            results.append({"id": request_id, "success": ok, "message": msg})
+            if ok:
+                success_count += 1
+            else:
+                failed_count += 1
+
+        return {
+            "action": action,
+            "total": len(clean_ids),
+            "success": success_count,
+            "failed": failed_count,
+            "results": results,
+        }
 
     @staticmethod
     async def register_by_code(
@@ -408,7 +521,16 @@ class UserService:
             await release_registration_lock(locks)
             return RegisterResponse(RegisterResult.ERROR, "当前注册请求较多，请稍后重试")
 
+        emby_capacity_lock: Optional[str] = None
         try:
+            if pending_emby_days is not None:
+                emby_capacity_lock = await UserService.acquire_emby_capacity_lock()
+                if emby_capacity_lock is None:
+                    return RegisterResponse(RegisterResult.ERROR, "Emby 名额检查繁忙，请稍后重试")
+                cap_ok, cap_msg = await UserService.check_emby_user_capacity(exclude_uid=user.UID)
+                if not cap_ok:
+                    return RegisterResponse(RegisterResult.USER_LIMIT_REACHED, cap_msg)
+
             # 二次校验（避免锁竞争窗口）
             if not skip_pending_check and not RegisterConfig.ALLOW_PENDING_REGISTER:
                 return RegisterResponse(RegisterResult.ERROR, "暂不开放注册，请使用注册码")
@@ -548,6 +670,7 @@ class UserService:
                 emby_password=user_password if not password else None,
             )
         finally:
+            await UserService.release_emby_capacity_lock(emby_capacity_lock)
             await release_global_registration_lock(global_lock)
             await release_registration_lock(locks)
 
@@ -589,10 +712,15 @@ class UserService:
             return RegisterResponse(RegisterResult.ERROR, "当前注册请求较多，请稍后重试")
 
         emby = get_emby_client()
+        emby_capacity_lock: Optional[str] = None
         try:
-            cap_ok, cap_msg = await UserService.check_emby_user_capacity()
-            if not cap_ok:
-                return RegisterResponse(RegisterResult.USER_LIMIT_REACHED, cap_msg)
+            emby_capacity_lock = await UserService.acquire_emby_capacity_lock()
+            if emby_capacity_lock is None:
+                return RegisterResponse(RegisterResult.ERROR, "Emby 名额检查繁忙，请稍后重试")
+            if not getattr(user, "PENDING_EMBY", False):
+                cap_ok, cap_msg = await UserService.check_emby_user_capacity(exclude_uid=user.UID)
+                if not cap_ok:
+                    return RegisterResponse(RegisterResult.USER_LIMIT_REACHED, cap_msg)
 
             existing_emby = await emby.get_user_by_name(emby_username)
             if existing_emby:
@@ -634,6 +762,13 @@ class UserService:
             except Exception as exc:  # pragma: no cover
                 logger.warning(f"补建 Emby 后同步状态失败: {exc}")
 
+            try:
+                from src.services.emby_service import EmbyService
+
+                await EmbyService.apply_default_hidden_libraries(user)
+            except Exception as exc:  # pragma: no cover
+                logger.warning(f"补建 Emby 后应用默认隐藏媒体库失败: {exc}")
+
             days_text = UserService._format_days_text(days)
             return RegisterResponse(
                 result=RegisterResult.SUCCESS,
@@ -641,6 +776,7 @@ class UserService:
                 user=user,
             )
         finally:
+            await UserService.release_emby_capacity_lock(emby_capacity_lock)
             await release_registration_lock(locks)
 
     @staticmethod
@@ -654,11 +790,21 @@ class UserService:
     ) -> RegisterResponse:
         """创建 Emby 用户（内部方法）"""
         emby = get_emby_client()
+        emby_capacity_lock: Optional[str] = None
 
         try:
-            cap_ok, cap_msg = await UserService.check_emby_user_capacity()
-            if not cap_ok:
-                return RegisterResponse(RegisterResult.USER_LIMIT_REACHED, cap_msg)
+            emby_capacity_lock = await UserService.acquire_emby_capacity_lock()
+            if emby_capacity_lock is None:
+                return RegisterResponse(RegisterResult.ERROR, "Emby 名额检查繁忙，请稍后重试")
+            existing_user = None
+            if telegram_id:
+                existing_user = await UserOperate.get_user_by_telegram_id(telegram_id)
+            if not getattr(existing_user, "PENDING_EMBY", False):
+                cap_ok, cap_msg = await UserService.check_emby_user_capacity(
+                    exclude_uid=existing_user.UID if existing_user else None,
+                )
+                if not cap_ok:
+                    return RegisterResponse(RegisterResult.USER_LIMIT_REACHED, cap_msg)
 
             # 检查 Emby 用户名是否已存在
             existing_emby = await emby.get_user_by_name(username)
@@ -677,12 +823,15 @@ class UserService:
             now_ts = timestamp()
 
             # 创建或更新本地用户记录
-            existing_user = None
-            if telegram_id:
-                existing_user = await UserOperate.get_user_by_telegram_id(telegram_id)
-
             if existing_user:
+                user_limit_ok, user_limit_msg = await UserService.check_normal_user_capacity_for_grant(existing_user)
+                if not user_limit_ok:
+                    await emby.delete_user(emby_user.id)
+                    return RegisterResponse(RegisterResult.USER_LIMIT_REACHED, user_limit_msg)
+
                 existing_user.EMBYID = emby_user.id
+                existing_user.PENDING_EMBY = False
+                existing_user.PENDING_EMBY_DAYS = None
                 existing_user.PASSWORD = hash_password(user_password)
                 # 如果是管理员或白名单，保持永久有效期
                 if existing_user.ROLE in (Role.ADMIN.value, Role.WHITE_LIST.value):
@@ -751,6 +900,15 @@ class UserService:
                     user_role = Role.NORMAL.value
                     user_expire = expire_at
 
+                if user_role == Role.NORMAL.value:
+                    current_count = await UserService.get_registered_user_count(use_cache=False)
+                    if current_count >= RegisterConfig.USER_LIMIT:
+                        await emby.delete_user(emby_user.id)
+                        return RegisterResponse(
+                            RegisterResult.USER_LIMIT_REACHED,
+                            f"已达到用户数量上限 ({RegisterConfig.USER_LIMIT})",
+                        )
+
                 user = UserModel(
                     UID=new_uid,
                     TELEGRAM_ID=telegram_id,  # 可以为 None
@@ -772,6 +930,13 @@ class UserService:
 
                 await RegCodeOperate.record_regcode_use(reg_code, uid=user.UID, telegram_id=telegram_id)
 
+            try:
+                from src.services.emby_service import EmbyService
+
+                await EmbyService.apply_default_hidden_libraries(user)
+            except Exception as exc:  # pragma: no cover
+                logger.warning(f"注册后应用默认隐藏媒体库失败: {exc}")
+
             logger.info(f"用户注册成功: {username} (TG: {telegram_id})")
 
             return RegisterResponse(
@@ -787,6 +952,8 @@ class UserService:
         except Exception as e:
             logger.error(f"注册错误: {e}")
             return RegisterResponse(RegisterResult.ERROR, f"注册失败: {e}")
+        finally:
+            await UserService.release_emby_capacity_lock(emby_capacity_lock)
 
     @staticmethod
     async def renew_user(user: UserModel, days: int, reg_code: Optional[str] = None) -> Tuple[bool, str]:
@@ -797,11 +964,6 @@ class UserService:
         :param days: 续期天数
         :param reg_code: 续期码（可选）
         """
-        # 待开通 Emby 的用户没有真实到期概念，续期没有意义；后续 complete_emby_registration
-        # 会用 PENDING_EMBY_DAYS 重新计算到期时间，此处续期反而会被覆盖掉。
-        if not user.EMBYID:
-            return False, "用户尚未绑定 Emby 账号，无法续期。请先完成 Emby 账号开通。"
-
         if reg_code:
             from src.db.regcode import RegCodeOperate, Type as RegCodeType
 
@@ -825,8 +987,36 @@ class UserService:
             if UserService._is_regcode_expired(code_info):
                 return False, "续期码已过期"
 
+            invite_renew_meta = RegCodeOperate.get_invite_renew_meta(code_info)
+            target_uid = invite_renew_meta.get("target_uid") if invite_renew_meta else None
+            if target_uid is not None:
+                try:
+                    target_uid_int = int(target_uid)
+                except (TypeError, ValueError):
+                    return False, "续期码绑定信息异常，请联系管理员"
+                if int(user.UID) != target_uid_int:
+                    await RegCodeOperate.record_regcode_use(reg_code, uid=user.UID, telegram_id=user.TELEGRAM_ID, increment=0)
+                    user.ACTIVE_STATUS = False
+                    await UserOperate.update_user(user)
+                    try:
+                        await UserService.sync_user_to_emby(user)
+                    except Exception as exc:  # pragma: no cover
+                        logger.warning("专属续期码误用后同步禁用 Emby 失败: %s", exc)
+                    logger.warning(
+                        "专属续期码被非目标用户使用并已禁用: code=%s target_uid=%s actual_uid=%s",
+                        reg_code,
+                        target_uid_int,
+                        user.UID,
+                    )
+                    return False, "该续期码仅限指定下级使用，当前账号已按安全策略禁用"
+
             days = UserService._normalize_code_days(code_info.DAYS, default=days)
             await RegCodeOperate.record_regcode_use(reg_code, uid=user.UID, telegram_id=user.TELEGRAM_ID)
+
+        # 待开通 Emby 的用户没有真实到期概念，续期没有意义；后续 complete_emby_registration
+        # 会用 PENDING_EMBY_DAYS 重新计算到期时间，此处续期反而会被覆盖掉。
+        if not user.EMBYID:
+            return False, "用户尚未绑定 Emby 账号，无法续期。请先完成 Emby 账号开通。"
 
         if days <= 0:
             user.EXPIRED_AT = -1
@@ -1040,10 +1230,6 @@ class UserService:
             if user.EMBYID:
                 return False, "您已拥有 Emby 账户，无需使用注册码", None
 
-            cap_ok, cap_msg = await UserService.check_emby_user_capacity()
-            if not cap_ok:
-                return False, cap_msg, None
-
             emby_username = (emby_username or "").strip()
             if not emby_username:
                 return False, "使用注册码创建 Emby 账号时，请填写 Emby 用户名", None
@@ -1059,8 +1245,16 @@ class UserService:
             emby = get_emby_client()
             days = UserService._normalize_code_days(code_info.DAYS, default=30)
             reserved_code = False
+            emby_capacity_lock = await UserService.acquire_emby_capacity_lock()
+            if emby_capacity_lock is None:
+                return False, "Emby 名额检查繁忙，请稍后重试", None
 
             try:
+                if not getattr(user, "PENDING_EMBY", False):
+                    cap_ok, cap_msg = await UserService.check_emby_user_capacity(exclude_uid=user.UID)
+                    if not cap_ok:
+                        return False, cap_msg, None
+
                 if not await RegCodeOperate.record_regcode_use(
                     code_str,
                     uid=user.UID,
@@ -1080,6 +1274,8 @@ class UserService:
                     return False, "创建 Emby 账户失败", None
 
                 user.EMBYID = emby_user.id
+                user.PENDING_EMBY = False
+                user.PENDING_EMBY_DAYS = None
                 user.ACTIVE_STATUS = True
                 if user.ROLE in (Role.ADMIN.value, Role.WHITE_LIST.value):
                     user.EXPIRED_AT = 253402214400
@@ -1103,6 +1299,8 @@ class UserService:
                     await RegCodeOperate.record_regcode_use(code_str, increment=-1)
                 logger.error(f"注册码创建 Emby 账户失败: {e}")
                 return False, f"Emby 服务器错误: {e}", None
+            finally:
+                await UserService.release_emby_capacity_lock(emby_capacity_lock)
 
         # ========== 白名单码 ==========
         if code_type == RegCodeType.WHITELIST.value:
@@ -1119,28 +1317,32 @@ class UserService:
 
             # 如果没有 Emby 账户，自动创建
             if not user.EMBYID:
-                cap_ok, cap_msg = await UserService.check_emby_user_capacity()
-                if not cap_ok:
+                emby_capacity_lock = await UserService.acquire_emby_capacity_lock()
+                if emby_capacity_lock is None:
                     await RegCodeOperate.record_regcode_use(code_str, increment=-1)
-                    return False, cap_msg, None
-
-                emby_username = (emby_username or "").strip()
-                if not emby_username:
-                    await RegCodeOperate.record_regcode_use(code_str, increment=-1)
-                    return False, "使用白名单码创建 Emby 账号时，请填写 Emby 用户名", None
-
-                if not is_valid_username(emby_username):
-                    await RegCodeOperate.record_regcode_use(code_str, increment=-1)
-                    return False, "Emby 用户名格式不正确（3-20位字母数字下划线，不能以数字开头）", None
-
-                pwd_ok, pwd_msg = UserService._validate_emby_register_password(emby_password)
-                if not pwd_ok:
-                    await RegCodeOperate.record_regcode_use(code_str, increment=-1)
-                    return False, pwd_msg, None
-
-                emby = get_emby_client()
-
+                    return False, "Emby 名额检查繁忙，请稍后重试", None
                 try:
+                    if not getattr(user, "PENDING_EMBY", False):
+                        cap_ok, cap_msg = await UserService.check_emby_user_capacity(exclude_uid=user.UID)
+                        if not cap_ok:
+                            await RegCodeOperate.record_regcode_use(code_str, increment=-1)
+                            return False, cap_msg, None
+
+                    emby_username = (emby_username or "").strip()
+                    if not emby_username:
+                        await RegCodeOperate.record_regcode_use(code_str, increment=-1)
+                        return False, "使用白名单码创建 Emby 账号时，请填写 Emby 用户名", None
+
+                    if not is_valid_username(emby_username):
+                        await RegCodeOperate.record_regcode_use(code_str, increment=-1)
+                        return False, "Emby 用户名格式不正确（3-20位字母数字下划线，不能以数字开头）", None
+
+                    pwd_ok, pwd_msg = UserService._validate_emby_register_password(emby_password)
+                    if not pwd_ok:
+                        await RegCodeOperate.record_regcode_use(code_str, increment=-1)
+                        return False, pwd_msg, None
+
+                    emby = get_emby_client()
                     existing_emby = await emby.get_user_by_name(emby_username)
                     if existing_emby:
                         await RegCodeOperate.record_regcode_use(code_str, increment=-1)
@@ -1152,6 +1354,8 @@ class UserService:
                         return False, "创建 Emby 账户失败", None
 
                     user.EMBYID = emby_user.id
+                    user.PENDING_EMBY = False
+                    user.PENDING_EMBY_DAYS = None
                     created_emby_account = True
                     other_data = {}
                     if user.OTHER:
@@ -1166,6 +1370,8 @@ class UserService:
                         await RegCodeOperate.record_regcode_use(code_str, increment=-1)
                     logger.error(f"白名单码创建 Emby 账户失败: {e}")
                     return False, f"Emby 服务器错误: {e}", None
+                finally:
+                    await UserService.release_emby_capacity_lock(emby_capacity_lock)
 
             # 赋予白名单角色 + 永久有效期
             user.ROLE = Role.WHITE_LIST.value
@@ -1440,6 +1646,7 @@ class UserService:
             expire_status = format_expire_time(user.EXPIRED_AT)
 
         emby_bound = bool(user.EMBYID) and not is_pending_emby
+        bgm_token_set = bool((user.BGM_TOKEN or "").strip())
         info = {
             "uid": user.UID,
             "username": user.USERNAME,
@@ -1452,6 +1659,8 @@ class UserService:
             # 未绑定 Emby 时不下发 EXPIRED_AT 数值，避免 sentinel(0) 被 UI 误解
             "expired_at": user.EXPIRED_AT if emby_bound else None,
             "bgm_mode": user.BGM_MODE,
+            "bgm_token_set": bgm_token_set,
+            "bgm_sync_ready": bool(user.BGM_MODE and bgm_token_set),
             "avatar": user.AVATAR or None,
             "register_time": user.REGISTER_TIME,
             "created_at": user.CREATE_AT or user.REGISTER_TIME,  # 前端兼容字段
@@ -1461,6 +1670,7 @@ class UserService:
             "pending_emby": is_pending_emby,
             "pending_emby_days": getattr(user, "PENDING_EMBY_DAYS", None),
             "emby_disabled_by_expiry": emby_disabled_by_expiry,
+            "library_self_service": bool(getattr(user, "LIBRARY_SELF_SERVICE", False)),
         }
 
         return info
@@ -1538,18 +1748,22 @@ class UserService:
     @staticmethod
     async def create_whitelist_user(telegram_id: int, username: str, email: Optional[str] = None) -> RegisterResponse:
         """创建白名单用户（永久有效）"""
-        cap_ok, cap_msg = await UserService.check_emby_user_capacity()
-        if not cap_ok:
-            return RegisterResponse(RegisterResult.USER_LIMIT_REACHED, cap_msg)
-
-        # 检查用户是否已存在
-        existing_user = await UserOperate.get_user_by_telegram_id(telegram_id)
-        if existing_user and existing_user.EMBYID:
-            return RegisterResponse(RegisterResult.USER_EXISTS, "用户已存在")
-
-        emby = get_emby_client()
+        emby_capacity_lock = await UserService.acquire_emby_capacity_lock()
+        if emby_capacity_lock is None:
+            return RegisterResponse(RegisterResult.ERROR, "Emby 名额检查繁忙，请稍后重试")
 
         try:
+            cap_ok, cap_msg = await UserService.check_emby_user_capacity()
+            if not cap_ok:
+                return RegisterResponse(RegisterResult.USER_LIMIT_REACHED, cap_msg)
+
+            # 检查用户是否已存在
+            existing_user = await UserOperate.get_user_by_telegram_id(telegram_id)
+            if existing_user and existing_user.EMBYID:
+                return RegisterResponse(RegisterResult.USER_EXISTS, "用户已存在")
+
+            emby = get_emby_client()
+
             # 检查 Emby 用户名
             existing_emby = await emby.get_user_by_name(username)
             if existing_emby:
@@ -1592,3 +1806,5 @@ class UserService:
         except EmbyError as e:
             logger.error(f"创建白名单用户失败: {e}")
             return RegisterResponse(RegisterResult.EMBY_ERROR, f"Emby 错误: {e}")
+        finally:
+            await UserService.release_emby_capacity_lock(emby_capacity_lock)

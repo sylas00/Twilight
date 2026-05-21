@@ -61,6 +61,13 @@ cors_origins = ["https://app.example.com"]
 - 建议用 Nginx/Caddy 暴露单一入口，仅开放 80/443。
 - 后端服务（如 5000）尽量仅监听内网或本机。
 - 限制管理接口访问来源（网段/IP/WAF）。
+- API 与前端默认发送基础安全响应头，包括 `X-Content-Type-Options`、`X-Frame-Options`、`Referrer-Policy` 与 `Permissions-Policy`；反向代理如覆盖这些头，应保持同等或更严格策略。
+
+## 5.1 前端资源与背景图
+
+- 用户自定义背景只允许安全的图片 URL/路径、`blob:`、常见图片 `data:` URL 与渐变函数；`javascript:`、`file:` 等非预期协议会被前端忽略。
+- 如果允许用户使用外部图片作为背景或头像，请优先使用 HTTPS，避免混合内容和第三方 Referer 泄漏。
+- Next.js 已关闭 `X-Powered-By` 指纹头；如通过 CDN/反向代理暴露前端，请同步隐藏上游技术栈指纹。
 
 ## 6. 日志与审计
 
@@ -78,6 +85,13 @@ cors_origins = ["https://app.example.com"]
 - API Key 不能自行修改权限；权限变更必须通过已登录 Web 端完成，避免只读 Key 自提权。
 - 管理员账号数量最小化，长期不使用的高权限账号及时停用。
 - Telegram 管理员 ID 仅配置必要人员。
+- Telegram 管理员私聊仅保留只读查询与统计能力；添加用户、生成注册码、广播、强制绑定、踢出会话等写操作应统一走 Web 后台。
+
+## 7.1 Emby 用户上限
+
+- `Register.emby_user_limit` 使用同一个容量口径：已绑定 Emby 的系统用户、`PENDING_EMBY=True` 的待开通资格、自由注册/卡码队列中正在创建的请求都会占用名额。
+- 注册码注册、邀请码开通、用户自助补建、手动绑定、管理员授予开通资格、独立 Emby 账号创建等路径都应在创建或新增绑定前检查容量。
+- 删除 Emby 账号或清理待开通资格后会释放对应名额；独立 Emby 账号不写入本地用户表，因此还会额外读取 Emby 端总用户数做兜底。
 
 ## 8. 配置文件自动备份
 

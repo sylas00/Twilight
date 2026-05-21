@@ -147,12 +147,23 @@ class EmbyRegisterQueueService:
     # —— 状态视图 ——
 
     @classmethod
-    def in_flight_count(cls) -> int:
+    def emby_capacity_pending_uids(cls, *, exclude_uid: Optional[int] = None) -> set[int]:
+        """UIDs with queued/processing Emby create requests that reserve capacity."""
+        uids = {int(uid) for uid in cls._pending_by_uid.keys() if uid is not None}
+        if exclude_uid is not None:
+            try:
+                uids.discard(int(exclude_uid))
+            except (TypeError, ValueError):
+                pass
+        return uids
+
+    @classmethod
+    def in_flight_count(cls, *, exclude_uid: Optional[int] = None) -> int:
         """当前队列 + 处理中的请求数，给容量计算用。
 
-        没启动 / 没排队就是 0；多 worker 一起在跑也只算一次（按 username key 去重）。
+        没启动 / 没排队就是 0；同一 UID 的重复请求只算一次。
         """
-        return len(cls._pending_by_username)
+        return len(cls.emby_capacity_pending_uids(exclude_uid=exclude_uid))
 
     @classmethod
     def pending_uids(cls) -> set[int]:
@@ -224,6 +235,9 @@ class EmbyRegisterQueueService:
         username_key = emby_username.lower()
 
         # 把入队走的整段都搬到 background loop 上：state_lock / queue / Event 都属于那个 loop
+        capacity_lock = await UserService.acquire_emby_capacity_lock()
+        if capacity_lock is None:
+            return None, "Emby 名额检查繁忙，请稍后重试"
         loop = get_background_loop()
         coro = cls._enqueue_complete_locked(user, emby_username, emby_password, username_key)
         fut = asyncio.run_coroutine_threadsafe(coro, loop)
@@ -232,6 +246,8 @@ class EmbyRegisterQueueService:
         except Exception as exc:  # pragma: no cover - 防御性
             logger.error("入队失败: %s", exc, exc_info=True)
             return None, "入队失败，请稍后重试"
+        finally:
+            await UserService.release_emby_capacity_lock(capacity_lock)
         return payload, message
 
     @classmethod
@@ -264,6 +280,10 @@ class EmbyRegisterQueueService:
             if other_request_id and other_request_id != existing_request_id:
                 return None, "该 Emby 用户名正在被另一个请求注册，请换一个"
 
+            other_capacity_uids = UserService.get_emby_capacity_queue_pending_uids()
+            if int(user.UID) in other_capacity_uids:
+                return None, "您已有正在处理的 Emby 创建请求"
+
             # 3) 队列长度兜底：超过 maxsize 直接拒（避免内存爆炸）
             if cls._queue is None:
                 return None, "注册队列尚未就绪"
@@ -272,10 +292,7 @@ class EmbyRegisterQueueService:
 
             # 4) 容量门控：当前已绑用户 + 已经在队列/处理中的人头一起算
             #    这里持着 _state_lock 做一次性快照，避免和并发入队互相覆盖。
-            pending_now = len(cls._pending_by_username)
-            cap_ok, cap_msg = await UserService.check_emby_user_capacity(
-                extra_pending=pending_now,
-            )
+            cap_ok, cap_msg = await UserService.check_emby_user_capacity()
             if not cap_ok:
                 return None, cap_msg
 

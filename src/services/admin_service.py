@@ -52,7 +52,8 @@ class BatchOperationService:
                     await emby.set_user_enabled(user.EMBYID, False)
 
                 # 禁用本地
-                await UserOperate.update_user(uid=uid, active_status=False)
+                user.ACTIVE_STATUS = False
+                await UserOperate.update_user(user)
                 success += 1
 
             except Exception as e:
@@ -85,8 +86,8 @@ class BatchOperationService:
                     errors.append(f"UID {uid}: 用户不存在")
                     continue
 
-                await UserOperate.update_user(uid=uid, active_status=True)
                 user.ACTIVE_STATUS = True
+                await UserOperate.update_user(user)
                 if user.EMBYID:
                     await emby.set_user_enabled(user.EMBYID, UserService.should_enable_emby_access(user))
                 success += 1
@@ -117,7 +118,7 @@ class BatchOperationService:
                     errors.append(f"UID {uid}: 用户不存在")
                     continue
 
-                ok, msg = await UserService.renew(uid, days)
+                ok, msg = await UserService.renew_user(user, days)
                 if ok:
                     success += 1
                 else:

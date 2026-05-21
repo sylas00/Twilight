@@ -57,10 +57,16 @@ const gradientPresets = [
 function normalizeBgImage(raw: string): string {
   const value = (raw || "").trim();
   if (!value) return "";
-  if (/^(url|linear-gradient|radial-gradient|conic-gradient|repeating-|image-set)\s*\(/i.test(value)) {
+  if (/^(linear-gradient|radial-gradient|conic-gradient|repeating-linear-gradient|repeating-radial-gradient)\s*\(/i.test(value)) {
     return value;
   }
-  return `url("${value.replace(/"/g, '\\"')}")`;
+  const match = value.match(/^url\(\s*(['"]?)(.*?)\1\s*\)$/i);
+  const url = (match ? match[2] : value).trim();
+  if (!url || /[\u0000-\u001F\u007F]/.test(url) || url.startsWith("//")) return "";
+  if (/^[a-z][a-z0-9+.-]*:/i.test(url) && !/^https?:\/\//i.test(url) && !url.startsWith("blob:") && !/^data:image\/(png|jpe?g|gif|webp|avif|bmp)(;|,)/i.test(url)) {
+    return "";
+  }
+  return `url("${url.replace(/"/g, '\\"')}")`;
 }
 
 export default function BackgroundSettingsPage() {
@@ -76,7 +82,7 @@ export default function BackgroundSettingsPage() {
   const [darkPreview, setDarkPreview] = useState("");
 
   const updatePreview = useCallback((css: string, img: string, type: "light" | "dark") => {
-    const combined = normalizeBgImage(img) || css;
+    const combined = normalizeBgImage(img) || normalizeBgImage(css);
 
     if (type === "light") {
       setLightPreview(combined);

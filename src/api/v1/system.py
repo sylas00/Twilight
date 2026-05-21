@@ -405,6 +405,7 @@ async def get_system_info():
                 "emby_direct_register": RegisterConfig.EMBY_DIRECT_REGISTER_ENABLED,
                 "telegram": Config.TELEGRAM_MODE,
                 "force_bind_telegram": Config.FORCE_BIND_TELEGRAM,
+                "bangumi_sync": BangumiSyncConfig.ENABLED,
             },
             "limits": {
                 "user_limit": RegisterConfig.USER_LIMIT,
@@ -587,6 +588,9 @@ async def get_user_config():
                 "max_devices": DeviceLimitConfig.MAX_DEVICES,
                 "max_streams": DeviceLimitConfig.MAX_STREAMS,
             },
+            "bangumi_sync": {
+                "enabled": BangumiSyncConfig.ENABLED,
+            },
         },
     )
 
@@ -656,6 +660,11 @@ async def get_admin_config():
                 "enabled": NotificationConfig.ENABLED,
                 "expiry_remind_days": NotificationConfig.EXPIRY_REMIND_DAYS,
             },
+            "bangumi_sync": {
+                "enabled": BangumiSyncConfig.ENABLED,
+                "webhook_secret_set": bool(BangumiSyncConfig.WEBHOOK_SECRET),
+                "min_progress_percent": BangumiSyncConfig.MIN_PROGRESS_PERCENT,
+            },
         },
     )
 
@@ -667,7 +676,7 @@ async def get_system_stats():
     """获取系统统计信息（管理员）"""
     from src.db.user import UserOperate
     from src.db.regcode import RegCodeOperate
-    from src.services import EmbyService
+    from src.services import EmbyService, UserService
 
     # 用户统计
     total_users = await UserOperate.get_registered_users_count()
@@ -683,10 +692,8 @@ async def get_system_stats():
     except Exception:
         emby_status = {"online": False}
 
-    # 把注册队列里 in-flight 的请求也算进 Emby 占用统计，便于运维一眼看到真实余量
-    from src.services import EmbyRegisterQueueService
-
-    emby_pending = EmbyRegisterQueueService.in_flight_count()
+    # 把自由注册/卡码队列里 in-flight 的待创建请求也算进 Emby 占用统计，便于运维一眼看到真实余量
+    emby_pending = UserService.get_emby_capacity_queue_pending_count()
     emby_projected = emby_bound_users + emby_pending
 
     return api_response(
@@ -1034,6 +1041,20 @@ async def get_config_schema():
                         "description": "白名单用户专用的 Emby 服务器线路列表",
                         "value": EmbyConfig.EMBY_URL_LIST_FOR_WHITELIST,
                     },
+                    {
+                        "key": "emby_default_hidden_libraries",
+                        "label": "默认隐藏媒体库",
+                        "type": "list",
+                        "description": "普通用户新建/补建 Emby 账号后自动隐藏的媒体库名称；按 Emby 媒体库名称填写，留空不处理。",
+                        "value": EmbyConfig.EMBY_DEFAULT_HIDDEN_LIBRARIES,
+                    },
+                    {
+                        "key": "emby_self_service_libraries",
+                        "label": "用户自助显隐媒体库",
+                        "type": "list",
+                        "description": "管理员开放给已授予自助显隐权限用户自行显示/隐藏的媒体库名称；按 Emby 媒体库名称填写，留空则无法自助操作。",
+                        "value": EmbyConfig.EMBY_SELF_SERVICE_LIBRARIES,
+                    },
                 ],
             },
             {
@@ -1125,6 +1146,13 @@ async def get_config_schema():
                         "type": "bool",
                         "description": '⚠️ 危险操作：开启后巡检发现退群用户会被 Bot 在所有 GROUP_ID 群里永久 ban（不会自动解封）。依赖 Bot 是群管理员且有封禁权限；开启后"重新入群识别"分支会被跳过。默认关闭，谨慎使用',
                         "value": TelegramConfig.BAN_ON_LEAVE,
+                    },
+                    {
+                        "key": "auto_enable_rejoined",
+                        "label": "回群后自动启用",
+                        "type": "bool",
+                        "description": "开启后定时巡检发现已禁用用户重新加入必需群组且账号未到期时，会自动启用系统账号并按到期状态恢复 Emby；退群完全封禁模式开启时不会生效",
+                        "value": TelegramConfig.AUTO_ENABLE_REJOINED,
                     },
                     {
                         "key": "proxy_url",
@@ -1318,7 +1346,7 @@ async def get_config_schema():
                         "key": "emby_user_limit",
                         "label": "Emby 用户上限",
                         "type": "int",
-                        "description": "已绑定 Emby 的本站用户总上限，-1 表示不限制（自由注册队列、绑定已有 Emby 账户、管理员强制绑定都受此上限管控；同时会把注册队列里 in-flight 的请求计入名额）",
+                        "description": "已绑定、待开通和队列待创建 Emby 的本站用户总上限，-1 表示不限制（自由注册队列、卡码队列、绑定已有 Emby 账户、管理员强制绑定都受此上限管控）",
                         "value": RegisterConfig.EMBY_USER_LIMIT,
                     },
                     {
@@ -1788,28 +1816,35 @@ async def get_config_schema():
             {
                 "key": "BangumiSync",
                 "category": "integration",
-                "title": "Bangumi 同步",
-                "description": "Bangumi 观看记录同步设置",
+                "title": "Bangumi 点格子",
+                "description": "通过 Emby Webhook 在用户看完后同步 Bangumi 观看进度",
                 "fields": [
                     {
                         "key": "enabled",
                         "label": "启用同步",
                         "type": "bool",
-                        "description": "是否启用 Bangumi 观看记录同步",
+                        "description": "是否启用 Bangumi 点格子功能。关闭时用户侧 Bangumi 配置面板不会显示，Webhook 也会拒绝处理。",
                         "value": BangumiSyncConfig.ENABLED,
+                    },
+                    {
+                        "key": "webhook_secret",
+                        "label": "Webhook 密钥",
+                        "type": "secret",
+                        "description": "Emby 通知 Webhook 调用时携带的共享密钥；建议设置高熵随机值，并在 URL 中追加 ?token=该值。留空则不校验密钥。",
+                        "value": BangumiSyncConfig.WEBHOOK_SECRET,
                     },
                     {
                         "key": "auto_add_collection",
                         "label": "自动收藏",
                         "type": "bool",
-                        "description": "同步时是否自动添加到 Bangumi 收藏（在看）",
+                        "description": "用户未收藏该条目时，是否自动加入 Bangumi 收藏并设为在看。关闭后未收藏条目不会被同步。",
                         "value": BangumiSyncConfig.AUTO_ADD_COLLECTION,
                     },
                     {
                         "key": "private_collection",
                         "label": "私有收藏",
                         "type": "bool",
-                        "description": "观看记录是否设为 Bangumi 私有",
+                        "description": "自动收藏或调整收藏状态时是否设为私有。单集点格子仍使用 Bangumi 的章节收藏接口。",
                         "value": BangumiSyncConfig.PRIVATE_COLLECTION,
                     },
                     {
@@ -1823,7 +1858,7 @@ async def get_config_schema():
                         "key": "min_progress_percent",
                         "label": "最小播放进度",
                         "type": "int",
-                        "description": "播放进度达到多少百分比才算看完并同步",
+                        "description": "Emby playback.stop 未携带 PlayedToCompletion=true 时，播放进度达到多少百分比才算看完并同步。",
                         "value": BangumiSyncConfig.MIN_PROGRESS_PERCENT,
                     },
                 ],

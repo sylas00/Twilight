@@ -135,13 +135,10 @@ class SchedulerService:
         },
         {
             "id": "emby_sync",
-            "name": "Emby 用户同步",
-            "description": "校对本地 EMBYID、用户名、启停状态与下载权限。",
-            "default_trigger": {
-                "type": "interval",
-                "config_field": "EMBY_SYNC_INTERVAL",
-                "unit": "hours",
-            },
+            "name": "Emby 与系统记录同步（手动）",
+            "description": "手动校对本地 EMBYID、用户名、启停状态与下载权限；默认不自动执行。",
+            "default_trigger": None,
+            "manual_only": True,
         },
         {
             "id": "cleanup_no_emby",
@@ -156,7 +153,7 @@ class SchedulerService:
         {
             "id": "enforce_group_membership",
             "name": "Telegram 群组成员资格巡检",
-            "description": "检查已绑定 Telegram 的用户是否仍在必需群组内；不在则禁用本地账号 + Emby。开关：REQUIRE_GROUP_MEMBERSHIP",
+            "description": "检查已绑定 Telegram 的用户是否仍在必需群组内；退群禁用/永封、回群自动启用由 Telegram 配置控制。",
             "default_trigger": {
                 "type": "interval",
                 "config_field": "GROUP_CHECK_INTERVAL_MINUTES",
@@ -905,7 +902,7 @@ class SchedulerService:
 
         额外逻辑：
         - 对已禁用且仍绑定 Telegram 的用户做“重新入群”识别；
-        - 不自动恢复，仅记录到日志与 summary，供管理员手动判定是否恢复。
+        - 默认仅记录到日志与 summary；开启 AUTO_ENABLE_REJOINED 后自动恢复未到期用户。
         """
         from src.config import TelegramConfig
         from src.services.telegram_membership import TelegramMembershipService
@@ -916,6 +913,7 @@ class SchedulerService:
             return
 
         ban_on_leave = bool(getattr(TelegramConfig, "BAN_ON_LEAVE", False))
+        auto_enable_rejoined = bool(getattr(TelegramConfig, "AUTO_ENABLE_REJOINED", False))
 
         # Bot 未就绪时直接退出。继续往下跑会让 check_user_in_groups 对每个
         # 用户都返回 (True, []) —— 这会把所有用户误判为「仍在群」，并产生
@@ -929,8 +927,11 @@ class SchedulerService:
 
         ctx.summary["enabled"] = True
         ctx.summary["ban_on_leave"] = ban_on_leave
+        ctx.summary["auto_enable_rejoined"] = auto_enable_rejoined
         if ban_on_leave:
             ctx.log("⚠️ 退群完全封禁模式已开启：检测到退群的用户将被永久 ban，且不再做重新入群识别")
+        elif auto_enable_rejoined:
+            ctx.log("↩️ 回群自动启用已开启：重新入群且未到期的用户会被自动恢复")
         ctx.log("🛂 开始群组成员资格巡检...")
         try:
             users = await UserOperate.get_active_telegram_bound_users()
@@ -944,6 +945,8 @@ class SchedulerService:
             ctx.summary["rejoin_candidates"] = 0
             ctx.summary["rejoin_uids"] = []
             ctx.summary["rejoin_expired_skipped"] = 0
+            ctx.summary["rejoin_auto_enabled"] = 0
+            ctx.summary["rejoin_auto_failed"] = 0
             if not users:
                 ctx.log("✅ 没有需要检查的用户")
             else:
@@ -1095,10 +1098,27 @@ class SchedulerService:
                 if rejoin_candidates:
                     ctx.summary["rejoin_candidates"] = len(rejoin_candidates)
                     ctx.summary["rejoin_uids"] = [item["uid"] for item in rejoin_candidates[:50]]
-                    ctx.log(
-                        f"  ℹ️ 发现 {len(rejoin_candidates)} 个已禁用但重新入群用户，"
-                        "可在定时任务页面一键重新校验并启用"
-                    )
+                    if auto_enable_rejoined:
+                        for item in rejoin_candidates:
+                            target = await UserOperate.get_user_by_uid(int(item["uid"]))
+                            if not target:
+                                ctx.summary["rejoin_auto_failed"] += 1
+                                continue
+                            ok, msg = await UserService.enable_user(target)
+                            if ok:
+                                ctx.summary["rejoin_auto_enabled"] += 1
+                            else:
+                                ctx.summary["rejoin_auto_failed"] += 1
+                                ctx.log(f"    ⚠️ 自动启用失败: {item['username']} (UID: {item['uid']}) - {msg}")
+                        ctx.log(
+                            f"  ✅ 发现 {len(rejoin_candidates)} 个回群用户，"
+                            f"已自动启用 {ctx.summary['rejoin_auto_enabled']} 个"
+                        )
+                    else:
+                        ctx.log(
+                            f"  ℹ️ 发现 {len(rejoin_candidates)} 个已禁用但重新入群用户，"
+                            "可在定时任务页面一键重新校验并启用"
+                        )
                     for item in rejoin_candidates[:20]:
                         ctx.log(
                             f"    ↩️ 候选恢复: {item['username']} " f"(UID: {item['uid']}, TG: {item['telegram_id']})"
@@ -1112,10 +1132,15 @@ class SchedulerService:
                 extra_summary = f", 永封 {ctx.summary['permanently_banned']} 个"
                 if ban_failed_count:
                     extra_summary += f", 永封失败 {ban_failed_count} 个"
+            rejoin_tail = (
+                f"自动恢复 {ctx.summary['rejoin_auto_enabled']} 个, 自动恢复失败 {ctx.summary['rejoin_auto_failed']} 个"
+                if auto_enable_rejoined and not ban_on_leave
+                else f"待人工复核恢复 {ctx.summary['rejoin_candidates']} 个"
+            )
             ctx.log(
                 f"✅ 群组成员资格巡检完成: 仍在群 {ctx.summary['in_group']} 个, "
                 f"已禁用 {ctx.summary['disabled']} 个, 失败 {ctx.summary['failed']} 个, "
-                f"待人工复核恢复 {ctx.summary['rejoin_candidates']} 个{extra_summary}"
+                f"{rejoin_tail}{extra_summary}"
             )
         except Exception as exc:
             ctx.log(f"❌ 群组成员资格巡检异常: {exc}")

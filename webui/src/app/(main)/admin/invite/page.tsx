@@ -38,58 +38,90 @@ interface Positioned {
   x: number;
   y: number;
   depth: number;
+  angle: number;
+  rootUid: number;
+}
+
+interface StarSystem {
+  rootUid: number;
+  x: number;
+  y: number;
+  radius: number;
+  depth: number;
+  count: number;
 }
 
 interface PlacedForest {
   positions: Map<number, Positioned>;
+  systems: StarSystem[];
   width: number;
   height: number;
 }
 
-function placeForest(forest: InviteForest): PlacedForest {
-  // 每个根做一颗辐射树：圆心是根节点，每层一个同心圆。
+const DEPTH_COLOR_LIGHT = ["#38bdf8", "#34d399", "#c084fc", "#fbbf24", "#fb7185", "#60a5fa"];
+
+function seededUnit(seed: number): number {
+  const x = Math.sin(seed * 12.9898) * 43758.5453;
+  return x - Math.floor(x);
+}
+
+function buildChildrenMap(forest: InviteForest): Map<number, number[]> {
   const childrenMap = new Map<number, number[]>();
   for (const e of forest.edges) {
     if (!childrenMap.has(e.parent)) childrenMap.set(e.parent, []);
     childrenMap.get(e.parent)!.push(e.child);
   }
+  for (const children of childrenMap.values()) children.sort((a, b) => a - b);
+  return childrenMap;
+}
+
+function countSubtree(root: number, childrenMap: Map<number, number[]>): { count: number; depth: number } {
+  let count = 0;
+  let depth = 1;
+  const queue: Array<{ uid: number; d: number }> = [{ uid: root, d: 1 }];
+  const seen = new Set<number>([root]);
+  while (queue.length) {
+    const { uid, d } = queue.shift()!;
+    count += 1;
+    depth = Math.max(depth, d);
+    for (const child of childrenMap.get(uid) || []) {
+      if (seen.has(child)) continue;
+      seen.add(child);
+      queue.push({ uid: child, d: d + 1 });
+    }
+  }
+  return { count, depth };
+}
+
+function placeForest(forest: InviteForest): PlacedForest {
+  const childrenMap = buildChildrenMap(forest);
 
   const positions = new Map<number, Positioned>();
-  const COLUMN_W = 380;
-  const ROW_BASE = 80;
-  const RADIUS_STEP = 80;
-  let cursorX = 0;
-  let totalHeight = ROW_BASE;
+  const systems: StarSystem[] = [];
+  const roots = [...forest.roots].sort((a, b) => a - b);
+  const metrics = roots.map((rootUid) => ({ rootUid, ...countSubtree(rootUid, childrenMap) }));
+  const cols = Math.max(1, Math.min(3, Math.ceil(Math.sqrt(Math.max(1, roots.length)))));
+  const baseRadius = Math.max(
+    150,
+    ...metrics.map((m) => Math.max(128, 72 * Math.max(1, m.depth - 1) + Math.min(80, m.count * 4))),
+  );
+  const cellW = baseRadius * 2 + 180;
+  const cellH = baseRadius * 2 + 150;
+  const rows = Math.max(1, Math.ceil(roots.length / cols));
 
-  // 计算每个根需要的最大半径
-  const getSubtreeDepth = (root: number): number => {
-    let max = 1;
-    const queue: Array<{ uid: number; d: number }> = [{ uid: root, d: 1 }];
-    const seen = new Set<number>([root]);
-    while (queue.length) {
-      const { uid, d } = queue.shift()!;
-      max = Math.max(max, d);
-      for (const c of childrenMap.get(uid) || []) {
-        if (seen.has(c)) continue;
-        seen.add(c);
-        queue.push({ uid: c, d: d + 1 });
-      }
-    }
-    return max;
-  };
+  metrics.forEach((metric, index) => {
+    const rootUid = metric.rootUid;
+    const col = index % cols;
+    const row = Math.floor(index / cols);
+    const centerX = 90 + col * cellW + cellW / 2;
+    const centerY = 88 + row * cellH + cellH / 2;
+    const radius = Math.max(120, 72 * Math.max(1, metric.depth - 1) + Math.min(70, metric.count * 3));
+    systems.push({ rootUid, x: centerX, y: centerY, radius, depth: metric.depth, count: metric.count });
 
-  for (const rootUid of forest.roots) {
-    const depth = getSubtreeDepth(rootUid);
-    const radius = (depth - 1) * RADIUS_STEP;
-    const colWidth = Math.max(COLUMN_W, radius * 2 + 80);
-    const centerX = cursorX + colWidth / 2;
-    const centerY = ROW_BASE + radius;
+    positions.set(rootUid, { uid: rootUid, x: centerX, y: centerY, depth: 1, angle: -Math.PI / 2, rootUid });
 
-    positions.set(rootUid, { uid: rootUid, x: centerX, y: centerY, depth: 1 });
-
-    // BFS, 每一层用对应半径，按相对父节点的角度均匀分布
     const queue: Array<{ uid: number; angle: number; depth: number; sliceStart: number; sliceEnd: number }> =
-      [{ uid: rootUid, angle: 0, depth: 1, sliceStart: 0, sliceEnd: Math.PI * 2 }];
+      [{ uid: rootUid, angle: -Math.PI / 2, depth: 1, sliceStart: -Math.PI, sliceEnd: Math.PI }];
 
     while (queue.length) {
       const item = queue.shift()!;
@@ -98,10 +130,11 @@ function placeForest(forest: InviteForest): PlacedForest {
       const sliceSize = (item.sliceEnd - item.sliceStart) / children.length;
       children.forEach((child, idx) => {
         const childAngle = item.sliceStart + sliceSize * (idx + 0.5);
-        const r = item.depth * RADIUS_STEP;
+        const jitter = (seededUnit(child * 31 + rootUid) - 0.5) * 20;
+        const r = Math.min(radius, item.depth * 74 + jitter);
         const px = centerX + Math.cos(childAngle) * r;
         const py = centerY + Math.sin(childAngle) * r;
-        positions.set(child, { uid: child, x: px, y: py, depth: item.depth + 1 });
+        positions.set(child, { uid: child, x: px, y: py, depth: item.depth + 1, angle: childAngle, rootUid });
         queue.push({
           uid: child,
           angle: childAngle,
@@ -111,22 +144,55 @@ function placeForest(forest: InviteForest): PlacedForest {
         });
       });
     }
-
-    cursorX += colWidth + 40;
-    totalHeight = Math.max(totalHeight, centerY + radius + ROW_BASE);
-  }
+  });
 
   return {
     positions,
-    width: Math.max(cursorX, 800),
-    height: Math.max(totalHeight, 400),
+    systems,
+    width: Math.max(cols * cellW + 180, 900),
+    height: Math.max(rows * cellH + 170, 560),
   };
 }
 
-const DEPTH_COLOR_LIGHT = ["#0ea5e9", "#22c55e", "#a855f7", "#f59e0b", "#ef4444"];
-
 function depthColor(depth: number): string {
   return DEPTH_COLOR_LIGHT[(depth - 1) % DEPTH_COLOR_LIGHT.length];
+}
+
+function nodeColor(node: InviteForestNode, depth: number): string {
+  if (!node.active) return "#64748b";
+  if (node.role === 0) return "#fbbf24";
+  if (node.role === 2) return "#22d3ee";
+  if (!node.emby_id) return "#94a3b8";
+  return depthColor(depth);
+}
+
+function nodeRadius(node: InviteForestNode, depth: number): number {
+  if (depth === 1) return 18;
+  if (node.role === 0) return 14;
+  if (node.role === 2) return 12;
+  return node.emby_id ? 10 : 8;
+}
+
+function makeStarfield(width: number, height: number): Array<{ x: number; y: number; r: number; o: number }> {
+  const count = Math.min(220, Math.max(80, Math.floor((width * height) / 15000)));
+  return Array.from({ length: count }, (_, index) => ({
+    x: seededUnit(index + 13) * width,
+    y: seededUnit(index + 97) * height,
+    r: 0.45 + seededUnit(index + 181) * 1.35,
+    o: 0.18 + seededUnit(index + 311) * 0.45,
+  }));
+}
+
+function edgePath(parent: Positioned, child: Positioned): string {
+  const mx = (parent.x + child.x) / 2;
+  const my = (parent.y + child.y) / 2;
+  const dx = child.x - parent.x;
+  const dy = child.y - parent.y;
+  const len = Math.max(1, Math.hypot(dx, dy));
+  const bend = Math.min(38, len * 0.18) * (child.angle >= 0 ? 1 : -1);
+  const cx = mx + (-dy / len) * bend;
+  const cy = my + (dx / len) * bend;
+  return `M ${parent.x} ${parent.y} Q ${cx} ${cy} ${child.x} ${child.y}`;
 }
 
 function findRoot(forest: InviteForest, uid: number): number {
@@ -140,6 +206,34 @@ function findRoot(forest: InviteForest, uid: number): number {
     visited.add(cur);
   }
   return cur;
+}
+
+function relationHighlight(forest: InviteForest | null, selectedUid: number | null): Set<string> {
+  const highlighted = new Set<string>();
+  if (!forest || !selectedUid) return highlighted;
+  const childrenMap = buildChildrenMap(forest);
+  const parentOf = new Map<number, number>();
+  for (const edge of forest.edges) parentOf.set(edge.child, edge.parent);
+
+  let cur = selectedUid;
+  const seen = new Set<number>([cur]);
+  while (parentOf.has(cur)) {
+    const parent = parentOf.get(cur)!;
+    highlighted.add(`${parent}-${cur}`);
+    if (seen.has(parent)) break;
+    seen.add(parent);
+    cur = parent;
+  }
+
+  const queue = [selectedUid];
+  while (queue.length) {
+    const uid = queue.shift()!;
+    for (const child of childrenMap.get(uid) || []) {
+      highlighted.add(`${uid}-${child}`);
+      queue.push(child);
+    }
+  }
+  return highlighted;
 }
 
 export default function AdminInviteTreePage() {
@@ -174,6 +268,8 @@ export default function AdminInviteTreePage() {
   }, [reload]);
 
   const placed = useMemo(() => (forest ? placeForest(forest) : null), [forest]);
+  const starfield = useMemo(() => (placed ? makeStarfield(placed.width, placed.height) : []), [placed]);
+  const highlightedEdges = useMemo(() => relationHighlight(forest, selectedUid), [forest, selectedUid]);
 
   const nodeByUid = useMemo(() => {
     const map = new Map<number, InviteForestNode>();
@@ -182,6 +278,7 @@ export default function AdminInviteTreePage() {
   }, [forest]);
 
   const selected = selectedUid && nodeByUid.get(selectedUid) ? nodeByUid.get(selectedUid)! : null;
+  const selectedPosition = selectedUid && placed ? placed.positions.get(selectedUid) : null;
 
   const handleDetach = async () => {
     if (!selected) return;
@@ -364,11 +461,22 @@ export default function AdminInviteTreePage() {
           </CardContent>
         </Card>
       ) : (
-        <Card>
+        <Card className="overflow-hidden border-slate-800/70 bg-slate-950 text-slate-100 shadow-2xl shadow-sky-950/20">
           <CardContent className="p-0">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800/80 bg-gradient-to-r from-slate-950 via-slate-900 to-slate-950 px-4 py-3">
+              <div>
+                <p className="text-sm font-semibold tracking-wide text-slate-100">Constellation Map</p>
+                <p className="text-[11px] text-slate-400">根节点是恒星，层级像轨道向外扩散；灰色节点代表禁用或未绑定状态。</p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-300">
+                <span className="rounded-full border border-amber-300/30 bg-amber-400/10 px-2 py-1 text-amber-200">管理员</span>
+                <span className="rounded-full border border-cyan-300/30 bg-cyan-400/10 px-2 py-1 text-cyan-200">白名单</span>
+                <span className="rounded-full border border-slate-500/30 bg-slate-700/40 px-2 py-1 text-slate-300">禁用/未绑定</span>
+              </div>
+            </div>
             <div
               ref={containerRef}
-              className="overflow-auto"
+              className="overflow-auto bg-[radial-gradient(circle_at_top_left,rgba(14,165,233,0.22),transparent_30%),radial-gradient(circle_at_bottom_right,rgba(168,85,247,0.18),transparent_28%),linear-gradient(180deg,#020617,#0f172a)]"
               style={{ maxHeight: "70vh" }}
             >
               <div
@@ -382,33 +490,94 @@ export default function AdminInviteTreePage() {
                   viewBox={`0 0 ${placed!.width} ${placed!.height}`}
                   width={placed!.width * scale}
                   height={placed!.height * scale}
-                  className="block select-none"
+                  className="block select-none text-slate-100"
                 >
+                  <defs>
+                    <radialGradient id="invite-node-glow" cx="50%" cy="45%" r="70%">
+                      <stop offset="0%" stopColor="#ffffff" stopOpacity="0.95" />
+                      <stop offset="42%" stopColor="#7dd3fc" stopOpacity="0.45" />
+                      <stop offset="100%" stopColor="#0f172a" stopOpacity="0" />
+                    </radialGradient>
+                    <filter id="invite-soft-glow" x="-80%" y="-80%" width="260%" height="260%">
+                      <feGaussianBlur stdDeviation="5" result="blur" />
+                      <feMerge>
+                        <feMergeNode in="blur" />
+                        <feMergeNode in="SourceGraphic" />
+                      </feMerge>
+                    </filter>
+                    <linearGradient id="invite-edge-gradient" x1="0" x2="1" y1="0" y2="1">
+                      <stop offset="0%" stopColor="#38bdf8" stopOpacity="0.2" />
+                      <stop offset="50%" stopColor="#a78bfa" stopOpacity="0.65" />
+                      <stop offset="100%" stopColor="#34d399" stopOpacity="0.2" />
+                    </linearGradient>
+                  </defs>
+                  <rect x={0} y={0} width={placed!.width} height={placed!.height} fill="transparent" />
+                  {starfield.map((star, index) => (
+                    <circle key={`star-${index}`} cx={star.x} cy={star.y} r={star.r} fill="#e0f2fe" opacity={star.o} />
+                  ))}
+                  {placed!.systems.map((system) => (
+                    <g key={`system-${system.rootUid}`}>
+                      <circle cx={system.x} cy={system.y} r={system.radius + 28} fill="url(#invite-node-glow)" opacity={0.08} />
+                      {Array.from({ length: Math.max(1, system.depth - 1) }, (_, index) => {
+                        const ring = 74 * (index + 1);
+                        if (ring > system.radius + 8) return null;
+                        return (
+                          <circle
+                            key={`orbit-${system.rootUid}-${index}`}
+                            cx={system.x}
+                            cy={system.y}
+                            r={ring}
+                            fill="none"
+                            stroke="#94a3b8"
+                            strokeOpacity={0.12}
+                            strokeWidth={1}
+                            strokeDasharray="4 10"
+                          />
+                        );
+                      })}
+                      <text x={system.x} y={system.y + system.radius + 46} textAnchor="middle" fontSize={11} fill="#94a3b8">
+                        ROOT #{system.rootUid} · {system.count} nodes · depth {system.depth}
+                      </text>
+                    </g>
+                  ))}
                   {/* 边 */}
                   {forest.edges.map((e) => {
                     const p = placed!.positions.get(e.parent);
                     const c = placed!.positions.get(e.child);
                     if (!p || !c) return null;
+                    const edgeKey = `${e.parent}-${e.child}`;
+                    const isHighlighted = highlightedEdges.has(edgeKey);
                     return (
-                      <line
-                        key={`${e.parent}-${e.child}`}
-                        x1={p.x}
-                        y1={p.y}
-                        x2={c.x}
-                        y2={c.y}
-                        stroke={depthColor(p.depth)}
-                        strokeOpacity={0.4}
-                        strokeWidth={1.4}
+                      <path
+                        key={edgeKey}
+                        d={edgePath(p, c)}
+                        fill="none"
+                        stroke={isHighlighted ? "#f8fafc" : "url(#invite-edge-gradient)"}
+                        strokeOpacity={isHighlighted ? 0.9 : 0.34}
+                        strokeWidth={isHighlighted ? 2.8 : 1.35}
+                        strokeLinecap="round"
                       />
                     );
                   })}
+                  {selectedPosition && (
+                    <circle
+                      cx={selectedPosition.x}
+                      cy={selectedPosition.y}
+                      r={44}
+                      fill="none"
+                      stroke="#f8fafc"
+                      strokeOpacity={0.45}
+                      strokeWidth={1.5}
+                      strokeDasharray="6 8"
+                    />
+                  )}
                   {/* 节点 */}
                   {forest.nodes.map((n) => {
                     const pos = placed!.positions.get(n.uid);
                     if (!pos) return null;
                     const isSelected = selectedUid === n.uid;
-                    const color = depthColor(pos.depth);
-                    const r = pos.depth === 1 ? 14 : 10;
+                    const color = nodeColor(n, pos.depth);
+                    const r = nodeRadius(n, pos.depth);
                     return (
                       <g
                         key={n.uid}
@@ -417,24 +586,32 @@ export default function AdminInviteTreePage() {
                         onClick={() => setSelectedUid(n.uid)}
                       >
                         <circle
-                          r={r + 6}
+                          r={r + 14}
                           fill={color}
-                          opacity={isSelected ? 0.25 : 0.08}
+                          opacity={isSelected ? 0.28 : pos.depth === 1 ? 0.18 : 0.1}
+                          filter="url(#invite-soft-glow)"
                         />
+                        <circle r={r + 6} fill="none" stroke={color} strokeOpacity={0.25} strokeWidth={1} />
                         <circle
                           r={r}
                           fill={color}
-                          opacity={n.active ? 0.95 : 0.4}
-                          stroke={isSelected ? "#fff" : color}
-                          strokeWidth={isSelected ? 2 : 1}
+                          opacity={n.active ? 0.98 : 0.55}
+                          stroke={isSelected ? "#f8fafc" : n.emby_id ? "#e0f2fe" : "#64748b"}
+                          strokeWidth={isSelected ? 2.4 : 1.1}
+                          filter={n.active ? "url(#invite-soft-glow)" : undefined}
                         />
+                        {n.role === 0 && <path d={`M -6 ${-r - 5} L 0 ${-r - 13} L 6 ${-r - 5} Z`} fill="#fbbf24" opacity={0.95} />}
+                        {!n.emby_id && <circle r={r + 2} fill="none" stroke="#cbd5e1" strokeOpacity={0.55} strokeDasharray="2 3" />}
                         <text
                           textAnchor="middle"
                           y={r + 14}
-                          fontSize={11}
+                          fontSize={pos.depth === 1 ? 12 : 10.5}
                           fontFamily="ui-sans-serif, system-ui"
-                          fill="currentColor"
-                          opacity={0.85}
+                          fill="#e2e8f0"
+                          opacity={n.active ? 0.95 : 0.58}
+                          paintOrder="stroke"
+                          stroke="#020617"
+                          strokeWidth={3}
                         >
                           {n.username}
                         </text>
@@ -444,18 +621,20 @@ export default function AdminInviteTreePage() {
                             y={-r - 6}
                             fontSize={9}
                             fontWeight={700}
-                            fill={color}
+                            fill="#fde68a"
+                            letterSpacing={1.5}
                           >
-                            ROOT
+                            STAR
                           </text>
                         )}
+                        <title>{`${n.username} · UID ${n.uid} · L${pos.depth} · ${n.active ? "启用" : "禁用"}`}</title>
                       </g>
                     );
                   })}
                 </svg>
               </div>
             </div>
-            <div className="border-t px-4 py-3 flex flex-wrap items-center gap-3 text-[11px] text-muted-foreground">
+            <div className="border-t border-slate-800/80 bg-slate-950/95 px-4 py-3 flex flex-wrap items-center gap-3 text-[11px] text-slate-400">
               <span>颜色对应层级：</span>
               {DEPTH_COLOR_LIGHT.slice(0, Math.max(1, forest.max_depth)).map((c, idx) => (
                 <span key={c} className="flex items-center gap-1">
@@ -463,7 +642,7 @@ export default function AdminInviteTreePage() {
                   L{idx + 1}
                 </span>
               ))}
-              <span className="ml-auto">点击节点查看详情</span>
+              <span className="ml-auto">点击节点查看详情；选中后高亮祖先链和整棵子树</span>
             </div>
           </CardContent>
         </Card>

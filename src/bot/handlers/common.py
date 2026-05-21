@@ -21,6 +21,24 @@ logger = logging.getLogger(__name__)
 # ==================== 常量 ====================
 GROUP_MSG_DELETE_DELAY = 10
 PRIVATE_HINT_DELETE_DELAY = 8
+UNAUTHORIZED_ADMIN_DELETE_DELAY = 30
+
+ADMIN_COMMANDS = {
+    "admin",
+    "twishelp",
+    "adduser",
+    "regcode",
+    "broadcast",
+    "stats",
+    "userinfo",
+    "twfind",
+    "twguser",
+    "twbindcheck",
+    "twforcebind",
+    "twsyncuser",
+    "sessions",
+    "kick",
+}
 
 
 # ==================== 辅助函数 ====================
@@ -50,6 +68,27 @@ def get_bot_username(context: ContextTypes.DEFAULT_TYPE) -> str:
     return context.bot.username or ""
 
 
+def get_message_command(update: Update, context=None) -> str:
+    """Return the command name without leading slash or bot suffix."""
+    message = update.message
+    text = (message.text or message.caption or "") if message else ""
+    token = text.strip().split(maxsplit=1)[0] if text.strip() else ""
+    if not token.startswith("/"):
+        return ""
+
+    raw = token[1:]
+    command, sep, bot_name = raw.partition("@")
+    if sep and context is not None:
+        current_bot = get_bot_username(context).lower()
+        if current_bot and bot_name.lower() != current_bot:
+            return ""
+    return command.lower()
+
+
+def is_admin_command_message(update: Update, context=None) -> bool:
+    return get_message_command(update, context) in ADMIN_COMMANDS
+
+
 async def safe_delete_message(message, delay: float = 0):
     """安全删除消息（忽略错误）"""
     try:
@@ -58,6 +97,19 @@ async def safe_delete_message(message, delay: float = 0):
         await message.delete()
     except Exception:
         pass
+
+
+async def warn_unauthorized_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Warn and clean up non-admin attempts to use admin commands in groups."""
+    if not update.message:
+        return
+
+    reply = await update.message.reply_text(
+        "⚠️ 此管理指令仅限 Twilight 管理员使用。\n"
+        "为保持群组整洁，本提示和原指令将在 30 秒后自动删除。"
+    )
+    asyncio.create_task(safe_delete_message(update.message, UNAUTHORIZED_ADMIN_DELETE_DELAY))
+    asyncio.create_task(safe_delete_message(reply, UNAUTHORIZED_ADMIN_DELETE_DELAY))
 
 
 async def safe_edit_message(message, text: str, reply_markup=None, parse_mode="Markdown"):
@@ -114,7 +166,10 @@ def require_admin(func: Callable) -> Callable:
             if update.callback_query:
                 await answer_callback_safe(update.callback_query, "⚠️ 此操作仅限管理员", show_alert=True)
             elif update.message:
-                await update.message.reply_text("⚠️ 此命令仅限管理员使用")
+                if is_group(update):
+                    await warn_unauthorized_admin_command(update, context)
+                else:
+                    await update.message.reply_text("⚠️ 此命令仅限管理员使用")
             return
         return await func(update, context, *args, **kwargs)
 
@@ -129,6 +184,10 @@ def require_private(func: Callable) -> Callable:
         if update.callback_query:
             return await func(update, context, *args, **kwargs)
         if not is_private(update):
+            user_id = update.effective_user.id if update.effective_user else 0
+            if is_group(update) and is_admin_command_message(update, context) and not is_admin(user_id):
+                await warn_unauthorized_admin_command(update, context)
+                return
             await redirect_to_private(update, context)
             return
         return await func(update, context, *args, **kwargs)

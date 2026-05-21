@@ -5,6 +5,7 @@
 支持用户管理、注册码、统计、Emby、广播等
 """
 
+import asyncio
 import logging
 import secrets
 import time
@@ -17,10 +18,12 @@ from src.bot.handlers.common import (
     require_private,
     format_user_info,
     is_admin,
+    safe_delete_message,
     safe_edit_message,
     answer_callback_safe,
     back_button,
     close_button,
+    warn_unauthorized_admin_command,
 )
 from src.db.user import UserOperate, Role
 from src.db.regcode import RegCodeOperate
@@ -37,6 +40,7 @@ _admin_states = {}
 _ADMIN_STATE_TTL = 15 * 60
 _group_admin_contexts: dict[str, dict] = {}
 _GROUP_ADMIN_CONTEXT_TTL = 10 * 60
+_GROUP_ADMIN_PANEL_IDLE_TTL = 60
 
 
 def _set_admin_state(uid: int, state: dict):
@@ -84,6 +88,28 @@ def _get_group_admin_context(token: str) -> dict | None:
     return payload
 
 
+async def _delete_group_admin_panel_if_idle(token: str, message, version: int) -> None:
+    await asyncio.sleep(_GROUP_ADMIN_PANEL_IDLE_TTL)
+    payload = _group_admin_contexts.get(token)
+    if not payload or int(payload.get("panel_version", 0)) != version:
+        return
+    await safe_delete_message(message)
+    _group_admin_contexts.pop(token, None)
+
+
+def _touch_group_admin_panel(token: str, message) -> None:
+    if not message:
+        return
+    payload = _group_admin_contexts.get(token)
+    if not payload:
+        return
+    payload["ts"] = int(time.time())
+    payload["panel_chat_id"] = getattr(message, "chat_id", None) or getattr(getattr(message, "chat", None), "id", None)
+    payload["panel_message_id"] = getattr(message, "message_id", None)
+    payload["panel_version"] = int(payload.get("panel_version", 0)) + 1
+    asyncio.create_task(_delete_group_admin_panel_if_idle(token, message, int(payload["panel_version"])))
+
+
 def _is_anonymous_group_command(update: Update) -> bool:
     message = update.message
     return bool(message and message.sender_chat and (not update.effective_user or not is_admin(update.effective_user.id)))
@@ -113,16 +139,15 @@ def register(bot):
     @require_admin
     async def cmd_twishelp(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = _render_custom_text(TelegramConfig.BOT_ADMIN_HELP_TEXT or "") or (
-            "🔧 **管理员命令**\n\n"
-            "• /admin - 打开管理面板\n"
-            "• /twfind <关键词> - 按系统用户名/UID/TGID/TG用户名/Emby标识搜索\n"
+            "🔎 **管理员只读查询命令**\n\n"
+            "• /admin - 打开只读查询面板\n"
+            "• /twfind <关键词> - 按系统用户名/UID/TGID/TG用户名/Emby标识模糊搜索\n"
+            "• /userinfo <关键词> - 模糊查询并展示用户详情\n"
             "• /twguser <用户> - 群组内查询用户；也可回复某人发送 /twguser\n"
             "• /twbindcheck [关键词] - 检查指定用户或全局 TG 绑定状态\n"
-            "• /twforcebind <用户> <TGID> - 强制绑定 TG 到系统用户\n"
-            "• /twsyncuser <用户> - 同步用户状态到 Emby\n"
             "• /stats - 系统统计\n"
             "• /cancel - 取消输入流程\n\n"
-            "不会通过 Bot 展示线路、密码、Emby 用户名等隐私信息。"
+            "Telegram 私聊不再提供添加用户、生成注册码、广播、强制绑定等写操作；请使用 Web 后台。"
         )
         await update.message.reply_text(text, parse_mode="Markdown")
 
@@ -131,7 +156,7 @@ def register(bot):
     async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """管理面板命令"""
         await update.message.reply_text(
-            "🔧 **管理面板**\n\n请选择功能：\n💡 输入型操作可发送 /cancel 取消",
+            "🔎 **管理员只读查询面板**\n\n请选择查询功能：\n💡 输入型操作可发送 /cancel 取消",
             reply_markup=_admin_menu_kb(),
             parse_mode="Markdown",
         )
@@ -150,6 +175,36 @@ def register(bot):
         else:
             await update.message.reply_text("ℹ️ 当前没有进行中的输入流程")
 
+    async def _send_user_search_reply(message, query_text: str):
+        query_text = (query_text or "").strip()
+        if not query_text:
+            await message.reply_text("用法: `/twfind <用户名/UID/TGID/TG用户名/Emby标识>`", parse_mode="Markdown")
+            return
+
+        users, total = await UserOperate.get_all_users(include_inactive=True, search=query_text, limit=10, offset=0)
+        if not users:
+            await message.reply_text("未找到匹配用户")
+            return
+
+        if len(users) == 1:
+            await message.reply_text(f"📋 **用户详情**\n\n{format_user_info(users[0])}", parse_mode="Markdown")
+            return
+
+        lines = [f"🔍 **查询结果** ({len(users)}/{total})\n"]
+        for user in users:
+            lines.append(format_user_info(user, brief=True))
+        await message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+    @require_private
+    @require_admin
+    async def cmd_admin_write_disabled(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await update.message.reply_text(
+            "🔒 Telegram 管理私聊已收敛为只读查询。\n\n"
+            "请使用 `/twfind <关键词>` 或 `/userinfo <关键词>` 查询用户；"
+            "添加用户、注册码、广播、强制绑定、同步等写操作请在 Web 后台完成。",
+            parse_mode="Markdown",
+        )
+
     async def cb_panel_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """管理面板回调入口"""
         query = update.callback_query
@@ -158,7 +213,7 @@ def register(bot):
             await answer_callback_safe(query, "⚠️ 仅限管理员", show_alert=True)
             return
         await answer_callback_safe(query)
-        await safe_edit_message(query.message, "🔧 **管理面板**\n\n请选择功能：", reply_markup=_admin_menu_kb())
+        await safe_edit_message(query.message, "🔎 **管理员只读查询面板**\n\n请选择查询功能：", reply_markup=_admin_menu_kb())
 
     # ======================== 用户管理 ========================
 
@@ -170,17 +225,15 @@ def register(bot):
         kb = InlineKeyboardMarkup(
             [
                 [
-                    InlineKeyboardButton("➕ 添加用户", callback_data="adm_adduser"),
                     InlineKeyboardButton("🔍 查询用户", callback_data="adm_queryuser"),
                 ],
                 [
                     InlineKeyboardButton("👥 用户列表", callback_data="adm_userlist:1"),
-                    InlineKeyboardButton("🚫 禁用/解禁", callback_data="adm_banmenu"),
                 ],
                 [InlineKeyboardButton("🔙 管理面板", callback_data="panel_admin")],
             ]
         )
-        await safe_edit_message(query.message, "👥 **用户管理**\n\n请选择操作：", reply_markup=kb)
+        await safe_edit_message(query.message, "👥 **用户只读查询**\n\n请选择操作：", reply_markup=kb)
 
     @require_admin
     async def cb_adm_userlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -236,7 +289,19 @@ def register(bot):
         _set_admin_state(uid, {"action": "query_user"})
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("❌ 取消", callback_data="admin_users")]])
         await safe_edit_message(
-            query.message, "🔍 **查询用户**\n\n请发送用户名：\n💡 发送 /cancel 可取消", reply_markup=kb
+            query.message,
+            "🔍 **查询用户**\n\n请发送用户名、UID、TGID、TG 用户名或 Emby 标识关键词：\n💡 发送 /cancel 可取消",
+            reply_markup=kb,
+        )
+
+    async def cb_private_write_disabled(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        query = update.callback_query
+        await answer_callback_safe(query, "Telegram 私聊写操作已关闭，请使用 Web 后台", show_alert=True)
+        await safe_edit_message(
+            query.message,
+            "🔒 **Telegram 私聊写操作已关闭**\n\n"
+            "Bot 私聊仅保留用户查询与统计类只读能力。添加用户、注册码、广播、强制绑定、同步、清理等操作请使用 Web 后台。",
+            reply_markup=_admin_menu_kb(),
         )
 
     @require_admin
@@ -660,16 +725,14 @@ def register(bot):
             return
 
         if action == "query_user":
-            user = await UserOperate.get_user_by_username(text)
-            if not user:
-                await update.message.reply_text(
-                    f"❌ 用户 `{text}` 不存在\n请重新输入，或发送 /cancel 取消", parse_mode="Markdown"
-                )
-                return
-            info = f"📋 **用户详情**\n\n{format_user_info(user)}"
-            kb = _user_action_kb(user)
-            await update.message.reply_text(info, reply_markup=kb, parse_mode="Markdown")
+            await _send_user_search_reply(update.message, text)
             _clear_admin_state(uid)
+
+        elif action in {"add_user", "ban_user", "renew_user", "broadcast"}:
+            _clear_admin_state(uid)
+            await update.message.reply_text(
+                "🔒 Telegram 私聊写操作已关闭。请使用 Web 后台执行添加、禁用、续期、广播等操作。"
+            )
 
         elif action == "add_user":
             parts = text.split()
@@ -792,7 +855,14 @@ def register(bot):
             await update.message.reply_text("用法: `/adduser <用户名> [天数]`", parse_mode="Markdown")
             return
         username = context.args[0]
-        days = int(context.args[1]) if len(context.args) > 1 else 30
+        try:
+            days = int(context.args[1]) if len(context.args) > 1 else 30
+        except ValueError:
+            await update.message.reply_text("天数必须是数字，例如: `/adduser test 30`", parse_mode="Markdown")
+            return
+        if days <= 0:
+            await update.message.reply_text("天数必须大于 0")
+            return
         if await UserOperate.get_user_by_username(username):
             await update.message.reply_text("❌ 用户名已存在")
             return
@@ -810,20 +880,11 @@ def register(bot):
     async def cmd_regcode(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not context.args:
             await update.message.reply_text(
-                "用法: `/regcode new [天数] [数量]` | `/regcode list`", parse_mode="Markdown"
+                "用法: `/regcode [new] [天数] [数量]` | `/regcode list`", parse_mode="Markdown"
             )
             return
         action = context.args[0].lower()
-        if action == "new":
-            days = int(context.args[1]) if len(context.args) > 1 else 30
-            count = min(int(context.args[2]) if len(context.args) > 2 else 1, 10)
-            result = await RegCodeOperate.create_regcode(vali_time=-1, type_=1, day=days, count=count)
-            if isinstance(result, str):
-                result = [result]
-            days_text = "永久" if days <= 0 else f"{days}天"
-            codes = [f"`{c}` ({days_text})" for c in result]
-            await update.message.reply_text(f"✅ 生成 {count} 个注册码\n\n" + "\n".join(codes), parse_mode="Markdown")
-        elif action == "list":
+        if action == "list":
             all_codes = await RegCodeOperate.get_all_regcodes()
             codes = [c for c in all_codes if c.ACTIVE]
             if not codes:
@@ -834,6 +895,35 @@ def register(bot):
                     line_days_text = "永久" if (c.DAYS is not None and int(c.DAYS) <= 0) else f"{c.DAYS}天"
                     lines.append(f"• `{c.CODE}` - {line_days_text}")
                 await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+            return
+
+        if action in {"new", "gen", "create"}:
+            offset = 1
+        elif action.lstrip("-").isdigit():
+            offset = 0
+        else:
+            await update.message.reply_text(
+                "用法: `/regcode [new] [天数] [数量]` | `/regcode list`", parse_mode="Markdown"
+            )
+            return
+
+        try:
+            days = int(context.args[offset]) if len(context.args) > offset else 30
+            count = int(context.args[offset + 1]) if len(context.args) > offset + 1 else 1
+        except ValueError:
+            await update.message.reply_text("天数和数量必须是数字，例如: `/regcode 30 2`", parse_mode="Markdown")
+            return
+        if count <= 0:
+            await update.message.reply_text("数量必须大于 0")
+            return
+        count = min(count, 10)
+
+        result = await RegCodeOperate.create_regcode(vali_time=-1, type_=1, day=days, count=count)
+        if isinstance(result, str):
+            result = [result]
+        days_text = "永久" if days <= 0 else f"{days}天"
+        codes = [f"`{c}` ({days_text})" for c in result]
+        await update.message.reply_text(f"✅ 生成 {count} 个注册码\n\n" + "\n".join(codes), parse_mode="Markdown")
 
     @require_private
     @require_admin
@@ -877,14 +967,9 @@ def register(bot):
     @require_admin
     async def cmd_userinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not context.args:
-            await update.message.reply_text("用法: `/userinfo <用户名>`", parse_mode="Markdown")
+            await update.message.reply_text("用法: `/userinfo <关键词>`", parse_mode="Markdown")
             return
-        user = await UserOperate.get_user_by_username(context.args[0])
-        if not user:
-            await update.message.reply_text("❌ 用户不存在")
-            return
-        text = f"📋 **用户详情**\n\n{format_user_info(user)}"
-        await update.message.reply_text(text, reply_markup=_user_action_kb(user), parse_mode="Markdown")
+        await _send_user_search_reply(update.message, " ".join(context.args).strip())
 
     @require_private
     @require_admin
@@ -894,15 +979,7 @@ def register(bot):
                 "用法: `/twfind <用户名/UID/TGID/TG用户名/Emby标识>`", parse_mode="Markdown"
             )
             return
-        query = " ".join(context.args).strip()
-        users, total = await UserOperate.get_all_users(include_inactive=True, search=query, limit=10, offset=0)
-        if not users:
-            await update.message.reply_text("未找到匹配用户")
-            return
-        lines = [f"🔍 **查询结果** ({len(users)}/{total})\n"]
-        for user in users:
-            lines.append(format_user_info(user, brief=True))
-        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        await _send_user_search_reply(update.message, " ".join(context.args).strip())
 
     @require_private
     @require_admin
@@ -1066,17 +1143,18 @@ def register(bot):
             "label": label,
         })
         if require_verify:
-            await context.bot.send_message(
+            panel_msg = await context.bot.send_message(
                 chat_id=update.effective_chat.id,
                 text=
                 "匿名管理员指令已收到。请点击按钮验证管理员身份后查看。",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("验证管理员身份", callback_data=f"gadm:auth:{token}")]]),
             )
+            _touch_group_admin_panel(token, panel_msg)
             await safe_delete_message(update.message)
             return
 
         text = _format_group_user_info(user, tg_id, label)
-        await context.bot.send_message(
+        panel_msg = await context.bot.send_message(
             chat_id=update.effective_chat.id,
             text=text,
             reply_markup=_group_user_action_kb(
@@ -1088,6 +1166,7 @@ def register(bot):
             ),
             parse_mode="Markdown",
         )
+        _touch_group_admin_panel(token, panel_msg)
         await safe_delete_message(update.message)
 
     async def cmd_twguser(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1101,7 +1180,7 @@ def register(bot):
             return
         actor_id = update.effective_user.id if update.effective_user else 0
         if not is_admin(actor_id):
-            await update.message.reply_text("仅限管理员使用")
+            await warn_unauthorized_admin_command(update, context)
             return
         await _send_group_user_card(update, context)
 
@@ -1119,7 +1198,7 @@ def register(bot):
         user = await UserOperate.get_user_by_uid(payload.get("uid")) if payload.get("uid") else None
         text = _format_group_user_info(user, payload.get("tg_id"), payload.get("label") or "")
         await answer_callback_safe(query)
-        await safe_edit_message(
+        panel_msg = await safe_edit_message(
             query.message,
             text,
             reply_markup=_group_user_action_kb(
@@ -1130,6 +1209,7 @@ def register(bot):
                 active=bool(user and user.ACTIVE_STATUS),
             ),
         )
+        _touch_group_admin_panel(token, panel_msg or query.message)
 
     async def cb_group_admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
@@ -1155,7 +1235,7 @@ def register(bot):
         if action == "refresh":
             text = _format_group_user_info(user, tg_id, label)
             await answer_callback_safe(query, "已刷新")
-            await safe_edit_message(
+            panel_msg = await safe_edit_message(
                 query.message,
                 text,
                 reply_markup=_group_user_action_kb(
@@ -1166,6 +1246,7 @@ def register(bot):
                     active=bool(user and user.ACTIVE_STATUS),
                 ),
             )
+            _touch_group_admin_panel(token, panel_msg or query.message)
             return
 
         if action == "delask":
@@ -1173,7 +1254,7 @@ def register(bot):
                 await answer_callback_safe(query, "未找到本地用户", show_alert=True)
                 return
             await answer_callback_safe(query)
-            await safe_edit_message(
+            panel_msg = await safe_edit_message(
                 query.message,
                 f"确认删除本地用户 `{_md_code(user.USERNAME)}`？\n\n将同时尝试删除其 Emby 账号；此操作不可恢复。",
                 reply_markup=InlineKeyboardMarkup([
@@ -1181,6 +1262,7 @@ def register(bot):
                     [InlineKeyboardButton("取消", callback_data=f"gadm:act:refresh:{token}")],
                 ]),
             )
+            _touch_group_admin_panel(token, panel_msg or query.message)
             return
 
         if action in {"grant", "disable", "enable", "delete"} and not user:
@@ -1195,11 +1277,29 @@ def register(bot):
             if user.EMBYID:
                 await answer_callback_safe(query, "该用户已有 Emby 账号", show_alert=True)
                 return
-            user.PENDING_EMBY = True
-            user.PENDING_EMBY_DAYS = int(RegisterConfig.EMBY_DIRECT_REGISTER_DAYS or 30)
-            if not user.ACTIVE_STATUS:
-                user.ACTIVE_STATUS = True
-            await UserOperate.update_user(user)
+            capacity_lock = await UserService.acquire_emby_capacity_lock()
+            if capacity_lock is None:
+                await answer_callback_safe(query, "Emby 名额检查繁忙，请稍后重试", show_alert=True)
+                return
+            try:
+                if not getattr(user, "PENDING_EMBY", False):
+                    cap_ok, cap_msg = await UserService.check_emby_user_capacity(exclude_uid=user.UID)
+                    if not cap_ok:
+                        await answer_callback_safe(query, cap_msg, show_alert=True)
+                        return
+                user_limit_ok, user_limit_msg = await UserService.check_normal_user_capacity_for_grant(user)
+                if not user_limit_ok:
+                    await answer_callback_safe(query, user_limit_msg, show_alert=True)
+                    return
+                user.PENDING_EMBY = True
+                user.PENDING_EMBY_DAYS = int(RegisterConfig.EMBY_DIRECT_REGISTER_DAYS or 30)
+                if user.ROLE == Role.UNRECOGNIZED.value:
+                    user.ROLE = Role.NORMAL.value
+                if not user.ACTIVE_STATUS:
+                    user.ACTIVE_STATUS = True
+                await UserOperate.update_user(user)
+            finally:
+                await UserService.release_emby_capacity_lock(capacity_lock)
             message = "已授予 Emby 开通资格，用户前往 Web 即可创建账号"
         elif action == "disable":
             if user.EMBYID:
@@ -1222,6 +1322,7 @@ def register(bot):
             _group_admin_contexts.pop(token, None)
             await answer_callback_safe(query, msg if ok else "删除失败", show_alert=not ok)
             await safe_edit_message(query.message, ("✅ " if ok else "❌ ") + msg)
+            asyncio.create_task(safe_delete_message(query.message, _GROUP_ADMIN_PANEL_IDLE_TTL))
             return
         elif action == "kick":
             if not tg_id or not chat_id:
@@ -1261,7 +1362,7 @@ def register(bot):
         user = await UserOperate.get_user_by_uid(user.UID) if user else None
         text = _format_group_user_info(user, tg_id, label) + f"\n\n✅ {message}"
         await answer_callback_safe(query, message)
-        await safe_edit_message(
+        panel_msg = await safe_edit_message(
             query.message,
             text,
             reply_markup=_group_user_action_kb(
@@ -1272,6 +1373,7 @@ def register(bot):
                 active=bool(user and user.ACTIVE_STATUS),
             ),
         )
+        _touch_group_admin_panel(token, panel_msg or query.message)
 
     # ======================== 注册处理器 ========================
 
@@ -1279,45 +1381,39 @@ def register(bot):
     app.add_handler(CommandHandler("admin", cmd_admin))
     app.add_handler(CommandHandler("twishelp", cmd_twishelp))
     app.add_handler(CommandHandler("cancel", cmd_cancel))
-    app.add_handler(CommandHandler("adduser", cmd_adduser))
-    app.add_handler(CommandHandler("regcode", cmd_regcode))
-    app.add_handler(CommandHandler("broadcast", cmd_broadcast))
+    app.add_handler(CommandHandler("adduser", cmd_admin_write_disabled))
+    app.add_handler(CommandHandler("regcode", cmd_admin_write_disabled))
+    app.add_handler(CommandHandler("broadcast", cmd_admin_write_disabled))
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("userinfo", cmd_userinfo))
     app.add_handler(CommandHandler("twfind", cmd_twfind))
     app.add_handler(CommandHandler("twguser", cmd_twguser))
     app.add_handler(CommandHandler("twbindcheck", cmd_twbindcheck))
-    app.add_handler(CommandHandler("twforcebind", cmd_twforcebind))
-    app.add_handler(CommandHandler("twsyncuser", cmd_twsyncuser))
+    app.add_handler(CommandHandler("twforcebind", cmd_admin_write_disabled))
+    app.add_handler(CommandHandler("twsyncuser", cmd_admin_write_disabled))
 
     # 管理面板导航
     app.add_handler(CallbackQueryHandler(cb_panel_admin, pattern="^panel_admin$"))
     app.add_handler(CallbackQueryHandler(cb_admin_users, pattern="^admin_users$"))
-    app.add_handler(CallbackQueryHandler(cb_admin_regcode, pattern="^admin_regcode$"))
     app.add_handler(CallbackQueryHandler(cb_admin_stats, pattern="^admin_stats$"))
-    app.add_handler(CallbackQueryHandler(cb_admin_emby, pattern="^admin_emby$"))
-    app.add_handler(CallbackQueryHandler(cb_admin_broadcast, pattern="^admin_broadcast$"))
+    app.add_handler(CallbackQueryHandler(cb_private_write_disabled, pattern="^admin_(regcode|emby|broadcast)$"))
 
     # 用户管理
     app.add_handler(CallbackQueryHandler(cb_adm_userlist, pattern=r"^adm_userlist:"))
     app.add_handler(CallbackQueryHandler(cb_adm_queryuser, pattern="^adm_queryuser$"))
-    app.add_handler(CallbackQueryHandler(cb_adm_adduser, pattern="^adm_adduser$"))
-    app.add_handler(CallbackQueryHandler(cb_adm_banmenu, pattern="^adm_banmenu$"))
-    app.add_handler(CallbackQueryHandler(cb_adm_user_action, pattern=r"^adm_act:"))
+    app.add_handler(CallbackQueryHandler(cb_private_write_disabled, pattern="^adm_adduser$"))
+    app.add_handler(CallbackQueryHandler(cb_private_write_disabled, pattern="^adm_banmenu$"))
+    app.add_handler(CallbackQueryHandler(cb_private_write_disabled, pattern=r"^adm_act:"))
     app.add_handler(CallbackQueryHandler(cb_adm_userdetail, pattern=r"^adm_userdetail:"))
-    app.add_handler(CallbackQueryHandler(cb_adm_renew_prompt, pattern=r"^adm_renew:"))
+    app.add_handler(CallbackQueryHandler(cb_private_write_disabled, pattern=r"^adm_renew:"))
 
     # 注册码
-    app.add_handler(CallbackQueryHandler(cb_adm_regcode_gen, pattern="^adm_regcode_gen$"))
-    app.add_handler(CallbackQueryHandler(cb_adm_reggen, pattern=r"^adm_reggen:"))
-    app.add_handler(CallbackQueryHandler(cb_adm_regcode_list, pattern="^adm_regcode_list$"))
+    app.add_handler(CallbackQueryHandler(cb_private_write_disabled, pattern="^adm_regcode_gen$"))
+    app.add_handler(CallbackQueryHandler(cb_private_write_disabled, pattern=r"^adm_reggen:"))
+    app.add_handler(CallbackQueryHandler(cb_private_write_disabled, pattern="^adm_regcode_list$"))
 
     # Emby 管理
-    app.add_handler(CallbackQueryHandler(cb_adm_emby_test, pattern="^adm_emby_test$"))
-    app.add_handler(CallbackQueryHandler(cb_adm_emby_sessions, pattern="^adm_emby_sessions$"))
-    app.add_handler(CallbackQueryHandler(cb_adm_emby_users, pattern="^adm_emby_users$"))
-    app.add_handler(CallbackQueryHandler(cb_adm_emby_cleanup, pattern="^adm_emby_cleanup$"))
-    app.add_handler(CallbackQueryHandler(cb_adm_emby_cleanup_confirm, pattern="^adm_emby_cleanup_confirm$"))
+    app.add_handler(CallbackQueryHandler(cb_private_write_disabled, pattern="^adm_emby_"))
 
     # 群组管理员工具
     app.add_handler(CallbackQueryHandler(cb_group_admin_auth, pattern=r"^gadm:auth:"))
@@ -1339,15 +1435,11 @@ def _admin_menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("👥 用户管理", callback_data="admin_users"),
-                InlineKeyboardButton("🎫 注册码", callback_data="admin_regcode"),
+                InlineKeyboardButton("🔍 查询用户", callback_data="adm_queryuser"),
+                InlineKeyboardButton("👥 用户列表", callback_data="adm_userlist:1"),
             ],
             [
                 InlineKeyboardButton("📊 统计", callback_data="admin_stats"),
-                InlineKeyboardButton("🎬 Emby", callback_data="admin_emby"),
-            ],
-            [
-                InlineKeyboardButton("📢 广播", callback_data="admin_broadcast"),
             ],
             [InlineKeyboardButton("♻️ 主菜单", callback_data="back_start")],
         ]
@@ -1375,4 +1467,8 @@ def _user_action_kb(user) -> InlineKeyboardMarkup:
 async def _show_user_detail(message, user):
     """显示用户详情"""
     text = f"📋 **用户详情**\n\n{format_user_info(user)}"
-    await safe_edit_message(message, text, reply_markup=_user_action_kb(user))
+    await safe_edit_message(
+        message,
+        text,
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 用户查询", callback_data="admin_users")]]),
+    )
