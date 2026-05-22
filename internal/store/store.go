@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/url"
 	"os"
@@ -338,9 +339,12 @@ func OpenPostgres(ctx context.Context, dsn string) (*Store, error) {
 	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
 		if isUndefinedDatabaseError(err) {
+			target := postgresTargetInfo(dsn)
+			slog.Warn("PostgreSQL database does not exist; attempting automatic creation", "database", target.Database, "user", target.User, "host", target.Host)
 			if createErr := CreatePostgresDatabase(ctx, dsn); createErr != nil {
-				return nil, fmt.Errorf("postgres database does not exist and automatic creation failed: %w", createErr)
+				return nil, fmt.Errorf("PostgreSQL database %q does not exist and automatic creation failed: %w", target.Database, describePostgresConnectionError(target, createErr))
 			}
+			slog.Info("PostgreSQL database created", "database", target.Database, "user", target.User, "host", target.Host)
 			db, err = sql.Open("pgx", dsn)
 			if err != nil {
 				return nil, err
@@ -350,10 +354,10 @@ func OpenPostgres(ctx context.Context, dsn string) (*Store, error) {
 			db.SetConnMaxLifetime(30 * time.Minute)
 			if err := db.PingContext(ctx); err != nil {
 				_ = db.Close()
-				return nil, err
+				return nil, describePostgresConnectionError(target, err)
 			}
 		} else {
-			return nil, err
+			return nil, describePostgresConnectionError(postgresTargetInfo(dsn), err)
 		}
 	}
 	if _, err := db.ExecContext(ctx, `
@@ -401,6 +405,8 @@ func CreatePostgresDatabase(ctx context.Context, dsn string) error {
 	maintenanceDSNs := maintenancePostgresDSNs(dsn)
 	var lastErr error
 	for _, maintenanceDSN := range maintenanceDSNs {
+		maintenance := postgresTargetInfo(maintenanceDSN)
+		slog.Info("attempting PostgreSQL database creation through maintenance database", "target_database", target, "maintenance_database", maintenance.Database, "user", maintenance.User, "host", maintenance.Host)
 		db, err := sql.Open("pgx", maintenanceDSN)
 		if err != nil {
 			lastErr = err
@@ -419,7 +425,10 @@ func CreatePostgresDatabase(ctx context.Context, dsn string) error {
 		if isDuplicateDatabaseError(err) {
 			return nil
 		}
-		lastErr = err
+		targetInfo := maintenance
+		targetInfo.Database = target
+		lastErr = describePostgresConnectionError(targetInfo, err)
+		slog.Warn("PostgreSQL automatic database creation attempt failed", "target_database", target, "maintenance_database", maintenance.Database, "user", maintenance.User, "host", maintenance.Host, "error", lastErr)
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("no maintenance database connection strings could be built")
@@ -489,6 +498,52 @@ func isDuplicateDatabaseError(err error) bool {
 		return true
 	}
 	return strings.Contains(err.Error(), "SQLSTATE 42P04")
+}
+
+type postgresInfo struct {
+	Host     string
+	User     string
+	Database string
+}
+
+func postgresTargetInfo(dsn string) postgresInfo {
+	cfg, err := pgconn.ParseConfig(strings.TrimSpace(dsn))
+	if err != nil {
+		return postgresInfo{}
+	}
+	return postgresInfo{Host: cfg.Host, User: cfg.User, Database: cfg.Database}
+}
+
+func describePostgresConnectionError(info postgresInfo, err error) error {
+	if err == nil {
+		return nil
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		switch pgErr.Code {
+		case "28P01":
+			return fmt.Errorf("PostgreSQL authentication failed for user %q on host %q: password is incorrect or pg_hba.conf rejected the login (SQLSTATE 28P01): %w", info.User, info.Host, err)
+		case "28000":
+			return fmt.Errorf("PostgreSQL login rejected for user %q on host %q (SQLSTATE 28000): %w", info.User, info.Host, err)
+		case "42501":
+			return fmt.Errorf("PostgreSQL user %q does not have permission to create or modify database %q; grant CREATEDB or create the database manually (SQLSTATE 42501): %w", info.User, info.Database, err)
+		case "3D000":
+			return fmt.Errorf("PostgreSQL database %q does not exist (SQLSTATE 3D000): %w", info.Database, err)
+		case "42P04":
+			return fmt.Errorf("PostgreSQL database %q already exists (SQLSTATE 42P04): %w", info.Database, err)
+		}
+	}
+	text := err.Error()
+	switch {
+	case strings.Contains(text, "SQLSTATE 28P01"):
+		return fmt.Errorf("PostgreSQL authentication failed for user %q on host %q: password is incorrect or pg_hba.conf rejected the login (SQLSTATE 28P01): %w", info.User, info.Host, err)
+	case strings.Contains(text, "SQLSTATE 42501"):
+		return fmt.Errorf("PostgreSQL user %q does not have permission to create or modify database %q; grant CREATEDB or create the database manually (SQLSTATE 42501): %w", info.User, info.Database, err)
+	case strings.Contains(text, "SQLSTATE 3D000"):
+		return fmt.Errorf("PostgreSQL database %q does not exist (SQLSTATE 3D000): %w", info.Database, err)
+	default:
+		return fmt.Errorf("PostgreSQL connection failed for user %q database %q host %q: %w", info.User, info.Database, info.Host, err)
+	}
 }
 
 func quotePostgresIdentifier(value string) string {

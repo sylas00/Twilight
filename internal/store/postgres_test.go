@@ -39,3 +39,21 @@ func TestPostgresErrorClassifiersAndIdentifierQuoting(t *testing.T) {
 		t.Fatalf("identifier was not quoted safely: %s", got)
 	}
 }
+
+func TestDescribePostgresConnectionError(t *testing.T) {
+	info := postgresInfo{Host: "127.0.0.1", User: "MoYuanCN", Database: "twilight"}
+	cases := []struct {
+		err  error
+		want string
+	}{
+		{&pgconn.PgError{Code: "28P01", Message: "password authentication failed"}, "authentication failed"},
+		{&pgconn.PgError{Code: "42501", Message: "permission denied"}, "grant CREATEDB"},
+		{errors.New(`FATAL: database "twilight" does not exist (SQLSTATE 3D000)`), "does not exist"},
+	}
+	for _, tc := range cases {
+		got := describePostgresConnectionError(info, tc.err).Error()
+		if !strings.Contains(got, tc.want) || strings.Contains(got, "secret") {
+			t.Fatalf("unexpected described error: %s", got)
+		}
+	}
+}
