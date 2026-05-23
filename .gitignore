@@ -151,3 +151,5 @@ fixtures/local/
 /.github/copilot-instructions.local.md
 opencode.json
 docs/AUDIT_REPORT.md
+.narrafork/
+.worktrees/

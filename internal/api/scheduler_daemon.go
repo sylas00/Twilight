@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
+	"go.uber.org/zap"
 	"net/http"
 	"strconv"
 	"strings"
@@ -15,7 +15,7 @@ import (
 )
 
 func (a *App) RunScheduler(ctx context.Context) error {
-	slog.Info("scheduler runner started")
+	zap.L().Info("scheduler runner started")
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	a.runDueSchedulerJobs(ctx)
@@ -102,9 +102,9 @@ func (a *App) runScheduledJob(ctx context.Context, jobID string) {
 		return nil
 	})
 	if err != nil {
-		slog.Warn("scheduler job failed", "job_id", jobID, "error", err)
+		zap.L().Warn("scheduler job failed", zap.String("job_id", jobID), zap.Error(err))
 	} else {
-		slog.Info("scheduler job completed", "job_id", jobID)
+		zap.L().Info("scheduler job completed", zap.String("job_id", jobID))
 	}
 }
 
@@ -128,9 +128,9 @@ func (a *App) startManualSchedulerJob(ctx context.Context, jobID string, params 
 			return nil
 		})
 		if err != nil {
-			slog.Warn("manual scheduler job failed", "job_id", jobID, "error", err)
+			zap.L().Warn("manual scheduler job failed", zap.String("job_id", jobID), zap.Error(err))
 		} else {
-			slog.Info("manual scheduler job completed", "job_id", jobID)
+			zap.L().Info("manual scheduler job completed", zap.String("job_id", jobID))
 		}
 	}()
 	return run, true

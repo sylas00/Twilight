@@ -3,7 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
-	"log/slog"
+	"go.uber.org/zap"
 	"regexp"
 	"strconv"
 	"strings"
@@ -26,7 +26,7 @@ func (a *App) RunTelegramBot(ctx context.Context) error {
 		a.reloadConfigIfChanged()
 		if !a.telegramAvailable() {
 			a.setTelegramRuntimeStatus(false, fmt.Errorf("Telegram bot is disabled or token is not configured"))
-			slog.Info("Telegram bot configuration disabled; waiting before next config check")
+			zap.L().Info("Telegram bot configuration disabled; waiting before next config check")
 			select {
 			case <-ctx.Done():
 				return nil
@@ -39,7 +39,7 @@ func (a *App) RunTelegramBot(ctx context.Context) error {
 			me, err := a.telegramGetMe(ctx)
 			if err != nil {
 				a.setTelegramRuntimeStatus(false, err)
-				slog.Warn("Telegram bot initialization failed", "error", err)
+				zap.L().Warn("Telegram bot initialization failed", zap.Error(err))
 				select {
 				case <-ctx.Done():
 					return nil
@@ -50,12 +50,12 @@ func (a *App) RunTelegramBot(ctx context.Context) error {
 			activeConfig = currentConfig
 			offset = 0
 			a.setTelegramRuntimeStatus(true, nil)
-			slog.Info("Telegram bot polling started", "username", me["username"])
+			zap.L().Info("Telegram bot polling started", zap.Any("username", me["username"]))
 		}
 		updates, err := a.telegramGetUpdates(ctx, offset)
 		if err != nil {
 			a.setTelegramRuntimeStatus(true, err)
-			slog.Warn("Telegram getUpdates failed", "error", err)
+			zap.L().Warn("Telegram getUpdates failed", zap.Error(err))
 			select {
 			case <-ctx.Done():
 				return nil
