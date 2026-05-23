@@ -830,6 +830,10 @@ class ApiClient {
     return this.request<EmbyLibraryAccess>(`/admin/users/${uid}/libraries`);
   }
 
+  async getAdminEmbyLibraries() {
+    return this.request<EmbyLibraryItem[]>("/system/admin/emby/libraries");
+  }
+
   async updateUserLibraries(uid: number, payload: {
     action?: "set" | "show" | "hide" | "enable_all" | "disable_all";
     library_ids?: string[];
@@ -853,6 +857,39 @@ class ApiClient {
     return this.request<{ updated: number }>("/admin/users/library-self-service/bulk-enable", {
       method: "POST",
       body: JSON.stringify({ confirm: "ENABLE_LIBRARY_SELF_SERVICE" }),
+    });
+  }
+
+  async batchToggleUsers(uids: number[], enable: boolean) {
+    return this.request<BatchUserResult>(`/batch/users/${enable ? "enable" : "disable"}`, {
+      method: "POST",
+      body: JSON.stringify({ uids }),
+    });
+  }
+
+  async batchDeleteUsers(uids: number[], deleteEmby: boolean) {
+    return this.request<BatchUserResult>("/batch/users/delete", {
+      method: "POST",
+      body: JSON.stringify({ uids, delete_emby: deleteEmby }),
+    });
+  }
+
+  async batchSetLibrarySelfService(uids: number[], enabled: boolean) {
+    return this.request<BatchUserResult & { enabled: boolean }>("/batch/users/library-self-service", {
+      method: "POST",
+      body: JSON.stringify({ uids, enabled }),
+    });
+  }
+
+  async batchUpdateUserLibraries(uids: number[], payload: {
+    action: "set" | "show" | "hide" | "enable_all" | "disable_all";
+    library_ids?: string[];
+    library_names?: string[];
+    enable_all?: boolean;
+  }) {
+    return this.request<BatchUserResult & { action: string }>("/batch/users/libraries", {
+      method: "POST",
+      body: JSON.stringify({ uids, ...payload }),
     });
   }
 
@@ -1559,6 +1596,16 @@ class ApiClient {
     return res;
   }
 
+  async uploadServerIcon(file: File) {
+    const formData = new FormData();
+    formData.append('file', file);
+    return this.requestForm<{ url: string; server_icon: string; filename: string; reload?: unknown }>(
+      '/system/admin/server-icon/upload',
+      formData,
+      'POST'
+    );
+  }
+
   async deleteAvatar() {
     return this.request('/users/me/avatar', {
       method: 'DELETE',
@@ -1985,6 +2032,13 @@ export interface UserInfo {
   pending_emby_days?: number | null;  // 注册码授予的开通天数（待 Emby 补建）
   emby_disabled_by_expiry?: boolean;  // 到期后仅禁用 Emby，系统账号仍可登录
   library_self_service?: boolean;  // 是否允许在个人设置中自助显隐管理员开放的媒体库
+}
+
+export interface BatchUserResult {
+  total: number;
+  success: number;
+  failed: number;
+  errors: Array<{ uid: number; error: string }>;
 }
 
 export interface CodeUsePreview {

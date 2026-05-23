@@ -34,6 +34,8 @@ import {
   Database,
   Archive,
   Trash2,
+  Upload,
+  Image as ImageIcon,
 } from "lucide-react";
 import {
   Card,
@@ -806,6 +808,8 @@ export default function AdminConfigPage() {
   const [showConfigBackupView, setShowConfigBackupView] = useState(false);
   const [showConfigRestoreDialog, setShowConfigRestoreDialog] = useState(false);
   const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const serverIconInputRef = useRef<HTMLInputElement | null>(null);
+  const [isUploadingServerIcon, setIsUploadingServerIcon] = useState(false);
 
   // 初始化时展开所有 sections
   useEffect(() => {
@@ -841,6 +845,12 @@ export default function AdminConfigPage() {
     () => Object.values(changedCounts).reduce((a, b) => a + b, 0),
     [changedCounts]
   );
+
+  const currentServerIcon = String(editedValues.Global?.server_icon ?? "").trim();
+  const serverIconPreviewUrl =
+    currentServerIcon && /^https:\/\/[^\s"'<>]+$/i.test(currentServerIcon)
+      ? currentServerIcon
+      : `/api/v1/system/server-icon?ts=${encodeURIComponent(currentServerIcon || "default")}`;
 
   // 搜索匹配
   const matchedFieldsBySection = useMemo(() => {
@@ -1082,6 +1092,45 @@ export default function AdminConfigPage() {
     }
   };
 
+  const handleServerIconFile = async (file?: File | null) => {
+    if (!file) return;
+    if (hasSchemaChanges || hasChanges) {
+      toast({
+        title: "请先处理未保存配置",
+        description: "上传服务器图标会立即保存 server_icon，先保存或还原当前配置改动。",
+        variant: "destructive",
+      });
+      return;
+    }
+    setIsUploadingServerIcon(true);
+    try {
+      const res = await api.uploadServerIcon(file);
+      if (!res.success || !res.data) {
+        throw new Error(res.message || "服务器图标上传失败");
+      }
+      await loadSchema();
+      if (configContent) {
+        await loadConfig();
+      }
+      toast({
+        title: "上传成功",
+        description: "服务器图标已保存并热重载。",
+        variant: "success",
+      });
+    } catch (error: any) {
+      toast({
+        title: "上传失败",
+        description: error.message || "请检查图片格式和网络连接",
+        variant: "destructive",
+      });
+    } finally {
+      setIsUploadingServerIcon(false);
+      if (serverIconInputRef.current) {
+        serverIconInputRef.current.value = "";
+      }
+    }
+  };
+
   const loadConfigBackups = useCallback(async () => {
     setIsLoadingConfigBackups(true);
     try {
@@ -1319,6 +1368,49 @@ export default function AdminConfigPage() {
 
           {/* ==================== 可视化编辑 ==================== */}
           <TabsContent value="visual" className="mt-4">
+            <Card className="mb-4">
+              <CardHeader className="pb-3">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="min-w-0">
+                    <CardTitle className="flex items-center gap-2 text-base">
+                      <ImageIcon className="h-5 w-5" />
+                      服务器图标
+                    </CardTitle>
+                    <CardDescription>
+                      可继续填写 HTTPS URL 或服务器路径，也可以由管理员直接上传图片。
+                    </CardDescription>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span
+                      aria-hidden="true"
+                      className="h-12 w-12 rounded-md border bg-muted bg-contain bg-center bg-no-repeat"
+                      style={{ backgroundImage: `url("${serverIconPreviewUrl}")` }}
+                    />
+                    <input
+                      ref={serverIconInputRef}
+                      type="file"
+                      accept="image/png,image/jpeg,image/gif,image/webp,image/bmp"
+                      className="hidden"
+                      onChange={(event) => void handleServerIconFile(event.target.files?.[0])}
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => serverIconInputRef.current?.click()}
+                      disabled={isUploadingServerIcon || hasSchemaChanges || hasChanges}
+                    >
+                      {isUploadingServerIcon ? (
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      ) : (
+                        <Upload className="mr-2 h-4 w-4" />
+                      )}
+                      上传图标
+                    </Button>
+                  </div>
+                </div>
+              </CardHeader>
+            </Card>
             {/* 搜索与操作栏 */}
             <div className="mb-4 flex min-w-0 flex-col items-stretch gap-3 sm:flex-row sm:items-center">
               <div className="relative w-full min-w-0 sm:max-w-md sm:flex-1">

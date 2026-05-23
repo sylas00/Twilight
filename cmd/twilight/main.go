@@ -36,7 +36,7 @@ func run(args []string) error {
 	case "api":
 		return runAPI(args[2:])
 	case "all":
-		return runAPI(args[2:])
+		return runAll(args[2:])
 	case "scheduler":
 		return runScheduler(args[2:])
 	case "bot":
@@ -124,6 +124,88 @@ func runAPI(args []string) error {
 	}
 }
 
+func runAll(args []string) error {
+	fs := flag.NewFlagSet("all", flag.ContinueOnError)
+	host := fs.String("host", "", "listen host")
+	port := fs.Int("port", 0, "listen port")
+	configFile := fs.String("config", "", "config file path; runtime only accepts the working directory config.toml")
+	debug := fs.Bool("debug", false, "enable debug logging")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	configPath, err := runtimeConfigPath(*configFile)
+	if err != nil {
+		return err
+	}
+	cfg, err := config.NewReader(configPath).Read()
+	if err != nil {
+		return err
+	}
+	logLevel := cfg.SlogLevel()
+	if *debug {
+		logLevel = slog.LevelDebug
+	}
+	api.InstallRuntimeLogger(os.Stdout, logLevel)
+	api.ConfigureRuntimeLogging(logLevel, cfg.RuntimeLogLimit)
+	if *host != "" {
+		cfg.Host = *host
+	}
+	if *port > 0 {
+		cfg.Port = *port
+	}
+
+	state, err := openStore(context.Background(), cfg)
+	if err != nil {
+		return err
+	}
+	defer state.Close()
+	app, err := api.New(cfg, state)
+	if err != nil {
+		return err
+	}
+
+	server := &http.Server{
+		Addr:              cfg.Host + ":" + strconv.Itoa(cfg.Port),
+		Handler:           app,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       90 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	errCh := make(chan error, 3)
+	go func() {
+		slog.Info("Twilight Go API listening", "addr", server.Addr)
+		errCh <- server.ListenAndServe()
+	}()
+	go func() {
+		errCh <- app.RunScheduler(ctx)
+	}()
+	go func() {
+		errCh <- app.RunTelegramBot(ctx)
+	}()
+
+	select {
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		return server.Shutdown(shutdownCtx)
+	case err := <-errCh:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		stop()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutdownCtx)
+		return err
+	}
+}
+
 func runScheduler(args []string) error {
 	fs := flag.NewFlagSet("scheduler", flag.ContinueOnError)
 	configFile := fs.String("config", "", "config file path; runtime only accepts the working directory config.toml")
@@ -140,11 +222,18 @@ func runScheduler(args []string) error {
 	}
 	api.InstallRuntimeLogger(os.Stdout, cfg.SlogLevel())
 	api.ConfigureRuntimeLogging(cfg.SlogLevel(), cfg.RuntimeLogLimit)
-	slog.Info("scheduler mode is built into the Go backend; background jobs are exposed through /api/v1/admin/scheduler/jobs")
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	<-ctx.Done()
-	return nil
+	state, err := openStore(context.Background(), cfg)
+	if err != nil {
+		return err
+	}
+	defer state.Close()
+	app, err := api.New(cfg, state)
+	if err != nil {
+		return err
+	}
+	return app.RunScheduler(ctx)
 }
 
 func runBot(args []string) error {
@@ -201,6 +290,7 @@ func openStore(ctx context.Context, cfg config.Config) (*store.Store, error) {
 			return nil, err
 		}
 		bootstrapLegacyAdminsIfNeeded(cfg, st)
+		applyConfiguredAdmins(cfg, st)
 		return st, nil
 	case store.BackendPostgres, "postgresql":
 		dsn := cfg.PostgresDSN()
@@ -214,6 +304,7 @@ func openStore(ctx context.Context, cfg config.Config) (*store.Store, error) {
 			return nil, err
 		}
 		st.ConfigurePostgres(cfg.PostgresMaxOpenConns, cfg.PostgresMaxIdleConns)
+		applyConfiguredAdmins(cfg, st)
 		if !storeHasAdmin(st) {
 			legacy, err := openLegacyJSONStoreIfPopulated(cfg)
 			if err != nil {
@@ -222,6 +313,7 @@ func openStore(ctx context.Context, cfg config.Config) (*store.Store, error) {
 			}
 			if legacy != nil {
 				bootstrapLegacyAdminsIfNeeded(cfg, legacy)
+				applyConfiguredAdmins(cfg, legacy)
 				if storeHasAdmin(legacy) {
 					_ = st.Close()
 					slog.Warn("PostgreSQL has no administrator; using legacy JSON state so existing admins can log in and run database migration", "state_file", cfg.StateFile)
@@ -230,10 +322,46 @@ func openStore(ctx context.Context, cfg config.Config) (*store.Store, error) {
 				_ = legacy.Close()
 			}
 			bootstrapLegacyAdminsIfNeeded(cfg, st)
+			applyConfiguredAdmins(cfg, st)
 		}
 		return st, nil
 	default:
 		return nil, fmt.Errorf("unsupported database driver %q", cfg.DatabaseDriver)
+	}
+}
+
+func applyConfiguredAdmins(cfg config.Config, st *store.Store) {
+	if st == nil {
+		return
+	}
+	uidSet := map[int64]bool{}
+	for _, uid := range cfg.AdminUIDs {
+		if uid > 0 {
+			uidSet[uid] = true
+		}
+	}
+	nameSet := map[string]bool{}
+	for _, username := range cfg.AdminUsernames {
+		username = strings.ToLower(strings.TrimSpace(username))
+		if username != "" {
+			nameSet[username] = true
+		}
+	}
+	if len(uidSet) == 0 && len(nameSet) == 0 {
+		return
+	}
+	for _, user := range st.ListUsers() {
+		if !uidSet[user.UID] && !nameSet[strings.ToLower(strings.TrimSpace(user.Username))] {
+			continue
+		}
+		updated, err := st.UpdateUser(user.UID, func(u *store.User) error {
+			u.Role = store.RoleAdmin
+			u.Active = true
+			return nil
+		})
+		if err == nil {
+			slog.Info("configured administrator applied", "uid", updated.UID, "username", updated.Username)
+		}
 	}
 }
 

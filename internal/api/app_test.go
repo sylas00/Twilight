@@ -217,6 +217,39 @@ func TestUploadRejectsNonImage(t *testing.T) {
 	}
 }
 
+func TestAdminServerIconUploadUpdatesConfig(t *testing.T) {
+	app := newTestApp(t)
+	app.cfg.ConfigFile = filepath.Join(app.cfg.DatabaseDir, "config.toml")
+	_ = doJSON(app, http.MethodPost, "/api/v1/users/register", `{"username":"admin","password":"admin123456"}`, nil)
+	login := doJSON(app, http.MethodPost, "/api/v1/auth/login", `{"username":"admin","password":"admin123456"}`, nil)
+	cookie := findCookie(login.Result().Cookies(), "twilight_session")
+
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile("file", "icon.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = part.Write([]byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0, 0, 0})
+	_ = writer.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/system/admin/server-icon/upload", body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("X-Twilight-Client", "webui")
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	app.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("server icon upload status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.HasPrefix(app.cfg.ServerIcon, "server-icon/") || !strings.HasSuffix(app.cfg.ServerIcon, ".png") {
+		t.Fatalf("server_icon was not updated to uploaded asset: %q", app.cfg.ServerIcon)
+	}
+	if _, _, ok := app.configuredServerIconPath(); !ok {
+		t.Fatalf("uploaded server icon is not readable from configured path: %q", app.cfg.ServerIcon)
+	}
+}
+
 func TestUploadImageExtensionWhitelist(t *testing.T) {
 	allowed := map[string]string{
 		"image/jpeg": ".jpg",
@@ -271,6 +304,44 @@ func TestUploadAssetPathAndFilenameSafety(t *testing.T) {
 		if resp.Code != http.StatusNotFound {
 			t.Fatalf("invalid asset %s status=%d body=%s", path, resp.Code, resp.Body.String())
 		}
+	}
+}
+
+func TestProtectedAdminConfigHiddenPreservedAndApplied(t *testing.T) {
+	app := newTestApp(t)
+	app.cfg.ConfigFile = filepath.Join(app.cfg.DatabaseDir, "config.toml")
+	databaseConfig := "[Database]\n" +
+		"driver = \"json\"\n" +
+		"state_file = " + strconv.Quote(app.cfg.StateFile) + "\n" +
+		"backup_dir = " + strconv.Quote(app.cfg.DatabaseBackupDir) + "\n"
+	existing := "[Global]\nserver_name = \"old\"\n\n" + databaseConfig + "\nadmin_uids = \"2\"\nadmin_usernames = \"alice\"\n"
+	if err := os.WriteFile(app.cfg.ConfigFile, []byte(existing), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if shown := stripProtectedAdminConfig(existing); strings.Contains(shown, "admin_uids") || strings.Contains(shown, "admin_usernames") {
+		t.Fatalf("protected admin config leaked: %s", shown)
+	}
+	info, status, message := app.saveConfigContent("[Global]\nserver_name = \"new\"\n\n" + databaseConfig + "\n[Admin]\nadmin_uids = \"999\"\nadmin_usernames = \"mallory\"\n")
+	if status != http.StatusOK {
+		t.Fatalf("saveConfigContent status=%d message=%s info=%v", status, message, info)
+	}
+	data, err := os.ReadFile(app.cfg.ConfigFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	if strings.Contains(content, "999") || strings.Contains(content, "mallory") {
+		t.Fatalf("submitted protected admin config was not stripped: %s", content)
+	}
+	if !strings.Contains(content, `admin_uids = "2"`) || !strings.Contains(content, `admin_usernames = "alice"`) {
+		t.Fatalf("existing protected admin config was not preserved: %s", content)
+	}
+
+	_ = doJSON(app, http.MethodPost, "/api/v1/users/register", `{"username":"owner","password":"owner123456"}`, nil)
+	_ = doJSON(app, http.MethodPost, "/api/v1/users/register", `{"username":"alice","password":"alice123456"}`, nil)
+	alice, ok := app.store.FindUserByUsername("alice")
+	if !ok || alice.Role != store.RoleAdmin || !alice.Active {
+		t.Fatalf("configured admin username was not applied on registration: %#v", alice)
 	}
 }
 
