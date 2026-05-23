@@ -23,6 +23,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog,
   DialogContent,
@@ -139,6 +140,7 @@ export default function AdminDatabaseMigrationPage() {
   const [backupPreviewOpen, setBackupPreviewOpen] = useState(false);
   const [restorePreview, setRestorePreview] = useState<DatabaseRestoreResult | null>(null);
   const [restoreOpen, setRestoreOpen] = useState(false);
+  const [backupNote, setBackupNote] = useState("");
 
   const loadDatabase = useCallback(async () => {
     setLoading(true);
@@ -169,9 +171,10 @@ export default function AdminDatabaseMigrationPage() {
 
   const latestBackup = dbBackups[0];
   const legacyDetected = Boolean(dbStatus?.legacy_sqlite_detected && dbStatus.legacy_sqlite);
+  const migrationEnabled = Boolean(dbStatus?.migration_panel_enabled);
   const postgresReady = target !== "postgres" || Boolean(dbStatus?.postgres_configured);
   const sourceReady = source !== "sqlite" || legacyDetected;
-  const canPreview = sourceReady && postgresReady && !busy;
+  const canPreview = migrationEnabled && sourceReady && postgresReady && !busy;
 
   const mappings = useMemo(() => {
     const fromPreview = migrationResult?.legacy_sqlite_import?.mappings || [];
@@ -189,9 +192,10 @@ export default function AdminDatabaseMigrationPage() {
   const createBackup = async () => {
     setBusy(true);
     try {
-      const res = await api.createDatabaseBackup();
+      const res = await api.createDatabaseBackup(backupNote);
       if (res.success) {
         toast({ title: "备份已创建", description: res.data?.backup?.name, variant: "success" });
+        setBackupNote("");
         await loadDatabase();
       } else {
         toast({ title: "备份失败", description: res.message, variant: "destructive" });
@@ -350,9 +354,9 @@ export default function AdminDatabaseMigrationPage() {
     <div className="space-y-6">
       <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div className="min-w-0">
-          <h1 className="text-2xl font-bold sm:text-3xl">数据库迁移</h1>
+          <h1 className="text-2xl font-bold sm:text-3xl">数据库备份</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            按“选择来源 → 选择目标 → 生成预览 → 二次确认”的顺序操作；先确认字段映射和备份状态，再执行写入。
+            默认开放数据库快照备份、查看、恢复和删除；迁移功能需在配置文件中显式开启后才显示。
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -388,13 +392,23 @@ export default function AdminDatabaseMigrationPage() {
         </Card>
         <Card>
           <CardContent className="p-4">
-            <p className="text-xs text-muted-foreground">可用备份</p>
-            <p className="mt-1 text-xl font-semibold">{dbStatus?.backup_count ?? dbBackups.length}</p>
+            <p className="text-xs text-muted-foreground">迁移功能</p>
+            <p className="mt-1 text-xl font-semibold">{migrationEnabled ? "已开启" : "未开启"}</p>
           </CardContent>
         </Card>
       </div>
 
-      {!dbStatus?.postgres_configured && (
+      {!migrationEnabled && (
+        <Alert>
+          <Info className="h-4 w-4" />
+          <AlertTitle>数据库迁移默认关闭</AlertTitle>
+          <AlertDescription>
+            需要迁移时请在 config.toml 的 [Database] 中设置 migration_panel_enabled = true 并保存配置；备份、查看和恢复功能不受影响。
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {migrationEnabled && !dbStatus?.postgres_configured && (
         <Alert className="border-amber-500/40 bg-amber-500/10">
           <AlertTriangle className="h-4 w-4" />
           <AlertTitle>PostgreSQL 尚未配置</AlertTitle>
@@ -411,10 +425,18 @@ export default function AdminDatabaseMigrationPage() {
               <CardTitle className="flex items-center gap-2"><Archive className="h-5 w-5" />数据库备份管理</CardTitle>
               <CardDescription>创建、查看、恢复和删除数据库状态快照。恢复前会自动创建保护性备份。</CardDescription>
             </div>
-            <Button variant="outline" onClick={() => void createBackup()} disabled={busy}>
-              {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Archive className="mr-2 h-4 w-4" />}
-              创建备份
-            </Button>
+            <div className="flex w-full flex-col gap-2 sm:w-80">
+              <Textarea
+                value={backupNote}
+                onChange={(event) => setBackupNote(event.target.value.slice(0, 200))}
+                placeholder="备注：例如升级前、迁移前、手动巡检后"
+                className="min-h-20 resize-none text-sm"
+              />
+              <Button variant="outline" onClick={() => void createBackup()} disabled={busy}>
+                {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Archive className="mr-2 h-4 w-4" />}
+                创建备份
+              </Button>
+            </div>
           </div>
         </CardHeader>
         <CardContent>
@@ -427,6 +449,7 @@ export default function AdminDatabaseMigrationPage() {
                   <div className="min-w-0">
                     <p className="break-all text-sm font-medium">{backup.name}</p>
                     <p className="text-xs text-muted-foreground">{formatBytes(backup.size)} · {formatUnixTime(backup.created_at)}</p>
+                    {backup.note && <p className="mt-1 break-words text-xs text-foreground/80">备注：{backup.note}</p>}
                   </div>
                   <div className="flex flex-wrap gap-2">
                     <Button variant="outline" size="sm" onClick={() => void inspectBackup(backup)} disabled={busy}>
@@ -446,6 +469,8 @@ export default function AdminDatabaseMigrationPage() {
         </CardContent>
       </Card>
 
+      {migrationEnabled && (
+      <>
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]">
         <Card className="overflow-hidden">
           <CardHeader>
@@ -666,6 +691,8 @@ export default function AdminDatabaseMigrationPage() {
           )}
         </CardContent>
       </Card>
+      </>
+      )}
 
       <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <DialogContent className="max-w-lg">
@@ -710,6 +737,7 @@ export default function AdminDatabaseMigrationPage() {
               <div className="rounded-md border p-3 text-xs">
                 <div className="break-all font-medium">{backupPreview.backup.name}</div>
                 <div className="mt-1 text-muted-foreground">{formatBytes(backupPreview.backup.size)} · {formatUnixTime(backupPreview.backup.created_at)}</div>
+                {backupPreview.backup.note && <div className="mt-2 break-words">备注：{backupPreview.backup.note}</div>}
               </div>
               <div className="grid gap-2 sm:grid-cols-2">
                 {Object.entries(backupPreview.counts || {}).map(([key, value]) => (

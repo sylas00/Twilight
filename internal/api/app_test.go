@@ -3,6 +3,9 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"io"
+	"log"
+	"log/slog"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -455,6 +458,37 @@ func TestRuntimeLogsRequireAdminAndRedactSecrets(t *testing.T) {
 	}
 }
 
+func TestRuntimeLoggerAppliesLevelAndCapturesStdLog(t *testing.T) {
+	runtimeLogs = newRuntimeLogBuffer(20)
+	t.Cleanup(func() {
+		runtimeLogs = newRuntimeLogBuffer(5000)
+		InstallRuntimeLogger(io.Discard, slog.LevelInfo)
+	})
+
+	var out bytes.Buffer
+	InstallRuntimeLogger(&out, slog.LevelWarn)
+	ConfigureRuntimeLogging(slog.LevelWarn, 20)
+
+	slog.Info("runtime info should be filtered")
+	slog.Warn("runtime warn should be captured", "token", "secret-value")
+	log.Print("runtime standard log should be captured")
+
+	entries, _ := runtimeLogs.snapshot(20, 0)
+	joined := ""
+	for _, entry := range entries {
+		joined += entry.Level + ":" + entry.Message + "\n"
+	}
+	if strings.Contains(joined, "runtime info should be filtered") {
+		t.Fatalf("info log passed warn level filter: %s", joined)
+	}
+	if !strings.Contains(joined, "runtime warn should be captured") || !strings.Contains(joined, "runtime standard log should be captured") {
+		t.Fatalf("expected slog and std log entries, got: %s", joined)
+	}
+	if strings.Contains(out.String(), "secret-value") {
+		t.Fatalf("sensitive attribute leaked to runtime log output: %s", out.String())
+	}
+}
+
 func TestDemoEndpointsAreReadonlyAndValidateActions(t *testing.T) {
 	app := newTestApp(t)
 	media := doJSON(app, http.MethodGet, "/api/v1/demo/media/search?q=dune", ``, nil)
@@ -544,7 +578,7 @@ func TestDatabaseAdminBackupRestoreAndAuth(t *testing.T) {
 	if status.Code != http.StatusOK || !strings.Contains(status.Body.String(), `"legacy_sqlite_detected":true`) {
 		t.Fatalf("database status did not report legacy sqlite status=%d body=%s", status.Code, status.Body.String())
 	}
-	backup := doJSONWithHeaders(app, http.MethodPost, "/api/v1/system/admin/database/backup", `{}`, []*http.Cookie{adminCookie}, map[string]string{"X-Twilight-Client": "webui"})
+	backup := doJSONWithHeaders(app, http.MethodPost, "/api/v1/system/admin/database/backup", `{"note":"before restore test"}`, []*http.Cookie{adminCookie}, map[string]string{"X-Twilight-Client": "webui"})
 	if backup.Code != http.StatusOK {
 		t.Fatalf("backup status=%d body=%s", backup.Code, backup.Body.String())
 	}
@@ -557,9 +591,20 @@ func TestDatabaseAdminBackupRestoreAndAuth(t *testing.T) {
 	}
 	backupData := env.Data.(map[string]any)["backup"].(map[string]any)
 	backupName := backupData["name"].(string)
+	if backupData["note"] != "before restore test" {
+		t.Fatalf("backup note was not persisted: %#v", backupData["note"])
+	}
 	backupInspect := doJSONWithHeaders(app, http.MethodGet, "/api/v1/system/admin/database/backups/"+backupName, ``, []*http.Cookie{adminCookie}, nil)
-	if backupInspect.Code != http.StatusOK || !strings.Contains(backupInspect.Body.String(), `"counts"`) {
+	if backupInspect.Code != http.StatusOK || !strings.Contains(backupInspect.Body.String(), `"counts"`) || !strings.Contains(backupInspect.Body.String(), `"note":"before restore test"`) {
 		t.Fatalf("backup inspect status=%d body=%s", backupInspect.Code, backupInspect.Body.String())
+	}
+	backupList := doJSONWithHeaders(app, http.MethodGet, "/api/v1/system/admin/database/backups", ``, []*http.Cookie{adminCookie}, nil)
+	if backupList.Code != http.StatusOK || strings.Contains(backupList.Body.String(), backupName+".meta.json") {
+		t.Fatalf("backup list exposed metadata file status=%d body=%s", backupList.Code, backupList.Body.String())
+	}
+	backupMetaInspect := doJSONWithHeaders(app, http.MethodGet, "/api/v1/system/admin/database/backups/"+backupName+".meta.json", ``, []*http.Cookie{adminCookie}, nil)
+	if backupMetaInspect.Code != http.StatusBadRequest {
+		t.Fatalf("backup metadata inspect status=%d body=%s", backupMetaInspect.Code, backupMetaInspect.Body.String())
 	}
 
 	_ = doJSON(app, http.MethodPost, "/api/v1/users/register", `{"username":"extra","password":"extra123456"}`, nil)
@@ -587,6 +632,11 @@ func TestDatabaseAdminBackupRestoreAndAuth(t *testing.T) {
 	if traversal.Code != http.StatusBadRequest {
 		t.Fatalf("restore traversal status=%d body=%s", traversal.Code, traversal.Body.String())
 	}
+	migrateDisabled := doJSONWithHeaders(app, http.MethodPost, "/api/v1/system/admin/database/migrate", `{"target_driver":"json","dry_run":true}`, []*http.Cookie{adminCookie}, map[string]string{"X-Twilight-Client": "webui"})
+	if migrateDisabled.Code != http.StatusForbidden {
+		t.Fatalf("migrate disabled status=%d body=%s", migrateDisabled.Code, migrateDisabled.Body.String())
+	}
+	app.cfg.DatabaseMigrationPanelEnabled = true
 	migrate := doJSONWithHeaders(app, http.MethodPost, "/api/v1/system/admin/database/migrate", `{"target_driver":"json","dry_run":true}`, []*http.Cookie{adminCookie}, map[string]string{"X-Twilight-Client": "webui"})
 	if migrate.Code != http.StatusOK || !strings.Contains(migrate.Body.String(), `"dry_run":true`) {
 		t.Fatalf("migrate dry-run status=%d body=%s", migrate.Code, migrate.Body.String())

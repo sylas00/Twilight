@@ -414,6 +414,7 @@ func configSectionDefs() []configSectionDef {
 			{Key: "driver", Label: "存储后端", Type: "select", Description: "可视化配置仅提供 PostgreSQL 与 Go JSON；旧 SQLite 仅作为手动迁移源，不作为前端可选运行后端", Options: selectDriver},
 			{Key: "state_file", Label: "JSON 状态文件", Type: "string", Description: "Go JSON 状态文件路径，留空使用数据目录下 twilight_go_state.json"},
 			{Key: "backup_dir", Label: "备份目录", Type: "string", Description: "数据库快照备份目录"},
+			{Key: "migration_panel_enabled", Label: "启用数据库迁移", Type: "bool", Description: "默认关闭；开启后显示数据库迁移面板并允许管理员调用迁移 API"},
 			{Key: "url", Label: "PostgreSQL URL", Type: "secret", Description: "完整 postgres:// 连接串，优先级高于分项配置"},
 			{Key: "postgres_host", Label: "PG 主机", Type: "string", Description: "PostgreSQL 主机"},
 			{Key: "postgres_port", Label: "PG 端口", Type: "int", Description: "PostgreSQL 端口"},
@@ -530,7 +531,7 @@ func configValues(cfg config.Config) map[string]map[string]any {
 			"tmdb_api_key": cfg.TMDBAPIKey, "tmdb_api_url": cfg.TMDBAPIURL, "tmdb_image_url": cfg.TMDBImageURL, "bangumi_token": cfg.BangumiToken, "bangumi_api_url": cfg.BangumiAPIURL,
 		},
 		"Database": {
-			"driver": cfg.DatabaseDriver, "state_file": cfg.StateFile, "url": cfg.DatabaseURL, "backup_dir": cfg.DatabaseBackupDir, "postgres_host": cfg.PostgresHost, "postgres_port": cfg.PostgresPort,
+			"driver": cfg.DatabaseDriver, "state_file": cfg.StateFile, "url": cfg.DatabaseURL, "backup_dir": cfg.DatabaseBackupDir, "migration_panel_enabled": cfg.DatabaseMigrationPanelEnabled, "postgres_host": cfg.PostgresHost, "postgres_port": cfg.PostgresPort,
 			"postgres_user": cfg.PostgresUser, "postgres_password": cfg.PostgresPassword, "postgres_database": cfg.PostgresDatabase, "postgres_sslmode": cfg.PostgresSSLMode,
 			"postgres_max_open_conns": cfg.PostgresMaxOpenConns, "postgres_max_idle_conns": cfg.PostgresMaxIdleConns,
 		},

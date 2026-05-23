@@ -33,7 +33,6 @@ import {
   GitPullRequest,
   Database,
   Archive,
-  UploadCloud,
   Trash2,
 } from "lucide-react";
 import {
@@ -79,10 +78,6 @@ import type {
   ConfigSection,
   ConfigField,
   ConfigCategory,
-  DatabaseBackup,
-  DatabaseStatus,
-  DatabaseMigrationResult,
-  DatabaseRestoreResult,
   ConfigBackup,
   ConfigBackupView,
   ConfigRestoreResult,
@@ -102,8 +97,6 @@ const MIXED_ID_LIST_FIELD_KEYS = new Set([
   "channel_id",
 ]);
 
-const DATABASE_RESTORE_CONFIRM = "RESTORE_DATABASE_BACKUP";
-const DATABASE_MIGRATE_CONFIRM = "MIGRATE_DATABASE";
 const CONFIG_RESTORE_CONFIRM = "RESTORE_CONFIG_BACKUP";
 
 function toEditorList(value: unknown): string[] {
@@ -738,16 +731,6 @@ export default function AdminConfigPage() {
   const [updateRestartServices, setUpdateRestartServices] = useState(true);
   const [isUpdating, setIsUpdating] = useState(false);
   const [updateOutput, setUpdateOutput] = useState<string[]>([]);
-  const [dbStatus, setDbStatus] = useState<DatabaseStatus | null>(null);
-  const [dbBackups, setDbBackups] = useState<DatabaseBackup[]>([]);
-  const [isLoadingDatabase, setIsLoadingDatabase] = useState(false);
-  const [isDatabaseBusy, setIsDatabaseBusy] = useState(false);
-  const [migrationSource, setMigrationSource] = useState<"current" | "sqlite">("current");
-  const [migrationTarget, setMigrationTarget] = useState<"json" | "postgres">("postgres");
-  const [migrationResult, setMigrationResult] = useState<DatabaseMigrationResult | null>(null);
-  const [restorePreview, setRestorePreview] = useState<DatabaseRestoreResult | null>(null);
-  const [showRestoreDialog, setShowRestoreDialog] = useState(false);
-  const [showMigrationDialog, setShowMigrationDialog] = useState(false);
   const [configBackups, setConfigBackups] = useState<ConfigBackup[]>([]);
   const [isLoadingConfigBackups, setIsLoadingConfigBackups] = useState(false);
   const [isConfigBackupBusy, setIsConfigBackupBusy] = useState(false);
@@ -831,13 +814,6 @@ export default function AdminConfigPage() {
   useEffect(() => {
     setHasChanges(configContent !== originalContent);
   }, [configContent, originalContent]);
-
-  useEffect(() => {
-    if (migrationSource === "sqlite" && dbStatus && !dbStatus.legacy_sqlite_detected) {
-      setMigrationSource("current");
-      setMigrationResult(null);
-    }
-  }, [dbStatus, migrationSource]);
 
   useEffect(() => {
     return () => {
@@ -975,6 +951,10 @@ export default function AdminConfigPage() {
       const res = await api.updateConfigBySchema(sectionsPayload);
       if (res.success) {
         setOriginalValues(JSON.parse(JSON.stringify(editedValues)));
+        await loadSchema();
+        if (configContent) {
+          await loadConfig();
+        }
         toast({
           title: "保存成功",
           description: "配置已热重载，调度器会自动刷新任务",
@@ -1011,6 +991,7 @@ export default function AdminConfigPage() {
       if (res.success) {
         setOriginalContent(configContent);
         setHasChanges(false);
+        await loadSchema();
         toast({
           title: "保存成功",
           description: "配置已热重载，调度器会自动刷新任务",
@@ -1033,30 +1014,6 @@ export default function AdminConfigPage() {
       setIsSaving(false);
     }
   };
-
-  const loadDatabase = useCallback(async () => {
-    setIsLoadingDatabase(true);
-    try {
-      const [statusRes, backupsRes] = await Promise.all([
-        api.getDatabaseStatus(),
-        api.listDatabaseBackups(),
-      ]);
-      if (statusRes.success && statusRes.data) {
-        setDbStatus(statusRes.data);
-      }
-      if (backupsRes.success && backupsRes.data) {
-        setDbBackups(backupsRes.data.backups || []);
-      }
-    } catch (error: any) {
-      toast({
-        title: "加载数据库状态失败",
-        description: error.message || "请检查后端连接",
-        variant: "destructive",
-      });
-    } finally {
-      setIsLoadingDatabase(false);
-    }
-  }, [toast]);
 
   const loadConfigBackups = useCallback(async () => {
     setIsLoadingConfigBackups(true);
@@ -1182,136 +1139,6 @@ export default function AdminConfigPage() {
     }
   };
 
-  const handleCreateBackup = async () => {
-    setIsDatabaseBusy(true);
-    try {
-      const res = await api.createDatabaseBackup();
-      if (res.success) {
-        toast({
-          title: "备份已创建",
-          description: res.data?.legacy_sqlite_backup
-            ? `已同时备份旧 SQLite：${res.data.legacy_sqlite_backup.file_count} 个文件`
-            : undefined,
-          variant: "success",
-        });
-        await loadDatabase();
-      } else {
-        toast({ title: "备份失败", description: res.message, variant: "destructive" });
-      }
-    } catch (error: any) {
-      toast({ title: "备份失败", description: error.message, variant: "destructive" });
-    } finally {
-      setIsDatabaseBusy(false);
-    }
-  };
-
-  const handleRestoreBackup = async (backup: DatabaseBackup) => {
-    setIsDatabaseBusy(true);
-    setRestorePreview(null);
-    try {
-      const res = await api.previewDatabaseRestore(backup.name);
-      if (res.success) {
-        setRestorePreview(res.data || null);
-        setShowRestoreDialog(true);
-      } else {
-        toast({ title: "恢复预览失败", description: res.message, variant: "destructive" });
-      }
-    } catch (error: any) {
-      toast({ title: "恢复预览失败", description: error.message, variant: "destructive" });
-    } finally {
-      setIsDatabaseBusy(false);
-    }
-  };
-
-  const handleConfirmRestoreBackup = async () => {
-    if (!restorePreview?.restored) return;
-    setIsDatabaseBusy(true);
-    try {
-      const res = await api.restoreDatabaseBackup(restorePreview.restored, {
-        confirm: restorePreview.confirm || DATABASE_RESTORE_CONFIRM,
-      });
-      if (res.success) {
-        setRestorePreview(res.data || restorePreview);
-        setShowRestoreDialog(false);
-        toast({
-          title: "恢复完成",
-          description: res.data?.pre_operation_backup
-            ? `已创建保护性备份 ${res.data.pre_operation_backup.name}`
-            : "恢复前已创建保护性备份",
-          variant: "success",
-        });
-        await loadDatabase();
-      } else {
-        toast({ title: "恢复失败", description: res.message, variant: "destructive" });
-      }
-    } catch (error: any) {
-      toast({ title: "恢复失败", description: error.message, variant: "destructive" });
-    } finally {
-      setIsDatabaseBusy(false);
-    }
-  };
-
-  const handleDatabaseMigrate = async (dryRun: boolean) => {
-    setIsDatabaseBusy(true);
-    setMigrationResult(null);
-    try {
-      const res = await api.migrateDatabase({
-        source_driver: migrationSource === "sqlite" ? "sqlite" : undefined,
-        target_driver: migrationTarget,
-        dry_run: true,
-      });
-      if (res.success && res.data) {
-        setMigrationResult(res.data);
-        if (dryRun) {
-          const source = res.data.source_driver === "sqlite" ? "旧 SQLite" : "当前 Go 状态";
-          toast({
-            title: "迁移预检通过",
-            description: `${source}: ${res.data.users} 用户，${res.data.regcodes} 卡码，${res.data.invite_codes} 邀请码`,
-            variant: "success",
-          });
-        } else {
-          setShowMigrationDialog(true);
-        }
-      } else {
-        toast({ title: "迁移预检失败", description: res.message, variant: "destructive" });
-      }
-    } catch (error: any) {
-      toast({ title: "迁移预检失败", description: error.message, variant: "destructive" });
-    } finally {
-      setIsDatabaseBusy(false);
-    }
-  };
-
-  const handleConfirmDatabaseMigrate = async () => {
-    setIsDatabaseBusy(true);
-    try {
-      const res = await api.migrateDatabase({
-        source_driver: migrationSource === "sqlite" ? "sqlite" : undefined,
-        target_driver: migrationTarget,
-        dry_run: false,
-        confirm: migrationResult?.confirm || DATABASE_MIGRATE_CONFIRM,
-      });
-      if (res.success && res.data) {
-        setMigrationResult(res.data);
-        setShowMigrationDialog(false);
-        toast({
-          title: "迁移完成",
-          description: res.data.pre_operation_backup
-            ? `已创建保护性备份 ${res.data.pre_operation_backup.name}${res.data.legacy_sqlite_backup ? "，并备份旧 SQLite" : ""}`
-            : `${res.data.users} 用户，${res.data.regcodes} 卡码，${res.data.invite_codes} 邀请码`,
-          variant: "success",
-        });
-        await loadDatabase();
-      } else {
-        toast({ title: "迁移失败", description: res.message, variant: "destructive" });
-      }
-    } catch (error: any) {
-      toast({ title: "迁移失败", description: error.message, variant: "destructive" });
-    } finally {
-      setIsDatabaseBusy(false);
-    }
-  };
-
   const handleGitUpdate = async (dryRun = false) => {
     setIsUpdating(true);
     setUpdateOutput([]);
@@ -1397,9 +1224,6 @@ export default function AdminConfigPage() {
             if (v === "toml" && !configContent) {
               void loadConfig();
             }
-            if (v === "database" && !dbStatus) {
-              void loadDatabase();
-            }
             if (v === "config-backups" && configBackups.length === 0) {
               void loadConfigBackups();
             }
@@ -1414,10 +1238,6 @@ export default function AdminConfigPage() {
               <TabsTrigger value="toml" className="min-w-0 gap-1.5 px-2 sm:px-4">
                 <FileText className="h-4 w-4" />
                 源文件编辑
-              </TabsTrigger>
-              <TabsTrigger value="database" className="min-w-0 gap-1.5 px-2 sm:px-4">
-                <Database className="h-4 w-4" />
-                数据库
               </TabsTrigger>
               <TabsTrigger value="config-backups" className="min-w-0 gap-1.5 px-2 sm:px-4">
                 <Archive className="h-4 w-4" />
@@ -1810,255 +1630,6 @@ export default function AdminConfigPage() {
             </div>
           </TabsContent>
 
-          <TabsContent value="database" className="mt-4">
-            <div className="space-y-4">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <h2 className="text-lg font-semibold flex items-center gap-2">
-                    <Database className="h-5 w-5" />
-                    数据库管理
-                  </h2>
-                  <p className="text-sm text-muted-foreground">
-                    备份、恢复和迁移 Go 状态；检测到旧 SQLite 时可直接预览并导入到 JSON 或 PostgreSQL。
-                  </p>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <a
-                    href="/admin/database"
-                    className="inline-flex h-9 items-center justify-center rounded-md border border-input bg-background px-3 text-sm font-medium hover:bg-accent hover:text-accent-foreground"
-                  >
-                    打开独立迁移页
-                  </a>
-                  <Button variant="outline" size="sm" onClick={() => void loadDatabase()} disabled={isLoadingDatabase}>
-                    {isLoadingDatabase ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RotateCcw className="mr-2 h-4 w-4" />}
-                    刷新
-                  </Button>
-                </div>
-              </div>
-
-              <div className="grid gap-3 md:grid-cols-4">
-                <Card>
-                  <CardContent className="p-4">
-                    <p className="text-xs text-muted-foreground">当前后端</p>
-                    <p className="mt-1 text-xl font-semibold">{dbStatus?.active_driver || "-"}</p>
-                  </CardContent>
-                </Card>
-                <Card>
-                  <CardContent className="p-4">
-                    <p className="text-xs text-muted-foreground">配置后端</p>
-                    <p className="mt-1 text-xl font-semibold">{dbStatus?.configured_driver || "-"}</p>
-                  </CardContent>
-                </Card>
-                <Card>
-                  <CardContent className="p-4">
-                    <p className="text-xs text-muted-foreground">用户数</p>
-                    <p className="mt-1 text-xl font-semibold">{dbStatus?.user_count ?? "-"}</p>
-                  </CardContent>
-                </Card>
-                <Card>
-                  <CardContent className="p-4">
-                    <p className="text-xs text-muted-foreground">备份数</p>
-                    <p className="mt-1 text-xl font-semibold">{dbStatus?.backup_count ?? dbBackups.length}</p>
-                  </CardContent>
-                </Card>
-              </div>
-
-              {dbStatus && (
-                <Alert>
-                  <Info className="h-4 w-4" />
-                  <AlertTitle>运行状态</AlertTitle>
-                  <AlertDescription>
-                    状态文件：{dbStatus.state_file}；备份目录：{dbStatus.backup_dir}；PostgreSQL {dbStatus.postgres_configured ? "已配置" : "未配置"}。
-                    切换存储后端需要先迁移数据，然后重启后端进程使新 driver 生效。
-                  </AlertDescription>
-                </Alert>
-              )}
-
-              {dbStatus?.legacy_sqlite_detected && dbStatus.legacy_sqlite && (
-                <Alert className="border-amber-500/40 bg-amber-500/10">
-                  <AlertTriangle className="h-4 w-4" />
-                  <AlertTitle>检测到旧 SQLite 数据库</AlertTitle>
-                  <AlertDescription className="space-y-2">
-                    <p>
-                      目录 {dbStatus.legacy_sqlite.database_dir} 中有 {dbStatus.legacy_sqlite.file_count} 个旧 SQLite/WAL 文件，
-                      合计 {formatBytes(dbStatus.legacy_sqlite.total_size)}。
-                      {dbStatus.legacy_sqlite.active_admin_count ? ` 可读取 active 管理员 ${dbStatus.legacy_sqlite.active_admin_count} 个。` : ""}
-                    </p>
-                    {dbStatus.legacy_sqlite.table_counts && (
-                      <p className="break-words text-xs">
-                        已识别表：{Object.keys(dbStatus.legacy_sqlite.table_counts).slice(0, 12).join("、")}
-                        {Object.keys(dbStatus.legacy_sqlite.table_counts).length > 12 ? " 等" : ""}
-                      </p>
-                    )}
-                    {dbStatus.legacy_sqlite.warnings?.length ? (
-                      <p className="text-xs text-amber-700 dark:text-amber-300">
-                        {dbStatus.legacy_sqlite.warnings.join("；")}
-                      </p>
-                    ) : null}
-                  </AlertDescription>
-                </Alert>
-              )}
-
-              <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
-                <Card>
-                  <CardHeader>
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <CardTitle className="flex items-center gap-2">
-                          <Archive className="h-5 w-5" />
-                          备份
-                        </CardTitle>
-                        <CardDescription>恢复必须先预览并二次确认，执行前会自动生成保护性备份。</CardDescription>
-                      </div>
-                      <Button onClick={handleCreateBackup} disabled={isDatabaseBusy}>
-                        {isDatabaseBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Archive className="mr-2 h-4 w-4" />}
-                        创建备份
-                      </Button>
-                    </div>
-                  </CardHeader>
-                  <CardContent>
-                    {dbBackups.length === 0 ? (
-                      <div className="rounded-md border border-dashed p-8 text-center text-sm text-muted-foreground">
-                        暂无备份
-                      </div>
-                    ) : (
-                      <div className="divide-y rounded-md border">
-                        {dbBackups.map((backup) => (
-                          <div key={backup.name} className="flex items-center justify-between gap-3 px-3 py-2">
-                            <div className="min-w-0">
-                              <p className="truncate text-sm font-medium">{backup.name}</p>
-                              <p className="text-xs text-muted-foreground">
-                                {formatBytes(backup.size)} · {formatUnixTime(backup.created_at)}
-                              </p>
-                            </div>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => void handleRestoreBackup(backup)}
-                              disabled={isDatabaseBusy}
-                            >
-                              预览恢复
-                            </Button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-
-                <Card>
-                  <CardHeader>
-                    <CardTitle className="flex items-center gap-2">
-                      <UploadCloud className="h-5 w-5" />
-                      迁移
-                    </CardTitle>
-                    <CardDescription>预检会先构造目标快照；执行前会自动备份当前状态和旧 SQLite 文件。</CardDescription>
-                  </CardHeader>
-                  <CardContent className="space-y-4">
-                    <div className="space-y-2">
-                      <p className="text-xs font-medium text-muted-foreground">来源</p>
-                      <div className="grid grid-cols-2 gap-2">
-                        <Button
-                          variant={migrationSource === "current" ? "default" : "outline"}
-                          onClick={() => {
-                            setMigrationSource("current");
-                            setMigrationResult(null);
-                          }}
-                        >
-                          当前 Go 状态
-                        </Button>
-                        <Button
-                          variant={migrationSource === "sqlite" ? "default" : "outline"}
-                          disabled={!dbStatus?.legacy_sqlite_detected}
-                          onClick={() => {
-                            setMigrationSource("sqlite");
-                            setMigrationResult(null);
-                          }}
-                        >
-                          旧 SQLite
-                        </Button>
-                      </div>
-                    </div>
-                    <div className="space-y-2">
-                      <p className="text-xs font-medium text-muted-foreground">目标</p>
-                    <div className="grid grid-cols-2 gap-2">
-                      <Button
-                        variant={migrationTarget === "postgres" ? "default" : "outline"}
-                        onClick={() => {
-                          setMigrationTarget("postgres");
-                          setMigrationResult(null);
-                        }}
-                      >
-                        PostgreSQL
-                      </Button>
-                      <Button
-                        variant={migrationTarget === "json" ? "default" : "outline"}
-                        onClick={() => {
-                          setMigrationTarget("json");
-                          setMigrationResult(null);
-                        }}
-                      >
-                        JSON
-                      </Button>
-                    </div>
-                    </div>
-                    <div className="flex gap-2">
-                      <Button variant="outline" className="flex-1" onClick={() => void handleDatabaseMigrate(true)} disabled={isDatabaseBusy}>
-                        预检
-                      </Button>
-                      <Button className="flex-1" onClick={() => void handleDatabaseMigrate(false)} disabled={isDatabaseBusy}>
-                        {isDatabaseBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                        预览并执行
-                      </Button>
-                    </div>
-                    {migrationResult && (
-                      <div className="rounded-md border bg-muted/40 p-3 text-xs space-y-1">
-                        <div className="flex justify-between"><span>来源</span><strong>{migrationResult.source_driver || "-"}</strong></div>
-                        <div className="flex justify-between"><span>目标</span><strong>{migrationResult.target_driver}</strong></div>
-                        <div className="flex justify-between"><span>快照</span><strong>{formatBytes(migrationResult.snapshot_bytes || 0)}</strong></div>
-                        <div className="flex justify-between"><span>用户</span><strong>{migrationResult.users}</strong></div>
-                        <div className="flex justify-between"><span>卡码</span><strong>{migrationResult.regcodes}</strong></div>
-                        <div className="flex justify-between"><span>邀请</span><strong>{migrationResult.invite_codes}</strong></div>
-                        <div className="flex justify-between"><span>求片</span><strong>{migrationResult.media_requests}</strong></div>
-                        {migrationResult.legacy_sqlite_import && (
-                          <>
-                            <div className="flex justify-between"><span>映射表</span><strong>{migrationResult.legacy_sqlite_import.mapped_tables?.length ?? 0}</strong></div>
-                            <div className="flex justify-between"><span>跳过表</span><strong>{migrationResult.legacy_sqlite_import.skipped_tables?.length ?? 0}</strong></div>
-                            {migrationResult.legacy_sqlite_import.skipped_tables?.length ? (
-                              <div className="pt-2 text-muted-foreground break-words">
-                                未映射：{migrationResult.legacy_sqlite_import.skipped_tables.join("、")}
-                              </div>
-                            ) : null}
-                          </>
-                        )}
-                        {migrationResult.target_ready && (
-                          <div className="pt-2 text-muted-foreground">
-                            目标状态：{JSON.stringify(migrationResult.target_ready)}
-                          </div>
-                        )}
-                        {migrationResult.warnings && migrationResult.warnings.length > 0 && (
-                          <div className="pt-2 text-amber-600 dark:text-amber-400">
-                            {migrationResult.warnings.join("；")}
-                          </div>
-                        )}
-                        {migrationResult.pre_operation_backup && (
-                          <div className="pt-2 text-emerald-600 dark:text-emerald-400">
-                            保护性备份：{migrationResult.pre_operation_backup.name}
-                          </div>
-                        )}
-                        {migrationResult.legacy_sqlite_backup && (
-                          <div className="pt-2 text-emerald-600 dark:text-emerald-400">
-                            旧 SQLite 备份：{migrationResult.legacy_sqlite_backup.name}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-              </div>
-            </div>
-          </TabsContent>
-
           <TabsContent value="update" className="mt-4">
             <Card>
               <CardHeader>
@@ -2205,128 +1776,6 @@ export default function AdminConfigPage() {
           </DialogContent>
         </Dialog>
 
-        <Dialog open={showRestoreDialog} onOpenChange={setShowRestoreDialog}>
-          <DialogContent className="max-w-lg">
-            <DialogHeader>
-              <DialogTitle>确认恢复数据库备份</DialogTitle>
-              <DialogDescription>
-                后端已完成备份预览。确认后会先备份当前数据库，再用目标备份替换当前状态。
-              </DialogDescription>
-            </DialogHeader>
-            {restorePreview && (
-              <div className="space-y-3 text-sm">
-                <Alert>
-                  <AlertTriangle className="h-4 w-4" />
-                  <AlertTitle>高风险操作</AlertTitle>
-                  <AlertDescription>
-                    恢复会覆盖当前数据库状态。保护性备份会在恢复前自动创建，失败时不会继续写入。
-                  </AlertDescription>
-                </Alert>
-                <div className="grid gap-2 rounded-md border p-3 text-xs">
-                  <div className="flex justify-between gap-3">
-                    <span className="text-muted-foreground">目标备份</span>
-                    <strong className="break-all text-right">{restorePreview.restored}</strong>
-                  </div>
-                  <div className="flex justify-between gap-3">
-                    <span className="text-muted-foreground">备份大小</span>
-                    <strong>{formatBytes(restorePreview.backup?.size || restorePreview.target_snapshot_bytes || 0)}</strong>
-                  </div>
-                  <div className="flex justify-between gap-3">
-                    <span className="text-muted-foreground">当前用户数</span>
-                    <strong>{restorePreview.current_counts?.users ?? "-"}</strong>
-                  </div>
-                  <div className="flex justify-between gap-3">
-                    <span className="text-muted-foreground">恢复后用户数</span>
-                    <strong>{restorePreview.counts?.users ?? restorePreview.users}</strong>
-                  </div>
-                  <div className="flex justify-between gap-3">
-                    <span className="text-muted-foreground">卡码 / 邀请码</span>
-                    <strong>{restorePreview.regcodes} / {restorePreview.invite_codes}</strong>
-                  </div>
-                </div>
-                {restorePreview.warnings && restorePreview.warnings.length > 0 && (
-                  <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-200">
-                    {restorePreview.warnings.join("；")}
-                  </div>
-                )}
-              </div>
-            )}
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setShowRestoreDialog(false)} disabled={isDatabaseBusy}>
-                取消
-              </Button>
-              <Button onClick={() => void handleConfirmRestoreBackup()} disabled={isDatabaseBusy || !restorePreview}>
-                {isDatabaseBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Archive className="mr-2 h-4 w-4" />}
-                确认恢复
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-
-        <Dialog open={showMigrationDialog} onOpenChange={setShowMigrationDialog}>
-          <DialogContent className="max-w-lg">
-            <DialogHeader>
-              <DialogTitle>确认执行数据库迁移</DialogTitle>
-              <DialogDescription>
-                后端已完成迁移预检。确认后会先备份当前数据库，再把快照写入目标后端。
-              </DialogDescription>
-            </DialogHeader>
-            {migrationResult && (
-              <div className="space-y-3 text-sm">
-                <Alert>
-                  <Info className="h-4 w-4" />
-                  <AlertTitle>迁移预览</AlertTitle>
-                  <AlertDescription>
-                    迁移只写入目标后端；如需切换运行后端，请保存 Database.driver 配置并重启服务。
-                  </AlertDescription>
-                </Alert>
-                <div className="grid gap-2 rounded-md border p-3 text-xs">
-                  <div className="flex justify-between gap-3">
-                    <span className="text-muted-foreground">来源</span>
-                    <strong>{migrationResult.source_driver || "-"}</strong>
-                  </div>
-                  <div className="flex justify-between gap-3">
-                    <span className="text-muted-foreground">目标</span>
-                    <strong>{migrationResult.target_driver}</strong>
-                  </div>
-                  <div className="flex justify-between gap-3">
-                    <span className="text-muted-foreground">快照大小</span>
-                    <strong>{formatBytes(migrationResult.snapshot_bytes || 0)}</strong>
-                  </div>
-                  <div className="flex justify-between gap-3">
-                    <span className="text-muted-foreground">用户 / 卡码 / 邀请码</span>
-                    <strong>{migrationResult.users} / {migrationResult.regcodes} / {migrationResult.invite_codes}</strong>
-                  </div>
-                  <div className="flex justify-between gap-3">
-                    <span className="text-muted-foreground">求片 / 公告</span>
-                    <strong>{migrationResult.media_requests} / {migrationResult.announcements}</strong>
-                  </div>
-                  {migrationResult.target_ready && (
-                    <div className="break-all pt-1 text-muted-foreground">
-                      目标状态：{JSON.stringify(migrationResult.target_ready)}
-                    </div>
-                  )}
-                </div>
-                {migrationResult.warnings && migrationResult.warnings.length > 0 && (
-                  <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-200">
-                    {migrationResult.warnings.join("；")}
-                  </div>
-                )}
-              </div>
-            )}
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setShowMigrationDialog(false)} disabled={isDatabaseBusy}>
-                取消
-              </Button>
-              <Button onClick={() => void handleConfirmDatabaseMigrate()} disabled={isDatabaseBusy || !migrationResult}>
-                {isDatabaseBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <UploadCloud className="mr-2 h-4 w-4" />}
-                确认迁移
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-
-        {/* 保存确认对话框 */}
         <Dialog open={showSaveDialog} onOpenChange={setShowSaveDialog}>
           <DialogContent>
             <DialogHeader>

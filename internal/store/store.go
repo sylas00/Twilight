@@ -46,6 +46,7 @@ type BackupInfo struct {
 	Path      string `json:"path"`
 	Size      int64  `json:"size"`
 	CreatedAt int64  `json:"created_at"`
+	Note      string `json:"note,omitempty"`
 }
 
 type PostgresTargetStatus struct {
@@ -789,6 +790,10 @@ func (s *Store) LoadSnapshot(data []byte) error {
 }
 
 func (s *Store) Backup(dir string) (BackupInfo, error) {
+	return s.BackupWithNote(dir, "")
+}
+
+func (s *Store) BackupWithNote(dir, note string) (BackupInfo, error) {
 	if strings.TrimSpace(dir) == "" {
 		dir = filepath.Join("db", "backups")
 	}
@@ -813,7 +818,13 @@ func (s *Store) Backup(dir string) (BackupInfo, error) {
 	if err := file.Close(); err != nil {
 		return BackupInfo{}, err
 	}
-	return BackupInfo{Name: name, Path: path, Size: int64(len(data)), CreatedAt: now.Unix()}, nil
+	info := BackupInfo{Name: name, Path: path, Size: int64(len(data)), CreatedAt: now.Unix(), Note: normalizeBackupNote(note)}
+	if info.Note != "" {
+		if err := writeBackupNote(path, info.Note); err != nil {
+			return BackupInfo{}, err
+		}
+	}
+	return info, nil
 }
 
 func (s *Store) RestoreFrom(path string) error {
@@ -837,7 +848,8 @@ func ListBackups(dir string) ([]BackupInfo, error) {
 	}
 	backups := make([]BackupInfo, 0, len(entries))
 	for _, entry := range entries {
-		if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 || !strings.HasSuffix(strings.ToLower(entry.Name()), ".json") {
+		lowerName := strings.ToLower(entry.Name())
+		if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 || !strings.HasSuffix(lowerName, ".json") || strings.HasSuffix(lowerName, ".meta.json") {
 			continue
 		}
 		info, err := entry.Info()
@@ -852,10 +864,59 @@ func ListBackups(dir string) ([]BackupInfo, error) {
 			Path:      filepath.Join(dir, entry.Name()),
 			Size:      info.Size(),
 			CreatedAt: info.ModTime().Unix(),
+			Note:      ReadBackupNote(filepath.Join(dir, entry.Name())),
 		})
 	}
 	sort.Slice(backups, func(i, j int) bool { return backups[i].CreatedAt > backups[j].CreatedAt })
 	return backups, nil
+}
+
+func BackupMetaPath(path string) string {
+	return path + ".meta.json"
+}
+
+func ReadBackupNote(path string) string {
+	data, err := os.ReadFile(BackupMetaPath(path))
+	if err != nil {
+		return ""
+	}
+	var meta struct {
+		Note string `json:"note"`
+	}
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return ""
+	}
+	return normalizeBackupNote(meta.Note)
+}
+
+func writeBackupNote(path, note string) error {
+	note = normalizeBackupNote(note)
+	if note == "" {
+		_ = os.Remove(BackupMetaPath(path))
+		return nil
+	}
+	meta := struct {
+		Note string `json:"note"`
+	}{Note: note}
+	data, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(BackupMetaPath(path), data, 0o600)
+}
+
+func normalizeBackupNote(note string) string {
+	note = strings.TrimSpace(note)
+	if note == "" {
+		return ""
+	}
+	note = strings.Join(strings.Fields(note), " ")
+	const maxRunes = 200
+	runes := []rune(note)
+	if len(runes) > maxRunes {
+		note = string(runes[:maxRunes])
+	}
+	return note
 }
 
 func ResolveBackupPath(dir, name string) (string, error) {
@@ -869,7 +930,8 @@ func ResolveBackupPath(dir, name string) (string, error) {
 	if filepath.IsAbs(name) {
 		return "", ErrNotFound
 	}
-	if filepath.Base(name) != name || strings.Contains(name, "..") || !strings.HasSuffix(strings.ToLower(name), ".json") {
+	lowerName := strings.ToLower(name)
+	if filepath.Base(name) != name || strings.Contains(name, "..") || !strings.HasSuffix(lowerName, ".json") || strings.HasSuffix(lowerName, ".meta.json") {
 		return "", ErrNotFound
 	}
 	base, err := filepath.Abs(dir)

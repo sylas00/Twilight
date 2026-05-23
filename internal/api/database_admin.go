@@ -33,14 +33,15 @@ func (a *App) handleDatabaseStatus(w http.ResponseWriter, r *http.Request, _ Par
 			{"driver": "json", "label": "gojson", "role": "runtime"},
 			{"driver": "sqlite", "label": "sqlite3", "role": "manual_import_only"},
 		},
-		"state_file":             a.cfg.StateFile,
-		"backup_dir":             a.cfg.DatabaseBackupDir,
-		"backup_count":           len(backups),
-		"postgres_configured":    a.cfg.PostgresDSN() != "",
-		"redis_enabled":          a.redis != nil,
-		"user_count":             a.store.UserCount(),
-		"legacy_sqlite_detected": legacySQLite.Detected,
-		"legacy_sqlite":          legacySQLite,
+		"state_file":              a.cfg.StateFile,
+		"backup_dir":              a.cfg.DatabaseBackupDir,
+		"backup_count":            len(backups),
+		"migration_panel_enabled": a.cfg.DatabaseMigrationPanelEnabled,
+		"postgres_configured":     a.cfg.PostgresDSN() != "",
+		"redis_enabled":           a.redis != nil,
+		"user_count":              a.store.UserCount(),
+		"legacy_sqlite_detected":  legacySQLite.Detected,
+		"legacy_sqlite":           legacySQLite,
 	})
 }
 
@@ -119,11 +120,14 @@ func (a *App) handleDatabaseBackupDelete(w http.ResponseWriter, r *http.Request,
 		fail(w, http.StatusInternalServerError, "删除数据库备份失败")
 		return
 	}
+	_ = os.Remove(store.BackupMetaPath(target))
 	ok(w, "数据库备份已删除", map[string]any{"backup": info})
 }
 
 func (a *App) handleDatabaseBackup(w http.ResponseWriter, r *http.Request, _ Params) {
-	info, err := a.store.Backup(a.cfg.DatabaseBackupDir)
+	payload := decodeMap(r)
+	note := firstNonEmpty(stringValue(payload, "note"), stringValue(payload, "remark"))
+	info, err := a.store.BackupWithNote(a.cfg.DatabaseBackupDir, note)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "数据库备份失败")
 		return
@@ -205,7 +209,7 @@ func (a *App) handleDatabaseRestore(w http.ResponseWriter, r *http.Request, _ Pa
 		return
 	}
 
-	preRestore, backupErr := a.store.Backup(a.cfg.DatabaseBackupDir)
+	preRestore, backupErr := a.store.BackupWithNote(a.cfg.DatabaseBackupDir, "数据库恢复前保护性备份")
 	if backupErr != nil {
 		fail(w, http.StatusInternalServerError, "恢复前备份失败")
 		return
@@ -222,6 +226,10 @@ func (a *App) handleDatabaseRestore(w http.ResponseWriter, r *http.Request, _ Pa
 }
 
 func (a *App) handleDatabaseMigrate(w http.ResponseWriter, r *http.Request, _ Params) {
+	if !a.cfg.DatabaseMigrationPanelEnabled {
+		fail(w, http.StatusForbidden, "数据库迁移功能未开启，请先在配置文件中启用 Database.migration_panel_enabled")
+		return
+	}
 	payload := decodeMap(r)
 	sourceDriver := strings.ToLower(firstNonEmpty(stringValue(payload, "source_driver"), stringValue(payload, "source"), a.store.Backend()))
 	if sourceDriver == "sqlite" || sourceDriver == "legacy_sqlite" || sourceDriver == "legacy-sqlite" {
@@ -269,7 +277,7 @@ func (a *App) handleDatabaseMigrate(w http.ResponseWriter, r *http.Request, _ Pa
 			ok(w, "迁移预检通过", a.databaseMigrationSummary(targetDriver, state, dryRun, snapshotBytes, targetReady))
 			return
 		}
-		preMigration, backupErr := a.store.Backup(a.cfg.DatabaseBackupDir)
+		preMigration, backupErr := a.store.BackupWithNote(a.cfg.DatabaseBackupDir, "数据库迁移前保护性备份")
 		if backupErr != nil {
 			fail(w, http.StatusInternalServerError, "迁移前备份失败")
 			return
@@ -310,7 +318,7 @@ func (a *App) handleDatabaseMigrate(w http.ResponseWriter, r *http.Request, _ Pa
 			ok(w, "迁移预检通过", summary)
 			return
 		}
-		preMigration, backupErr := a.store.Backup(a.cfg.DatabaseBackupDir)
+		preMigration, backupErr := a.store.BackupWithNote(a.cfg.DatabaseBackupDir, "数据库迁移前保护性备份")
 		if backupErr != nil {
 			fail(w, http.StatusInternalServerError, "迁移前备份失败")
 			return
@@ -339,6 +347,10 @@ func (a *App) handleDatabaseMigrate(w http.ResponseWriter, r *http.Request, _ Pa
 }
 
 func (a *App) handleLegacySQLiteMigrate(w http.ResponseWriter, r *http.Request, payload map[string]any) {
+	if !a.cfg.DatabaseMigrationPanelEnabled {
+		fail(w, http.StatusForbidden, "数据库迁移功能未开启，请先在配置文件中启用 Database.migration_panel_enabled")
+		return
+	}
 	defer runtime.GC()
 	targetDriver := strings.ToLower(firstNonEmpty(stringValue(payload, "target_driver"), stringValue(payload, "driver"), a.cfg.DatabaseDriver))
 	if targetDriver == "" {
@@ -377,7 +389,7 @@ func (a *App) handleLegacySQLiteMigrate(w http.ResponseWriter, r *http.Request, 
 			ok(w, "旧 SQLite 迁移预检通过", a.databaseLegacySQLiteMigrationSummary(targetDriver, dryRun, targetReady, importResult))
 			return
 		}
-		preMigration, backupErr := a.store.Backup(a.cfg.DatabaseBackupDir)
+		preMigration, backupErr := a.store.BackupWithNote(a.cfg.DatabaseBackupDir, "旧 SQLite 迁移前保护性备份")
 		if backupErr != nil {
 			fail(w, http.StatusInternalServerError, "迁移前备份失败")
 			return
@@ -427,7 +439,7 @@ func (a *App) handleLegacySQLiteMigrate(w http.ResponseWriter, r *http.Request, 
 			ok(w, "旧 SQLite 迁移预检通过", summary)
 			return
 		}
-		preMigration, backupErr := a.store.Backup(a.cfg.DatabaseBackupDir)
+		preMigration, backupErr := a.store.BackupWithNote(a.cfg.DatabaseBackupDir, "旧 SQLite 迁移前保护性备份")
 		if backupErr != nil {
 			fail(w, http.StatusInternalServerError, "迁移前备份失败")
 			return
@@ -613,6 +625,7 @@ func databaseBackupInfo(path string) (store.BackupInfo, error) {
 		Path:      path,
 		Size:      info.Size(),
 		CreatedAt: info.ModTime().Unix(),
+		Note:      store.ReadBackupNote(path),
 	}, nil
 }
 

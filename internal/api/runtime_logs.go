@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"log/slog"
 	"net/http"
 	"os"
@@ -144,13 +145,16 @@ func InstallRuntimeLogger(w io.Writer, level slog.Leveler) {
 		level = slog.LevelInfo
 	}
 	runtimeLogLevel.Set(level.Level())
+	slog.SetLogLoggerLevel(level.Level())
 	next := slog.NewTextHandler(w, &slog.HandlerOptions{Level: &runtimeLogLevel})
 	slog.SetDefault(slog.New(&runtimeLogHandler{next: next}))
+	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
 }
 
 func ConfigureRuntimeLogging(level slog.Leveler, limit int) {
 	if level != nil {
 		runtimeLogLevel.Set(level.Level())
+		slog.SetLogLoggerLevel(level.Level())
 	}
 	if limit > 0 {
 		runtimeLogs.setLimit(limit)
@@ -166,8 +170,10 @@ func (h *runtimeLogHandler) Handle(ctx context.Context, record slog.Record) erro
 	for _, attr := range h.attrs {
 		addLogAttr(attrs, attr)
 	}
+	sanitized := slog.NewRecord(record.Time, record.Level, redactSensitiveText(record.Message), record.PC)
 	record.Attrs(func(attr slog.Attr) bool {
 		addLogAttr(attrs, attr)
+		sanitized.AddAttrs(sanitizeLogAttr(attr))
 		return true
 	})
 	runtimeLogs.append(RuntimeLogEntry{
@@ -176,13 +182,17 @@ func (h *runtimeLogHandler) Handle(ctx context.Context, record slog.Record) erro
 		Message: redactSensitiveText(record.Message),
 		Attrs:   attrs,
 	})
-	return h.next.Handle(ctx, record)
+	return h.next.Handle(ctx, sanitized)
 }
 
 func (h *runtimeLogHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	nextAttrs := append([]slog.Attr{}, h.attrs...)
 	nextAttrs = append(nextAttrs, attrs...)
-	return &runtimeLogHandler{next: h.next.WithAttrs(attrs), attrs: nextAttrs}
+	sanitized := make([]slog.Attr, 0, len(attrs))
+	for _, attr := range attrs {
+		sanitized = append(sanitized, sanitizeLogAttr(attr))
+	}
+	return &runtimeLogHandler{next: h.next.WithAttrs(sanitized), attrs: nextAttrs}
 }
 
 func (h *runtimeLogHandler) WithGroup(name string) slog.Handler {
@@ -198,6 +208,37 @@ func addLogAttr(attrs map[string]string, attr slog.Attr) {
 		return
 	}
 	attrs[attr.Key] = redactSensitiveText(value)
+}
+
+func sanitizeLogAttr(attr slog.Attr) slog.Attr {
+	attr.Value = attr.Value.Resolve()
+	if sensitiveLogKey(attr.Key) {
+		return slog.String(attr.Key, "[REDACTED]")
+	}
+	if attr.Value.Kind() == slog.KindGroup {
+		group := attr.Value.Group()
+		sanitized := make([]slog.Attr, 0, len(group))
+		for _, child := range group {
+			sanitized = append(sanitized, sanitizeLogAttr(child))
+		}
+		return slog.Group(attr.Key, attrsToAny(sanitized)...)
+	}
+	if attr.Value.Kind() == slog.KindString {
+		return slog.String(attr.Key, redactSensitiveText(attr.Value.String()))
+	}
+	text := fmt.Sprint(attr.Value.Any())
+	if redacted := redactSensitiveText(text); redacted != text {
+		return slog.String(attr.Key, redacted)
+	}
+	return attr
+}
+
+func attrsToAny(attrs []slog.Attr) []any {
+	out := make([]any, 0, len(attrs))
+	for _, attr := range attrs {
+		out = append(out, attr)
+	}
+	return out
 }
 
 func sensitiveLogKey(key string) bool {

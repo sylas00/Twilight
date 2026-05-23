@@ -1024,10 +1024,10 @@ class ApiClient {
     });
   }
 
-  async createDatabaseBackup() {
+  async createDatabaseBackup(note?: string) {
     return this.request<{ backup: DatabaseBackup; legacy_sqlite_backup?: LegacySQLiteBackupInfo }>("/system/admin/database/backup", {
       method: "POST",
-      body: JSON.stringify({}),
+      body: JSON.stringify({ note: note?.trim() || undefined }),
     });
   }
 
@@ -2430,6 +2430,7 @@ export interface DatabaseBackup {
   path: string;
   size: number;
   created_at: number;
+  note?: string;
 }
 
 export type ConfigBackup = DatabaseBackup;
@@ -2533,6 +2534,7 @@ export interface DatabaseStatus {
   state_file: string;
   backup_dir: string;
   backup_count: number;
+  migration_panel_enabled?: boolean;
   postgres_configured: boolean;
   redis_enabled: boolean;
   user_count: number;

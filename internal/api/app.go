@@ -144,6 +144,10 @@ func (a *App) reloadConfig() (map[string]any, error) {
 	a.cfg = next
 	ConfigureRuntimeLogging(next.SlogLevel(), next.RuntimeLogLimit)
 	reinitialized = append(reinitialized, "runtime_logger")
+	if a.store.Backend() == store.BackendPostgres && (previous.PostgresMaxOpenConns != next.PostgresMaxOpenConns || previous.PostgresMaxIdleConns != next.PostgresMaxIdleConns) {
+		a.store.ConfigurePostgres(next.PostgresMaxOpenConns, next.PostgresMaxIdleConns)
+		reinitialized = append(reinitialized, "postgres_pool")
+	}
 	restartRequired := []string{}
 	if previous.DatabaseDriver != next.DatabaseDriver || previous.StateFile != next.StateFile || previous.PostgresDSN() != next.PostgresDSN() {
 		restartRequired = append(restartRequired, "database")
@@ -152,14 +156,16 @@ func (a *App) reloadConfig() (map[string]any, error) {
 		restartRequired = append(restartRequired, "listen_addr")
 	}
 
-	return map[string]any{
+	info := map[string]any{
 		"reloaded":            true,
 		"config_file":         next.ConfigFile,
 		"reinitialized":       reinitialized,
 		"restart_required":    restartRequired,
 		"active_database":     a.store.Backend(),
 		"configured_database": next.DatabaseDriver,
-	}, nil
+	}
+	slog.Info("config hot reloaded", "config_file", next.ConfigFile, "reinitialized", strings.Join(reinitialized, ","), "restart_required", strings.Join(restartRequired, ","))
+	return info, nil
 }
 
 func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {

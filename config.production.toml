@@ -61,6 +61,8 @@ state_file = ""
 url = ""
 # 数据库备份目录；留空时使用 <databases_dir>/backups
 backup_dir = ""
+# 数据库迁移面板和迁移 API 默认关闭；需要迁移时临时改为 true，完成后建议关闭
+migration_panel_enabled = false
 # PostgreSQL 分项配置；当 url 留空且 driver=postgres 时使用这些字段拼接 DSN。
 postgres_host = "127.0.0.1"
 postgres_port = 5432

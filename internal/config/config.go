@@ -19,28 +19,29 @@ type Line struct {
 }
 
 type Config struct {
-	AppName              string
-	Version              string
-	Host                 string
-	Port                 int
-	DatabaseDir          string
-	DatabaseDriver       string
-	DatabaseURL          string
-	DatabaseBackupDir    string
-	PostgresHost         string
-	PostgresPort         int
-	PostgresUser         string
-	PostgresPassword     string
-	PostgresDatabase     string
-	PostgresSSLMode      string
-	PostgresMaxOpenConns int
-	PostgresMaxIdleConns int
-	StateFile            string
-	UploadDir            string
-	MaxUploadSize        int64
-	RedisURL             string
-	LogLevel             string
-	RuntimeLogLimit      int
+	AppName                       string
+	Version                       string
+	Host                          string
+	Port                          int
+	DatabaseDir                   string
+	DatabaseDriver                string
+	DatabaseURL                   string
+	DatabaseBackupDir             string
+	DatabaseMigrationPanelEnabled bool
+	PostgresHost                  string
+	PostgresPort                  int
+	PostgresUser                  string
+	PostgresPassword              string
+	PostgresDatabase              string
+	PostgresSSLMode               string
+	PostgresMaxOpenConns          int
+	PostgresMaxIdleConns          int
+	StateFile                     string
+	UploadDir                     string
+	MaxUploadSize                 int64
+	RedisURL                      string
+	LogLevel                      string
+	RuntimeLogLimit               int
 
 	CORSOrigins       []string
 	AllowCredential   bool
@@ -164,6 +165,7 @@ func Load(path string) (Config, error) {
 	cfg.DatabaseDriver = strings.ToLower(first(values, "Database.driver", "Global.database_driver", "database_driver", cfg.DatabaseDriver))
 	cfg.DatabaseURL = first(values, "Database.url", "Database.database_url", "Global.database_url", "database_url", cfg.DatabaseURL)
 	cfg.DatabaseBackupDir = first(values, "Database.backup_dir", "database_backup_dir", cfg.DatabaseBackupDir)
+	cfg.DatabaseMigrationPanelEnabled = boolValue(first(values, "Database.migration_panel_enabled", "database_migration_panel_enabled", strconv.FormatBool(cfg.DatabaseMigrationPanelEnabled)), cfg.DatabaseMigrationPanelEnabled)
 	cfg.StateFile = first(values, "Database.state_file", "Global.state_file", "state_file", cfg.StateFile)
 	cfg.PostgresHost = first(values, "Database.postgres_host", "PostgreSQL.host", "postgres_host", cfg.PostgresHost)
 	cfg.PostgresPort = intValue(first(values, "Database.postgres_port", "PostgreSQL.port", "postgres_port", strconv.Itoa(cfg.PostgresPort)), cfg.PostgresPort)
@@ -379,6 +381,9 @@ func applyEnv(cfg *Config) {
 	}
 	if v := os.Getenv("TWILIGHT_DATABASE_BACKUP_DIR"); v != "" {
 		cfg.DatabaseBackupDir = v
+	}
+	if v := os.Getenv("TWILIGHT_DATABASE_MIGRATION_PANEL_ENABLED"); v != "" {
+		cfg.DatabaseMigrationPanelEnabled = boolValue(v, cfg.DatabaseMigrationPanelEnabled)
 	}
 	if v := os.Getenv("TWILIGHT_POSTGRES_HOST"); v != "" {
 		cfg.PostgresHost = v

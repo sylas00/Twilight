@@ -206,6 +206,21 @@ function makeStarfield(width: number, height: number): Array<{ x: number; y: num
   }));
 }
 
+function rootOrbit(system: StarSystem, pointer: { x: number; y: number } | null) {
+  if (!pointer) {
+    return { x: system.x, y: system.y, influence: 0 };
+  }
+  const dx = pointer.x - system.x;
+  const dy = pointer.y - system.y;
+  const distance = Math.hypot(dx, dy);
+  const influence = Math.max(0, Math.min(1, 1 - distance / Math.max(360, system.radius + 280)));
+  return {
+    x: system.x + dx * (0.18 + influence * 0.16),
+    y: system.y + dy * (0.18 + influence * 0.16),
+    influence,
+  };
+}
+
 function edgePath(parent: Positioned, child: Positioned): string {
   const mx = (parent.x + child.x) / 2;
   const my = (parent.y + child.y) / 2;
@@ -666,6 +681,12 @@ export default function AdminInviteTreePage() {
                       <stop offset="50%" stopColor="#a78bfa" stopOpacity="0.65" />
                       <stop offset="100%" stopColor="#34d399" stopOpacity="0.2" />
                     </linearGradient>
+                    <radialGradient id="invite-root-volume" cx="38%" cy="30%" r="72%">
+                      <stop offset="0%" stopColor="#fef3c7" stopOpacity="0.98" />
+                      <stop offset="38%" stopColor="#38bdf8" stopOpacity="0.58" />
+                      <stop offset="74%" stopColor="#8b5cf6" stopOpacity="0.22" />
+                      <stop offset="100%" stopColor="#020617" stopOpacity="0" />
+                    </radialGradient>
                   </defs>
                   <rect x={0} y={0} width={placed!.width} height={placed!.height} fill="transparent" />
                   {pointer && (
@@ -681,31 +702,62 @@ export default function AdminInviteTreePage() {
                   {starfield.map((star, index) => (
                     <circle key={`star-${index}`} cx={star.x} cy={star.y} r={star.r} fill="#e0f2fe" opacity={star.o} />
                   ))}
-                  {placed!.systems.map((system) => (
-                    <g key={`system-${system.rootUid}`}>
-                      <circle cx={system.x} cy={system.y} r={system.radius + 28} fill="url(#invite-node-glow)" opacity={0.08} />
-                      {Array.from({ length: Math.max(1, system.depth - 1) }, (_, index) => {
-                        const ring = 74 * (index + 1);
-                        if (ring > system.radius + 8) return null;
-                        return (
-                          <circle
-                            key={`orbit-${system.rootUid}-${index}`}
-                            cx={system.x}
-                            cy={system.y}
-                            r={ring}
-                            fill="none"
-                            stroke="#94a3b8"
-                            strokeOpacity={0.12}
-                            strokeWidth={1}
-                            strokeDasharray="4 10"
-                          />
-                        );
-                      })}
-                      <text x={system.x} y={system.y + system.radius + 46} textAnchor="middle" fontSize={11} fill="#94a3b8">
-                        ROOT #{system.rootUid} · {system.count} nodes · depth {system.depth}
-                      </text>
-                    </g>
-                  ))}
+                  {placed!.systems.map((system) => {
+                    const orbit = rootOrbit(system, pointer);
+                    const volume = Math.min(32, 10 + Math.sqrt(system.count) * 3 + system.depth * 2);
+                    return (
+                      <g key={`system-${system.rootUid}`}>
+                        <circle cx={system.x} cy={system.y} r={system.radius + 28} fill="url(#invite-node-glow)" opacity={0.08} />
+                        <g transform={`translate(${orbit.x}, ${orbit.y})`}>
+                          <circle r={volume + system.radius * 0.1} fill="url(#invite-root-volume)" opacity={0.14 + orbit.influence * 0.12} filter="url(#invite-soft-glow)" />
+                          <g>
+                            <animateTransform
+                              attributeName="transform"
+                              type="rotate"
+                              from="0"
+                              to="360"
+                              dur={`${10 + (system.rootUid % 7)}s`}
+                              repeatCount="indefinite"
+                            />
+                            <ellipse rx={system.radius * 0.42 + volume} ry={Math.max(22, volume * 0.72)} fill="none" stroke="#7dd3fc" strokeOpacity={0.18 + orbit.influence * 0.42} strokeWidth={1.4} strokeDasharray="8 12" />
+                            <ellipse rx={system.radius * 0.28 + volume * 0.7} ry={Math.max(16, volume * 0.52)} fill="none" stroke="#f0abfc" strokeOpacity={0.12 + orbit.influence * 0.26} strokeWidth={1} strokeDasharray="3 8" transform="rotate(62)" />
+                          </g>
+                          {pointer && (
+                            <line
+                              x1={0}
+                              y1={0}
+                              x2={pointer.x - orbit.x}
+                              y2={pointer.y - orbit.y}
+                              stroke="#38bdf8"
+                              strokeOpacity={0.05 + orbit.influence * 0.16}
+                              strokeWidth={1}
+                              strokeDasharray="2 9"
+                            />
+                          )}
+                        </g>
+                        {Array.from({ length: Math.max(1, system.depth - 1) }, (_, index) => {
+                          const ring = 74 * (index + 1);
+                          if (ring > system.radius + 8) return null;
+                          return (
+                            <circle
+                              key={`orbit-${system.rootUid}-${index}`}
+                              cx={system.x}
+                              cy={system.y}
+                              r={ring}
+                              fill="none"
+                              stroke="#94a3b8"
+                              strokeOpacity={0.12}
+                              strokeWidth={1}
+                              strokeDasharray="4 10"
+                            />
+                          );
+                        })}
+                        <text x={system.x} y={system.y + system.radius + 46} textAnchor="middle" fontSize={11} fill="#94a3b8">
+                          ROOT #{system.rootUid} · {system.count} nodes · depth {system.depth}
+                        </text>
+                      </g>
+                    );
+                  })}
                   {/* 边 */}
                   {visibleForest!.edges.map((e) => {
                     const p = placed!.positions.get(e.parent);

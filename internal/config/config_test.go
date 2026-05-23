@@ -198,7 +198,7 @@ func TestDefaultsIncludeUsablePostgresParts(t *testing.T) {
 
 func TestLogConfigSupportsLegacyNumericLevels(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
-	if err := os.WriteFile(path, []byte("[Global]\nlog_level = 30\nruntime_log_limit = 9000\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("[Global]\nlog_level = 30\nruntime_log_limit = 9000\n\n[Database]\nmigration_panel_enabled = true\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(path)
@@ -207,6 +207,9 @@ func TestLogConfigSupportsLegacyNumericLevels(t *testing.T) {
 	}
 	if cfg.LogLevel != "warn" || cfg.RuntimeLogLimit != 9000 {
 		t.Fatalf("unexpected log config: level=%q limit=%d", cfg.LogLevel, cfg.RuntimeLogLimit)
+	}
+	if !cfg.DatabaseMigrationPanelEnabled {
+		t.Fatal("expected database migration panel to be enabled")
 	}
 	if cfg.SlogLevel() != slog.LevelWarn {
 		t.Fatalf("expected warn slog level, got %v", cfg.SlogLevel())
