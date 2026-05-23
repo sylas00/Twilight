@@ -12,7 +12,6 @@ Usage:
 Environment overrides:
   TWILIGHT_PROJECT_ROOT       Project root. Defaults to the parent of deploy/.
   TWILIGHT_GO_BIN            Backend binary path. Defaults to <project>/bin/twilight.
-  TWILIGHT_CONFIG_FILE        Config path. Defaults to <project>/config.toml.
   TWILIGHT_API_HOST           API bind host. Defaults to 127.0.0.1.
   TWILIGHT_API_PORT           API bind port. Defaults to 5000.
   TWILIGHT_SYSTEMD_USER       systemd service user. Defaults to root.
@@ -65,7 +64,7 @@ need_cmd mktemp
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(realpath "${TWILIGHT_PROJECT_ROOT:-"$SCRIPT_DIR/.."}")"
 BIN_PATH="$(realpath -m "${TWILIGHT_GO_BIN:-"$PROJECT_ROOT/bin/twilight"}")"
-CONFIG_FILE="$(realpath -m "${TWILIGHT_CONFIG_FILE:-"$PROJECT_ROOT/config.toml"}")"
+CONFIG_FILE="$(realpath -m "$PROJECT_ROOT/config.toml")"
 ENV_FILE="$PROJECT_ROOT/.env"
 API_HOST="${TWILIGHT_API_HOST:-127.0.0.1}"
 API_PORT="${TWILIGHT_API_PORT:-5000}"
@@ -232,9 +231,7 @@ Type=exec
 User=$SERVICE_USER
 Group=$SERVICE_GROUP
 WorkingDirectory=$PROJECT_ROOT
-ExecStart=$BIN_PATH api --host $API_HOST --port $API_PORT --config $CONFIG_FILE
-
-Environment=TWILIGHT_CONFIG_FILE=$CONFIG_FILE
+ExecStart=$BIN_PATH api --host $API_HOST --port $API_PORT --config config.toml
 EnvironmentFile=-$ENV_FILE
 
 LimitNOFILE=65535
@@ -278,9 +275,7 @@ Type=exec
 User=$SERVICE_USER
 Group=$SERVICE_GROUP
 WorkingDirectory=$PROJECT_ROOT
-ExecStart=$BIN_PATH $command --config $CONFIG_FILE
-
-Environment=TWILIGHT_CONFIG_FILE=$CONFIG_FILE
+ExecStart=$BIN_PATH $command --config config.toml
 EnvironmentFile=-$ENV_FILE
 
 LimitNOFILE=65535

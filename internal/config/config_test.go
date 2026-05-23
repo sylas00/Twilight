@@ -1,6 +1,7 @@
 package config
 
 import (
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -108,7 +109,7 @@ func TestLoadDefaultPathPrefersConfigTomlOverEnv(t *testing.T) {
 	}
 }
 
-func TestLoadDefaultPathUsesEnvWhenConfigTomlMissing(t *testing.T) {
+func TestLoadDefaultPathIgnoresEnvWhenConfigTomlMissing(t *testing.T) {
 	dir := t.TempDir()
 	chdir(t, dir)
 	envPath := filepath.Join(dir, "env.toml")
@@ -121,8 +122,8 @@ func TestLoadDefaultPathUsesEnvWhenConfigTomlMissing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.ConfigFile != envPath || cfg.Port != 6062 {
-		t.Fatalf("expected env config when config.toml is absent, file=%q port=%d", cfg.ConfigFile, cfg.Port)
+	if cfg.ConfigFile != "config.toml" || cfg.Port != 5000 {
+		t.Fatalf("expected default config.toml and built-in defaults, file=%q port=%d", cfg.ConfigFile, cfg.Port)
 	}
 }
 
@@ -187,8 +188,28 @@ func TestDefaultsIncludeUsablePostgresParts(t *testing.T) {
 	if cfg.PostgresUser != "twilight" || cfg.PostgresDatabase != "twilight" {
 		t.Fatalf("unexpected postgres defaults: user=%q database=%q", cfg.PostgresUser, cfg.PostgresDatabase)
 	}
+	if cfg.DatabaseDriver != "postgres" {
+		t.Fatalf("database defaults should use postgres, got %q", cfg.DatabaseDriver)
+	}
 	if got := cfg.PostgresDSN(); !strings.Contains(got, "://twilight@127.0.0.1:5432/twilight") {
 		t.Fatalf("postgres defaults should produce a usable local dsn, got %q", got)
+	}
+}
+
+func TestLogConfigSupportsLegacyNumericLevels(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("[Global]\nlog_level = 30\nruntime_log_limit = 9000\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LogLevel != "warn" || cfg.RuntimeLogLimit != 9000 {
+		t.Fatalf("unexpected log config: level=%q limit=%d", cfg.LogLevel, cfg.RuntimeLogLimit)
+	}
+	if cfg.SlogLevel() != slog.LevelWarn {
+		t.Fatalf("expected warn slog level, got %v", cfg.SlogLevel())
 	}
 }
 
@@ -197,8 +218,8 @@ func TestProductionTemplateIncludesPostgresDatabaseSection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.DatabaseDriver != "json" {
-		t.Fatalf("production template should default to json, got %q", cfg.DatabaseDriver)
+	if cfg.DatabaseDriver != "postgres" {
+		t.Fatalf("production template should default to postgres, got %q", cfg.DatabaseDriver)
 	}
 	if cfg.PostgresUser != "twilight" || cfg.PostgresDatabase != "twilight" || cfg.PostgresMaxOpenConns != 8 || cfg.PostgresMaxIdleConns != 4 {
 		t.Fatalf("production template postgres fields were not loaded: %#v", cfg)

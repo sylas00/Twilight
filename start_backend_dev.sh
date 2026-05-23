@@ -6,7 +6,7 @@ cd "$SCRIPT_DIR"
 
 HOST="${TWILIGHT_API_HOST:-0.0.0.0}"
 PORT="${TWILIGHT_API_PORT:-5000}"
-CONFIG="${TWILIGHT_CONFIG_FILE:-config.toml}"
+CONFIG="config.toml"
 
 echo "=========================================="
 echo "   Twilight Backend (Go Development)"

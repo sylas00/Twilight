@@ -9,6 +9,7 @@
  * - 不引入额外可视化库，方便部署到 Cloudflare Workers（rendering tree small）。
  */
 
+import type { PointerEvent } from "react";
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "framer-motion";
 import {
@@ -297,6 +298,7 @@ export default function AdminInviteTreePage() {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [scale, setScale] = useState(1);
   const [depthPrompt, setDepthPrompt] = useState<DepthPromptState | null>(null);
+  const [pointer, setPointer] = useState<{ x: number; y: number } | null>(null);
 
   const requestDepth = useCallback((options: DepthPromptOptions) => {
     return new Promise<string | null>((resolve) => {
@@ -363,6 +365,25 @@ export default function AdminInviteTreePage() {
 
   const selected = selectedUid && nodeByUid.get(selectedUid) ? nodeByUid.get(selectedUid)! : null;
   const selectedPosition = selectedUid && placed ? placed.positions.get(selectedUid) : null;
+  const pointerNearestUid = useMemo(() => {
+    if (!pointer || !placed || (visibleForest?.nodes.length || 0) > 1200) return null;
+    let best: { uid: number; d: number } | null = null;
+    for (const node of visibleForest?.nodes || []) {
+      const pos = placed.positions.get(node.uid);
+      if (!pos) continue;
+      const d = Math.hypot(pos.x - pointer.x, pos.y - pointer.y);
+      if (d < 92 && (!best || d < best.d)) best = { uid: node.uid, d };
+    }
+    return best?.uid ?? null;
+  }, [placed, pointer, visibleForest]);
+
+  const handleMapPointerMove = useCallback((event: PointerEvent<SVGSVGElement>) => {
+    if (!placed || (visibleForest?.nodes.length || 0) > 1200) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const x = ((event.clientX - rect.left) / rect.width) * placed.width;
+    const y = ((event.clientY - rect.top) / rect.height) * placed.height;
+    setPointer({ x, y });
+  }, [placed, visibleForest]);
 
   useEffect(() => {
     if (forest && rootFilter && !forest.roots.includes(rootFilter)) {
@@ -624,6 +645,8 @@ export default function AdminInviteTreePage() {
                   width={placed!.width * scale}
                   height={placed!.height * scale}
                   className="block select-none text-slate-100"
+                  onPointerMove={handleMapPointerMove}
+                  onPointerLeave={() => setPointer(null)}
                 >
                   <defs>
                     <radialGradient id="invite-node-glow" cx="50%" cy="45%" r="70%">
@@ -645,6 +668,16 @@ export default function AdminInviteTreePage() {
                     </linearGradient>
                   </defs>
                   <rect x={0} y={0} width={placed!.width} height={placed!.height} fill="transparent" />
+                  {pointer && (
+                    <circle
+                      cx={pointer.x}
+                      cy={pointer.y}
+                      r={180}
+                      fill="#38bdf8"
+                      opacity={0.08}
+                      style={{ transition: "cx 80ms linear, cy 80ms linear" }}
+                    />
+                  )}
                   {starfield.map((star, index) => (
                     <circle key={`star-${index}`} cx={star.x} cy={star.y} r={star.r} fill="#e0f2fe" opacity={star.o} />
                   ))}
@@ -679,7 +712,8 @@ export default function AdminInviteTreePage() {
                     const c = placed!.positions.get(e.child);
                     if (!p || !c) return null;
                     const edgeKey = `${e.parent}-${e.child}`;
-                    const isHighlighted = highlightedEdges.has(edgeKey);
+                    const isPointerEdge = pointerNearestUid != null && (e.parent === pointerNearestUid || e.child === pointerNearestUid);
+                    const isHighlighted = highlightedEdges.has(edgeKey) || isPointerEdge;
                     return (
                       <path
                         key={edgeKey}
@@ -709,6 +743,7 @@ export default function AdminInviteTreePage() {
                     const pos = placed!.positions.get(n.uid);
                     if (!pos) return null;
                     const isSelected = selectedUid === n.uid;
+                    const isPointerNear = pointerNearestUid === n.uid;
                     const searchActive = deferredQuery.trim().length > 0;
                     const isMatched = matchingUIDs.has(n.uid);
                     const dimmed = searchActive && !isMatched && !isSelected;
@@ -732,10 +767,13 @@ export default function AdminInviteTreePage() {
                           r={r}
                           fill={color}
                           opacity={dimmed ? 0.24 : n.active ? 0.98 : 0.55}
-                          stroke={isSelected || isMatched ? "#f8fafc" : n.emby_id ? "#e0f2fe" : "#64748b"}
-                          strokeWidth={isSelected || isMatched ? 2.4 : 1.1}
+                          stroke={isSelected || isMatched || isPointerNear ? "#f8fafc" : n.emby_id ? "#e0f2fe" : "#64748b"}
+                          strokeWidth={isSelected || isMatched || isPointerNear ? 2.4 : 1.1}
                           filter={n.active ? "url(#invite-soft-glow)" : undefined}
                         />
+                        {isPointerNear && (
+                          <circle r={r + 20} fill="none" stroke="#7dd3fc" strokeOpacity={0.42} strokeWidth={1.2} strokeDasharray="5 8" />
+                        )}
                         {n.role === 0 && <path d={`M -6 ${-r - 5} L 0 ${-r - 13} L 6 ${-r - 5} Z`} fill="#fbbf24" opacity={0.95} />}
                         {!n.emby_id && <circle r={r + 2} fill="none" stroke="#cbd5e1" strokeOpacity={0.55} strokeDasharray="2 3" />}
                         {(showLabels || isSelected || isMatched || pos.depth === 1) && (

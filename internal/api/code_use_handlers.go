@@ -91,7 +91,7 @@ func (a *App) handleUseCode(w http.ResponseWriter, r *http.Request, _ Params) {
 	data["expired_at"] = u.ExpiredAt
 	data["role"] = u.Role
 	data["role_name"] = roleName(u.Role)
-	ok(w, "浣跨敤鎴愬姛", data)
+	ok(w, "使用成功", data)
 }
 
 func codePreview(source string, codeType int, days int, inviter string) map[string]any {
@@ -112,7 +112,7 @@ func (a *App) handleRegcodeCheck(w http.ResponseWriter, r *http.Request, _ Param
 	if code != "" {
 		if reg, okReg := a.store.RegCode(code); okReg {
 			if reg.IsDecoy {
-				fail(w, http.StatusNotFound, "娉ㄥ唽鐮佷笉瀛樺湪")
+				fail(w, http.StatusNotFound, "注册码不存在")
 				return
 			}
 			status := regcodeStatus(reg)
@@ -120,5 +120,5 @@ func (a *App) handleRegcodeCheck(w http.ResponseWriter, r *http.Request, _ Param
 			return
 		}
 	}
-	fail(w, http.StatusNotFound, "娉ㄥ唽鐮佷笉瀛樺湪")
+	fail(w, http.StatusNotFound, "注册码不存在")
 }

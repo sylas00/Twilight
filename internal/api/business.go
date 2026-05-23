@@ -197,9 +197,9 @@ func mediaStatusText(status string) string {
 func regcodeTypeName(codeType int) string {
 	switch codeType {
 	case 1:
-		return "娉ㄥ唽"
+		return "注册"
 	case 2:
-		return "缁湡"
+		return "续期"
 	case 3:
 		return "白名单"
 	default:
@@ -339,12 +339,22 @@ func (a *App) recordViolation(user store.User, code, codeType, reason string) {
 
 func sortUsers(items []map[string]any, sortKey string) {
 	switch sortKey {
+	case "uid_asc":
+		sort.Slice(items, func(i, j int) bool { return numeric(items[i]["uid"]) < numeric(items[j]["uid"]) })
+	case "uid_desc", "":
+		sort.Slice(items, func(i, j int) bool { return numeric(items[i]["uid"]) > numeric(items[j]["uid"]) })
 	case "username_asc":
 		sort.Slice(items, func(i, j int) bool { return fmt.Sprint(items[i]["username"]) < fmt.Sprint(items[j]["username"]) })
-	case "register_time_desc":
+	case "username_desc":
+		sort.Slice(items, func(i, j int) bool { return fmt.Sprint(items[i]["username"]) > fmt.Sprint(items[j]["username"]) })
+	case "register_time_desc", "created_desc":
 		sort.Slice(items, func(i, j int) bool { return numeric(items[i]["register_time"]) > numeric(items[j]["register_time"]) })
-	case "expired_at_asc":
+	case "register_time_asc", "created_asc":
+		sort.Slice(items, func(i, j int) bool { return numeric(items[i]["register_time"]) < numeric(items[j]["register_time"]) })
+	case "expired_at_asc", "expire_asc":
 		sort.Slice(items, func(i, j int) bool { return numeric(items[i]["expired_at"]) < numeric(items[j]["expired_at"]) })
+	case "expired_at_desc", "expire_desc":
+		sort.Slice(items, func(i, j int) bool { return numeric(items[i]["expired_at"]) > numeric(items[j]["expired_at"]) })
 	default:
 		sort.Slice(items, func(i, j int) bool { return numeric(items[i]["uid"]) > numeric(items[j]["uid"]) })
 	}

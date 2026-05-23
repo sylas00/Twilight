@@ -36,7 +36,7 @@ func (a *App) handleMediaDetail(w http.ResponseWriter, r *http.Request, params P
 func (a *App) handleInventoryCheck(w http.ResponseWriter, r *http.Request, _ Params) {
 	payload := decodeMap(r)
 	if firstNonEmpty(stringValue(payload, "title"), stringValue(payload, "media_id"), stringValue(payload, "id"), stringValue(payload, "tmdb_id")) == "" {
-		fail(w, http.StatusBadRequest, "缂哄皯蹇呰鍙傛暟")
+		fail(w, http.StatusBadRequest, "缺少必要参数")
 		return
 	}
 	result := a.embyCheckInventory(r.Context(), payload)
@@ -166,7 +166,7 @@ func (a *App) handleUpdateMediaRequestStatus(w http.ResponseWriter, r *http.Requ
 	if statusFromError(w, err) {
 		return
 	}
-	ok(w, "鐘舵€佸凡鏇存柊", mediaRequestAdminDTO(req, a.store))
+	ok(w, "状态已更新", mediaRequestAdminDTO(req, a.store))
 }
 
 func (a *App) handleUpdateMediaRequestByKey(w http.ResponseWriter, r *http.Request, params Params) {
@@ -182,7 +182,7 @@ func (a *App) handleUpdateMediaRequestByKey(w http.ResponseWriter, r *http.Reque
 func (a *App) handleExternalMediaUpdate(w http.ResponseWriter, r *http.Request, _ Params) {
 	secret := firstNonEmpty(r.Header.Get("X-Internal-Secret"), strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
 	if a.cfg.BotInternalSecret == "" || secret != a.cfg.BotInternalSecret {
-		fail(w, http.StatusForbidden, "鍐呴儴瀵嗛挜鏃犳晥")
+		fail(w, http.StatusForbidden, "内部密钥无效")
 		return
 	}
 	payload := decodeMap(r)
@@ -205,7 +205,7 @@ func (a *App) handleExternalMediaUpdate(w http.ResponseWriter, r *http.Request, 
 	if statusFromError(w, err) {
 		return
 	}
-	ok(w, "鐘舵€佸凡鏇存柊", mediaRequestAdminDTO(req, a.store))
+	ok(w, "状态已更新", mediaRequestAdminDTO(req, a.store))
 }
 
 func (a *App) handleMediaRequestByKey(w http.ResponseWriter, r *http.Request, params Params) {

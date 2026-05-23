@@ -9,9 +9,8 @@ Type=exec
 User=root
 Group=root
 WorkingDirectory=/root/Twilight
-ExecStart=/root/Twilight/bin/twilight scheduler --config /root/Twilight/config.toml
+ExecStart=/root/Twilight/bin/twilight scheduler --config config.toml
 
-Environment=TWILIGHT_CONFIG_FILE=/root/Twilight/config.toml
 EnvironmentFile=-/root/Twilight/.env
 
 LimitNOFILE=65535

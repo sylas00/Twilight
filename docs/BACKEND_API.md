@@ -1704,7 +1704,7 @@ curl -X GET "http://localhost:5000/api/v1/stats/user/123" \
 
 `GET /system/health`
 
-- 说明：健康检查
+- 说明：健康检查，返回 `api`、`database`、`emby` 布尔状态，并保留 `status/storage/redis` 等兼容字段。
 - 认证：公开
 
 - 示例 cURL：
@@ -1791,13 +1791,14 @@ curl -X GET "http://localhost:5000/api/v1/system/emby-urls" \
 | `go_version` / `goos` / `goarch` | Go 运行时与平台 |
 | `goroutines` / `cpu_count` | 协程数和 CPU 数 |
 | `active_database` / `config_database` | 当前存储后端与配置中的目标后端 |
+| `log_level` / `runtime_log_limit` / `runtime_log_entries` | 当前日志等级、保留行数和缓冲区已有行数 |
 | `memory` | Go runtime 内存统计 |
 | `host_memory` | `/proc/meminfo` 摘要，可用时返回 |
 | `load_average` | `/proc/loadavg` 的 1/5/15 分钟负载，可用时返回 |
 
 `GET /system/admin/runtime/logs?limit=200&after=0`
 
-- 说明：读取后端进程内最近日志快照，`limit` 范围 1-1000。
+- 说明：读取后端进程内最近日志快照，`limit` 受 `[Global].runtime_log_limit` 限制，默认配置为 5000。
 - 认证：管理员 Token。
 - 响应：`entries` 为日志数组，`next_cursor` 用于下一次增量读取。
 
@@ -1897,7 +1898,7 @@ curl -X PUT "http://localhost:5000/api/v1/system/admin/config/schema" \
 
 `GET /system/admin/database/status`
 
-- 说明：返回当前 active driver、配置 driver、状态文件、备份目录、PostgreSQL 配置状态和用户数。
+- 说明：返回当前 active driver、配置 driver、状态文件、备份目录、PostgreSQL 配置状态和用户数。响应中会同时给出 `active_label/configured_label`，其中 `gojson` 表示 Go JSON 状态文件，`sqlite3` 表示旧 SQLite 迁移源，`postgresql` 表示 PostgreSQL 后端。
 - 认证：管理员 Token
 
 `GET /system/admin/database/backups`

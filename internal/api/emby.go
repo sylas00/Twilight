@@ -11,25 +11,30 @@ import (
 	"github.com/prejudice-studio/twilight/internal/store"
 )
 
-// embyIsAdmin checks whether the given Emby user ID corresponds to an Emby
-// administrator account. Returns true if the remote Emby user has
-// IsAdministrator set in their policy. On network errors or missing users,
-// returns false conservatively.
 func (a *App) embyIsAdmin(ctx context.Context, embyID string) bool {
 	if embyID == "" || a.cfg.EmbyURL == "" {
 		return false
 	}
+	now := time.Now()
+	a.embyAdminMu.Lock()
+	if cached, ok := a.embyAdminCache[embyID]; ok && now.Sub(cached.checked) < 5*time.Minute {
+		a.embyAdminMu.Unlock()
+		return cached.admin
+	}
+	a.embyAdminMu.Unlock()
+
 	user, found, err := a.embyUserByID(ctx, embyID)
 	if err != nil || !found {
 		return false
 	}
 	policy := embyPolicy(user)
-	return boolish(policy["IsAdministrator"])
+	isAdmin := boolish(policy["IsAdministrator"])
+	a.embyAdminMu.Lock()
+	a.embyAdminCache[embyID] = embyAdminCacheEntry{admin: isAdmin, checked: now}
+	a.embyAdminMu.Unlock()
+	return isAdmin
 }
 
-// requireNonEmbyAdmin blocks sensitive operations for non-system-admin users
-// whose bound Emby account has IsAdministrator=true. Prevents privilege escalation.
-// Returns true if the request was blocked (HTTP response already written).
 func (a *App) requireNonEmbyAdmin(w http.ResponseWriter, r *http.Request, user store.User) bool {
 	if user.Role == store.RoleAdmin {
 		return false
@@ -41,6 +46,32 @@ func (a *App) requireNonEmbyAdmin(w http.ResponseWriter, r *http.Request, user s
 		slog.Warn("blocked sensitive operation for non-admin user with Emby admin account",
 			"uid", user.UID, "username", user.Username, "emby_id", user.EmbyID)
 		fail(w, http.StatusForbidden, "安全限制：您绑定的 Emby 账号具有管理员权限，但您不是系统管理员。为防止越权操作，已禁止此请求。请联系系统管理员。")
+		return true
+	}
+	return false
+}
+
+func (a *App) blockRestrictedEmbyAdmin(w http.ResponseWriter, r *http.Request, route *Route, user store.User) bool {
+	if route == nil || route.Auth == AuthAdmin || user.Role == store.RoleAdmin || user.EmbyID == "" {
+		return false
+	}
+	if !a.embyIsAdmin(r.Context(), user.EmbyID) {
+		return false
+	}
+	if embyAdminRestrictionAllowed(r.Method, r.URL.Path) {
+		return false
+	}
+	slog.Warn("blocked request for non-admin user bound to Emby administrator",
+		"uid", user.UID, "username", user.Username, "method", r.Method, "path", r.URL.Path)
+	fail(w, http.StatusForbidden, "安全限制：当前系统账号不是管理员，但绑定的 Emby 账号具有管理员权限。除查看账号状态和退出登录外，所有操作已被禁止，请联系系统管理员处理。")
+	return true
+}
+
+func embyAdminRestrictionAllowed(method, requestPath string) bool {
+	if method == http.MethodPost && (requestPath == "/api/v1/auth/logout" || requestPath == "/api/v1/auth/logout/all") {
+		return true
+	}
+	if method == http.MethodGet && (requestPath == "/api/v1/auth/me" || requestPath == "/api/v1/users/me") {
 		return true
 	}
 	return false

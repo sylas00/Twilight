@@ -53,6 +53,13 @@ type App struct {
 	telegramBotCacheToken string
 	telegramBotCacheUntil time.Time
 	telegramBotCache      map[string]any
+	embyAdminMu           sync.Mutex
+	embyAdminCache        map[string]embyAdminCacheEntry
+}
+
+type embyAdminCacheEntry struct {
+	admin   bool
+	checked time.Time
 }
 
 type principal struct {
@@ -72,11 +79,12 @@ func New(cfg config.Config, st *store.Store) (*App, error) {
 		return nil, err
 	}
 	app := &App{
-		cfg:      cfg,
-		store:    st,
-		sessions: newSessionStore(cfg.SessionTTL, redisClient),
-		limiter:  newRateLimiter(redisClient),
-		redis:    redisClient,
+		cfg:            cfg,
+		store:          st,
+		sessions:       newSessionStore(cfg.SessionTTL, redisClient),
+		limiter:        newRateLimiter(redisClient),
+		redis:          redisClient,
+		embyAdminCache: map[string]embyAdminCacheEntry{},
 	}
 	app.registerRoutes()
 	return app, nil
@@ -134,6 +142,8 @@ func (a *App) reloadConfig() (map[string]any, error) {
 	}
 
 	a.cfg = next
+	ConfigureRuntimeLogging(next.SlogLevel(), next.RuntimeLogLimit)
+	reinitialized = append(reinitialized, "runtime_logger")
 	restartRequired := []string{}
 	if previous.DatabaseDriver != next.DatabaseDriver || previous.StateFile != next.StateFile || previous.PostgresDSN() != next.PostgresDSN() {
 		restartRequired = append(restartRequired, "database")
@@ -193,6 +203,9 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if principal != nil && principal.FromCookie && isMutating(r.Method) && r.Header.Get("X-Twilight-Client") != "webui" {
 		fail(w, http.StatusForbidden, "缺少客户端校验头")
+		return
+	}
+	if principal != nil && a.blockRestrictedEmbyAdmin(w, r, route, principal.User) {
 		return
 	}
 	if principal != nil {

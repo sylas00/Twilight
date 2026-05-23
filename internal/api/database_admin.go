@@ -24,8 +24,15 @@ func (a *App) handleDatabaseStatus(w http.ResponseWriter, r *http.Request, _ Par
 	defer cancel()
 	legacySQLite := store.InspectLegacySQLite(ctx, a.cfg.DatabaseDir)
 	ok(w, "OK", map[string]any{
-		"active_driver":          a.store.Backend(),
-		"configured_driver":      a.cfg.DatabaseDriver,
+		"active_driver":     a.store.Backend(),
+		"configured_driver": a.cfg.DatabaseDriver,
+		"active_label":      databaseDriverLabel(a.store.Backend()),
+		"configured_label":  databaseDriverLabel(a.cfg.DatabaseDriver),
+		"supported_drivers": []map[string]string{
+			{"driver": "postgres", "label": "postgresql", "role": "runtime"},
+			{"driver": "json", "label": "gojson", "role": "runtime"},
+			{"driver": "sqlite", "label": "sqlite3", "role": "manual_import_only"},
+		},
 		"state_file":             a.cfg.StateFile,
 		"backup_dir":             a.cfg.DatabaseBackupDir,
 		"backup_count":           len(backups),
@@ -35,6 +42,19 @@ func (a *App) handleDatabaseStatus(w http.ResponseWriter, r *http.Request, _ Par
 		"legacy_sqlite_detected": legacySQLite.Detected,
 		"legacy_sqlite":          legacySQLite,
 	})
+}
+
+func databaseDriverLabel(driver string) string {
+	switch strings.ToLower(strings.TrimSpace(driver)) {
+	case store.BackendPostgres, "postgresql":
+		return "postgresql"
+	case store.BackendJSON, "file", "":
+		return "gojson"
+	case "sqlite", "sqlite3", "legacy_sqlite":
+		return "sqlite3"
+	default:
+		return driver
+	}
 }
 
 func (a *App) handleDatabaseBackups(w http.ResponseWriter, r *http.Request, _ Params) {

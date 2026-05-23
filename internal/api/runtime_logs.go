@@ -34,7 +34,8 @@ type runtimeLogBuffer struct {
 
 var (
 	runtimeStartedAt = time.Now()
-	runtimeLogs      = newRuntimeLogBuffer(1200)
+	runtimeLogs      = newRuntimeLogBuffer(5000)
+	runtimeLogLevel  slog.LevelVar
 	sensitivePattern = regexp.MustCompile(`(?i)(authorization|cookie|token|secret|password|passwd|api[_-]?key|bot[_-]?token|dsn)\s*[:=]\s*[^ \t\r\n,;]+`)
 	bearerPattern    = regexp.MustCompile(`(?i)bearer\s+[A-Za-z0-9._~+/=-]{12,}`)
 	keyPattern       = regexp.MustCompile(`key-[A-Za-z0-9._~+/=-]{12,}`)
@@ -43,6 +44,13 @@ var (
 func newRuntimeLogBuffer(limit int) *runtimeLogBuffer {
 	b := &runtimeLogBuffer{limit: limit}
 	b.cond = sync.NewCond(&b.mu)
+	return b
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
 	return b
 }
 
@@ -62,11 +70,28 @@ func (b *runtimeLogBuffer) append(entry RuntimeLogEntry) {
 	b.mu.Unlock()
 }
 
+func (b *runtimeLogBuffer) setLimit(limit int) {
+	limit = clamp(limit, 100, 50000)
+	b.mu.Lock()
+	b.limit = limit
+	if len(b.entries) > b.limit {
+		copy(b.entries, b.entries[len(b.entries)-b.limit:])
+		b.entries = b.entries[:b.limit]
+	}
+	b.mu.Unlock()
+}
+
+func (b *runtimeLogBuffer) stats() (int, int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.limit, len(b.entries)
+}
+
 func (b *runtimeLogBuffer) snapshot(limit int, after int64) ([]RuntimeLogEntry, int64) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if limit <= 0 || limit > b.limit {
-		limit = 200
+		limit = b.limit
 	}
 	filtered := make([]RuntimeLogEntry, 0, len(b.entries))
 	for _, entry := range b.entries {
@@ -118,8 +143,18 @@ func InstallRuntimeLogger(w io.Writer, level slog.Leveler) {
 	if level == nil {
 		level = slog.LevelInfo
 	}
-	next := slog.NewTextHandler(w, &slog.HandlerOptions{Level: level})
+	runtimeLogLevel.Set(level.Level())
+	next := slog.NewTextHandler(w, &slog.HandlerOptions{Level: &runtimeLogLevel})
 	slog.SetDefault(slog.New(&runtimeLogHandler{next: next}))
+}
+
+func ConfigureRuntimeLogging(level slog.Leveler, limit int) {
+	if level != nil {
+		runtimeLogLevel.Set(level.Level())
+	}
+	if limit > 0 {
+		runtimeLogs.setLimit(limit)
+	}
 }
 
 func (h *runtimeLogHandler) Enabled(ctx context.Context, level slog.Level) bool {
@@ -192,19 +227,23 @@ func redactSensitiveText(value string) string {
 func (a *App) handleRuntimeStatus(w http.ResponseWriter, r *http.Request, _ Params) {
 	var mem runtime.MemStats
 	runtime.ReadMemStats(&mem)
+	logLimit, logEntries := runtimeLogs.stats()
 	status := map[string]any{
-		"started_at":      runtimeStartedAt.Unix(),
-		"uptime_seconds":  int64(time.Since(runtimeStartedAt).Seconds()),
-		"go_version":      runtime.Version(),
-		"goos":            runtime.GOOS,
-		"goarch":          runtime.GOARCH,
-		"goroutines":      runtime.NumGoroutine(),
-		"cpu_count":       runtime.NumCPU(),
-		"redis_enabled":   a.redis != nil,
-		"routes":          len(a.routes),
-		"active_database": a.store.Backend(),
-		"config_database": strings.ToLower(a.cfg.DatabaseDriver),
-		"users":           a.store.UserCount(),
+		"started_at":          runtimeStartedAt.Unix(),
+		"uptime_seconds":      int64(time.Since(runtimeStartedAt).Seconds()),
+		"go_version":          runtime.Version(),
+		"goos":                runtime.GOOS,
+		"goarch":              runtime.GOARCH,
+		"goroutines":          runtime.NumGoroutine(),
+		"cpu_count":           runtime.NumCPU(),
+		"redis_enabled":       a.redis != nil,
+		"routes":              len(a.routes),
+		"active_database":     a.store.Backend(),
+		"config_database":     strings.ToLower(a.cfg.DatabaseDriver),
+		"users":               a.store.UserCount(),
+		"log_level":           a.cfg.LogLevel,
+		"runtime_log_limit":   logLimit,
+		"runtime_log_entries": logEntries,
 		"memory": map[string]any{
 			"alloc":       mem.Alloc,
 			"sys":         mem.Sys,
@@ -232,7 +271,8 @@ func (a *App) handleRuntimeStatus(w http.ResponseWriter, r *http.Request, _ Para
 }
 
 func (a *App) handleRuntimeLogs(w http.ResponseWriter, r *http.Request, _ Params) {
-	limit := clamp(queryInt(r, "limit", 200), 1, 1000)
+	maxLimit, _ := runtimeLogs.stats()
+	limit := clamp(queryInt(r, "limit", 200), 1, maxLimit)
 	after, _ := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
 	entries, next := runtimeLogs.snapshot(limit, after)
 	ok(w, "OK", map[string]any{"entries": entries, "next_cursor": next, "limit": limit})
@@ -249,7 +289,8 @@ func (a *App) handleRuntimeLogStream(w http.ResponseWriter, r *http.Request, _ P
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 
-	limit := clamp(queryInt(r, "limit", 100), 1, 300)
+	maxLimit, _ := runtimeLogs.stats()
+	limit := clamp(queryInt(r, "limit", 100), 1, minInt(maxLimit, 1000))
 	cursor, _ := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
 	send := func(event string, data any) bool {
 		payload, err := json.Marshal(data)

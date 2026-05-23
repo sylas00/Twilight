@@ -68,19 +68,19 @@ func (a *App) handleCreateRegcodes(w http.ResponseWriter, r *http.Request, _ Par
 func (a *App) handleUpdateRegcode(w http.ResponseWriter, r *http.Request, params Params) {
 	reg, okReg := a.store.RegCode(params["code"])
 	if !okReg {
-		fail(w, http.StatusNotFound, "娉ㄥ唽鐮佷笉瀛樺湪")
+		fail(w, http.StatusNotFound, "注册码不存在")
 		return
 	}
 	reg.Note = stringValue(decodeMap(r), "note")
 	_ = a.store.UpsertRegCode(reg)
-	ok(w, "娉ㄥ唽鐮佸凡鏇存柊", regcodeDTO(reg))
+	ok(w, "注册码已更新", regcodeDTO(reg))
 }
 
 func (a *App) handleDeleteRegcode(w http.ResponseWriter, r *http.Request, params Params) {
 	if statusFromError(w, a.store.DeleteRegCode(params["code"])) {
 		return
 	}
-	ok(w, "娉ㄥ唽鐮佸凡鍒犻櫎", nil)
+	ok(w, "注册码已删除", nil)
 }
 
 func (a *App) handleBatchDeleteRegcodes(w http.ResponseWriter, r *http.Request, _ Params) {
@@ -110,7 +110,7 @@ func (a *App) handleBatchDeleteRegcodes(w http.ResponseWriter, r *http.Request, 
 func (a *App) handleRegcodeUsers(w http.ResponseWriter, r *http.Request, params Params) {
 	reg, okReg := a.store.RegCode(params["code"])
 	if !okReg {
-		fail(w, http.StatusNotFound, "娉ㄥ唽鐮佷笉瀛樺湪")
+		fail(w, http.StatusNotFound, "注册码不存在")
 		return
 	}
 	users := []map[string]any{}

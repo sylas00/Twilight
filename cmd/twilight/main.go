@@ -56,21 +56,25 @@ func runAPI(args []string) error {
 	fs := flag.NewFlagSet("api", flag.ContinueOnError)
 	host := fs.String("host", "", "listen host")
 	port := fs.Int("port", 0, "listen port")
-	configFile := fs.String("config", "", "config file path")
+	configFile := fs.String("config", "", "config file path; runtime only accepts the working directory config.toml")
 	debug := fs.Bool("debug", false, "enable debug logging")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	logLevel := slog.LevelInfo
+	configPath, err := runtimeConfigPath(*configFile)
+	if err != nil {
+		return err
+	}
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return err
+	}
+	logLevel := cfg.SlogLevel()
 	if *debug {
 		logLevel = slog.LevelDebug
 	}
 	api.InstallRuntimeLogger(os.Stdout, logLevel)
-
-	cfg, err := config.Load(*configFile)
-	if err != nil {
-		return err
-	}
+	api.ConfigureRuntimeLogging(logLevel, cfg.RuntimeLogLimit)
 	if *host != "" {
 		cfg.Host = *host
 	}
@@ -122,11 +126,20 @@ func runAPI(args []string) error {
 
 func runScheduler(args []string) error {
 	fs := flag.NewFlagSet("scheduler", flag.ContinueOnError)
-	_ = fs.String("config", "", "config file path")
+	configFile := fs.String("config", "", "config file path; runtime only accepts the working directory config.toml")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	api.InstallRuntimeLogger(os.Stdout, slog.LevelInfo)
+	configPath, err := runtimeConfigPath(*configFile)
+	if err != nil {
+		return err
+	}
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return err
+	}
+	api.InstallRuntimeLogger(os.Stdout, cfg.SlogLevel())
+	api.ConfigureRuntimeLogging(cfg.SlogLevel(), cfg.RuntimeLogLimit)
 	slog.Info("scheduler mode is built into the Go backend; background jobs are exposed through /api/v1/admin/scheduler/jobs")
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -136,15 +149,20 @@ func runScheduler(args []string) error {
 
 func runBot(args []string) error {
 	fs := flag.NewFlagSet("bot", flag.ContinueOnError)
-	configFile := fs.String("config", "", "config file path")
+	configFile := fs.String("config", "", "config file path; runtime only accepts the working directory config.toml")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	api.InstallRuntimeLogger(os.Stdout, slog.LevelInfo)
-	cfg, err := config.Load(*configFile)
+	configPath, err := runtimeConfigPath(*configFile)
 	if err != nil {
 		return err
 	}
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return err
+	}
+	api.InstallRuntimeLogger(os.Stdout, cfg.SlogLevel())
+	api.ConfigureRuntimeLogging(cfg.SlogLevel(), cfg.RuntimeLogLimit)
 	if !cfg.TelegramMode || strings.TrimSpace(cfg.TelegramBotToken) == "" {
 		slog.Info("Telegram bot mode is disabled or bot token is not configured; waiting for shutdown")
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -255,6 +273,30 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func runtimeConfigPath(path string) (string, error) {
+	const fixed = "config.toml"
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return fixed, nil
+	}
+	clean := filepath.Clean(path)
+	if filepath.Base(clean) != fixed {
+		return "", fmt.Errorf("configuration file is fixed to the working directory config.toml, got %q", path)
+	}
+	target, err := filepath.Abs(clean)
+	if err != nil {
+		return "", err
+	}
+	expected, err := filepath.Abs(fixed)
+	if err != nil {
+		return "", err
+	}
+	if target != expected {
+		return "", fmt.Errorf("configuration file is fixed to %s, got %s", expected, target)
+	}
+	return fixed, nil
 }
 
 func printHelp() {

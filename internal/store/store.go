@@ -152,14 +152,17 @@ type MediaRequest struct {
 }
 
 type Announcement struct {
-	ID        int64  `json:"id"`
-	Title     string `json:"title"`
-	Content   string `json:"content"`
-	Visible   bool   `json:"visible"`
-	Level     string `json:"level"`
-	CreatedAt int64  `json:"created_at"`
-	UpdatedAt int64  `json:"updated_at"`
-	ExpiredAt int64  `json:"expired_at,omitempty"`
+	ID           int64  `json:"id"`
+	Title        string `json:"title"`
+	Content      string `json:"content"`
+	Visible      bool   `json:"visible"`
+	Level        string `json:"level"`
+	RenderMode   string `json:"render_mode,omitempty"`
+	Pinned       bool   `json:"pinned"`
+	CreatedByUID int64  `json:"created_by_uid,omitempty"`
+	CreatedAt    int64  `json:"created_at"`
+	UpdatedAt    int64  `json:"updated_at"`
+	ExpiredAt    int64  `json:"expired_at,omitempty"`
 }
 
 type InviteCode struct {
@@ -1214,10 +1217,20 @@ func (s *Store) UpsertAnnouncement(a Announcement) (Announcement, error) {
 		a.ID = s.state.NextAnnouncementID
 		s.state.NextAnnouncementID++
 		a.CreatedAt = now
+	} else if existing, ok := s.state.Announcements[a.ID]; ok {
+		if a.CreatedAt == 0 {
+			a.CreatedAt = existing.CreatedAt
+		}
+		if a.CreatedByUID == 0 {
+			a.CreatedByUID = existing.CreatedByUID
+		}
 	}
 	a.UpdatedAt = now
 	if a.Level == "" {
 		a.Level = "info"
+	}
+	if a.RenderMode == "" {
+		a.RenderMode = "plain"
 	}
 	s.state.Announcements[a.ID] = a
 	return a, s.saveLocked()
@@ -1234,7 +1247,12 @@ func (s *Store) ListAnnouncements(includeHidden bool) []Announcement {
 		}
 		out = append(out, a)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID > out[j].ID })
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Pinned != out[j].Pinned {
+			return out[i].Pinned
+		}
+		return out[i].ID > out[j].ID
+	})
 	return out
 }
 

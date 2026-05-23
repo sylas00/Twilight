@@ -446,6 +446,7 @@ func importLegacyUsers(state *State, rows []legacyRow, warn func(string, ...any)
 			Username:           username,
 			Email:              row.get("EMAIL"),
 			TelegramID:         legacyInt64(row.get("TELEGRAM_ID"), 0),
+			TelegramUsername:   firstNonEmptyStore(row.get("TELEGRAM_USERNAME"), row.get("TG_USERNAME"), row.get("USERNAME_TG")),
 			Role:               legacyInt(row.get("ROLE"), RoleNormal),
 			Active:             legacyBool(row.get("ACTIVE_STATUS")),
 			ExpiredAt:          legacyInt64(row.get("EXPIRED_AT"), -1),
@@ -463,7 +464,7 @@ func importLegacyUsers(state *State, rows []legacyRow, warn func(string, ...any)
 			PasswordHash:       password,
 		}
 		if user.EmbyID != "" {
-			user.EmbyUsername = user.Username
+			user.EmbyUsername = firstNonEmptyStore(row.get("EMBY_USERNAME"), row.get("EMBYNAME"), user.Username)
 		}
 		if user.CreatedAt == 0 {
 			user.CreatedAt = user.RegisterTime
@@ -597,14 +598,16 @@ func importLegacyAnnouncements(state *State, rows []legacyRow, _ func(string, ..
 			continue
 		}
 		state.Announcements[id] = Announcement{
-			ID:        id,
-			Title:     firstNonEmptyStore(row.get("TITLE"), "公告"),
-			Content:   row.get("CONTENT"),
-			Visible:   legacyBool(row.get("VISIBLE")),
-			Level:     firstNonEmptyStore(strings.ToLower(row.get("LEVEL")), "info"),
-			CreatedAt: legacyInt64(row.get("CREATED_AT"), 0),
-			UpdatedAt: legacyInt64(row.get("UPDATED_AT"), 0),
-			ExpiredAt: legacyInt64(row.get("EXPIRES_AT"), 0),
+			ID:         id,
+			Title:      firstNonEmptyStore(row.get("TITLE"), "公告"),
+			Content:    row.get("CONTENT"),
+			Visible:    legacyBool(row.get("VISIBLE")),
+			Level:      firstNonEmptyStore(strings.ToLower(row.get("LEVEL")), "info"),
+			RenderMode: firstNonEmptyStore(strings.ToLower(row.get("RENDER_MODE")), "plain"),
+			Pinned:     legacyBool(row.get("PINNED")),
+			CreatedAt:  legacyInt64(row.get("CREATED_AT"), 0),
+			UpdatedAt:  legacyInt64(row.get("UPDATED_AT"), 0),
+			ExpiredAt:  legacyInt64(row.get("EXPIRES_AT"), 0),
 		}
 		if id >= state.NextAnnouncementID {
 			state.NextAnnouncementID = id + 1
@@ -834,7 +837,9 @@ func importLegacyBangumiUsers(state *State, rows []legacyRow, _ func(string, ...
 
 func importLegacyMediaRequests(state *State, rows []legacyRow, source string, _ func(string, ...any)) {
 	usersByTelegram := map[int64]User{}
+	usersByUID := map[int64]User{}
 	for _, user := range state.Users {
+		usersByUID[user.UID] = user
 		if user.TelegramID != 0 {
 			usersByTelegram[user.TelegramID] = user
 		}
@@ -846,6 +851,13 @@ func importLegacyMediaRequests(state *State, rows []legacyRow, source string, _ 
 		}
 		telegramID := legacyInt64(row.get("TELEGRAM_ID"), 0)
 		user := usersByTelegram[telegramID]
+		if uid := legacyInt64(row.get("UID"), 0); uid > 0 {
+			if byUID, ok := usersByUID[uid]; ok {
+				user = byUID
+			} else {
+				user.UID = uid
+			}
+		}
 		mediaID := legacyInt64(row.get("BANGUMI_ID"), 0)
 		if source == "tmdb" {
 			mediaID = legacyInt64(row.get("TMDB_ID"), 0)
@@ -855,7 +867,7 @@ func importLegacyMediaRequests(state *State, rows []legacyRow, source string, _ 
 			RequireKey: row.get("REQUIRE_KEY"),
 			UID:        user.UID,
 			TelegramID: telegramID,
-			Username:   user.Username,
+			Username:   firstNonEmptyStore(user.Username, row.get("USERNAME"), row.get("USER_NAME")),
 			Title:      row.get("TITLE"),
 			Source:     source,
 			MediaID:    mediaID,
@@ -863,10 +875,11 @@ func importLegacyMediaRequests(state *State, rows []legacyRow, source string, _ 
 			Season:     legacyInt(row.get("SEASON"), 0),
 			Year:       row.get("YEAR"),
 			Status:     legacyMediaStatus(row.get("STATUS")),
-			AdminNote:  row.get("ADMIN_NOTE"),
-			MediaInfo:  legacyJSONMap(row.get("OTHER_INFO")),
-			CreatedAt:  legacyInt64(row.get("TIMESTAMP"), 0),
-			UpdatedAt:  legacyInt64(row.get("TIMESTAMP"), 0),
+			AdminNote:  firstNonEmptyStore(row.get("ADMIN_NOTE"), row.get("REPLY"), row.get("REMARK")),
+			Note:       firstNonEmptyStore(row.get("NOTE"), row.get("COMMENT")),
+			MediaInfo:  legacyJSONMap(firstNonEmptyStore(row.get("OTHER_INFO"), row.get("MEDIA_INFO"))),
+			CreatedAt:  legacyInt64(firstNonEmptyStore(row.get("TIMESTAMP"), row.get("CREATED_AT"), row.get("CREATE_TIME")), 0),
+			UpdatedAt:  legacyInt64(firstNonEmptyStore(row.get("UPDATED_AT"), row.get("UPDATE_TIME"), row.get("TIMESTAMP")), 0),
 		}
 		if req.RequireKey == "" {
 			req.RequireKey = randomKey("legacy_req", id, req.CreatedAt)
@@ -876,6 +889,9 @@ func importLegacyMediaRequests(state *State, rows []legacyRow, source string, _ 
 		}
 		if req.MediaType == "" {
 			req.MediaType = "unknown"
+		}
+		if req.UpdatedAt == 0 {
+			req.UpdatedAt = req.CreatedAt
 		}
 		state.MediaRequests[id] = req
 		if id >= state.NextRequestID {
@@ -903,15 +919,15 @@ func legacyTriggerSpec(row legacyRow) map[string]any {
 
 func legacyMediaStatus(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "0", "pending", "unhandled", "pending_review":
+	case "0", "pending", "unhandled", "pending_review", "wait", "waiting", "new":
 		return "UNHANDLED"
-	case "1", "accepted", "approved":
+	case "1", "accepted", "approved", "accept", "approve", "processing":
 		return "ACCEPTED"
-	case "2", "rejected", "reject":
+	case "2", "rejected", "reject", "denied", "deny", "failed", "failure":
 		return "REJECTED"
-	case "3", "completed", "complete", "done":
+	case "3", "completed", "complete", "done", "finished", "finish", "success":
 		return "COMPLETED"
-	case "4", "downloading", "download":
+	case "4", "downloading", "download", "downloading_now":
 		return "DOWNLOADING"
 	default:
 		return "UNHANDLED"

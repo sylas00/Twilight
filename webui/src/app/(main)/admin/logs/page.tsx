@@ -92,6 +92,7 @@ export default function AdminRuntimeLogsPage() {
   const [connected, setConnected] = useState(false);
   const [paused, setPaused] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [logLimit, setLogLimit] = useState(500);
   const eventRef = useRef<EventSource | null>(null);
   const cursorRef = useRef(0);
   const bottomRef = useRef<HTMLDivElement | null>(null);
@@ -110,11 +111,11 @@ export default function AdminRuntimeLogsPage() {
         for (const entry of entries) {
           if (!seen.has(entry.id)) merged.push(entry);
         }
-        return merged.slice(-500);
+        return merged.slice(-logLimit);
       });
     }
     setNextCursor(nextCursor);
-  }, [setNextCursor]);
+  }, [logLimit, setNextCursor]);
 
   const loadStatus = useCallback(async () => {
     const res = await api.getRuntimeStatus();
@@ -127,7 +128,7 @@ export default function AdminRuntimeLogsPage() {
     try {
       const [statusRes, logsRes] = await Promise.all([
         api.getRuntimeStatus(),
-        api.getRuntimeLogs(200),
+        api.getRuntimeLogs(logLimit),
       ]);
       if (statusRes.success) setStatus(statusRes.data || null);
       if (logsRes.success && logsRes.data) {
@@ -141,7 +142,17 @@ export default function AdminRuntimeLogsPage() {
     } finally {
       setLoading(false);
     }
-  }, [setNextCursor, toast]);
+  }, [logLimit, setNextCursor, toast]);
+
+  const loadMore = useCallback(async () => {
+    const nextLimit = Math.min(status?.runtime_log_limit || 5000, logLimit + 500);
+    setLogLimit(nextLimit);
+    const res = await api.getRuntimeLogs(nextLimit);
+    if (res.success && res.data) {
+      setLogs(res.data.entries || []);
+      setNextCursor(res.data.next_cursor || 0);
+    }
+  }, [logLimit, setNextCursor, status?.runtime_log_limit]);
 
   useEffect(() => {
     void loadSnapshot();
@@ -233,6 +244,9 @@ export default function AdminRuntimeLogsPage() {
             {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
             刷新
           </Button>
+          <Button variant="outline" onClick={loadMore} disabled={loading || (status?.runtime_log_limit ? logLimit >= status.runtime_log_limit : false)}>
+            查看更多
+          </Button>
           <Button variant="outline" onClick={() => setLogs([])}>
             <Trash2 className="mr-2 h-4 w-4" />
             清屏
@@ -262,7 +276,7 @@ export default function AdminRuntimeLogsPage() {
         <CardHeader className="flex flex-row items-center justify-between gap-3 border-b p-4">
           <CardTitle className="text-base">日志流</CardTitle>
           <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
-            <span className="whitespace-nowrap">{logs.length} 行</span>
+            <span className="whitespace-nowrap">{logs.length} / {status?.runtime_log_limit || logLimit} 行</span>
             <span className="truncate">游标 {cursor}</span>
           </div>
         </CardHeader>
@@ -311,6 +325,8 @@ export default function AdminRuntimeLogsPage() {
             <CardContent className="space-y-2 text-sm text-muted-foreground">
               <p>启动时间：{formatTime(status.started_at)}</p>
               <p>Redis：{status.redis_enabled ? "启用" : "未启用"}</p>
+              <p>日志等级：{status.log_level || "info"}</p>
+              <p>日志缓冲：{status.runtime_log_entries ?? logs.length} / {status.runtime_log_limit ?? logLimit}</p>
               <p>路由数：{status.routes}</p>
               <p>主机运行：{formatDuration(status.host_uptime_seconds)}</p>
             </CardContent>

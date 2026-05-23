@@ -2350,6 +2350,9 @@ export interface RuntimeStatus {
   active_database: string;
   config_database: string;
   users: number;
+  log_level?: string;
+  runtime_log_limit?: number;
+  runtime_log_entries?: number;
   load_average?: number[];
   memory?: Record<string, number>;
   host_memory?: Record<string, number>;
@@ -2524,6 +2527,9 @@ export interface LegacySQLiteImportResult {
 export interface DatabaseStatus {
   active_driver: string;
   configured_driver: string;
+  active_label?: string;
+  configured_label?: string;
+  supported_drivers?: Array<{ driver: string; label: string; role: string }>;
   state_file: string;
   backup_dir: string;
   backup_count: number;

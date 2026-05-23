@@ -19,7 +19,7 @@
 
 Twilight 的 `golang` 分支以 Go 后端为主线，目标部署环境是 Linux。旧 Python 后端不再作为生产运行路径，部署、systemd、数据库迁移、日志与自动更新都应以 Go 后端文档为准。
 
-本项目大量代码由 LLM 辅助生成，并经过人工修缮。请在正式开放前自行审查配置、权限、反向代理、数据库备份和外部服务密钥。任何因使用本项目造成的损失与责任均与项目维护者无关。
+请在正式开放前自行审查配置、权限、反向代理、数据库备份和外部服务密钥。任何因使用本项目造成的损失与责任均与项目维护者无关。
 
 当前版本：`0.0.4`。版本历史和本次 Go 后端重构内容见 [docs/VERSION_HISTORY.md](docs/VERSION_HISTORY.md)。
 
@@ -50,7 +50,7 @@ deploy/                 Nginx、systemd、一键安装脚本
 docs/                   中文部署、API、安全、版本历史文档
 ```
 
-Go 后端默认使用 JSON 状态文件，生产环境可切换 PostgreSQL。切换数据库前必须先在管理端执行迁移预览，确认后端会在真正迁移或恢复前自动创建保护性备份。如果配置成 PostgreSQL 但目标库仍没有管理员，同时旧 JSON 状态文件里已有 active 管理员，后端会临时回退到 JSON 状态启动，确保原管理员可以登录前端完成迁移。若只有旧 Python 版 `db/users.db`，且系统安装了 `sqlite3` 命令，Go 后端会在自身状态还没有管理员时只读导入旧库中的 active 管理员账号用于引导登录。
+生产模板默认使用 PostgreSQL；Go JSON 仍保留为兼容存储，旧 SQLite 只作为手动配置或迁移来源，不在前端可视化配置中作为运行后端提供。切换数据库前必须先在管理端执行迁移预览，确认后端会在真正迁移或恢复前自动创建保护性备份。如果配置成 PostgreSQL 但目标库仍没有管理员，同时旧 JSON 状态文件里已有 active 管理员，后端会临时回退到 JSON 状态启动，确保原管理员可以登录前端完成迁移。若只有旧 Python 版 `db/users.db`，且系统安装了 `sqlite3` 命令，Go 后端会在自身状态还没有管理员时只读导入旧库中的 active 管理员账号用于引导登录。
 
 独立的“数据库迁移”管理页会自动扫描 `db/*.db`、`*.db-wal`、`*.db-shm` 旧 SQLite 文件。备份会同时复制旧 SQLite 文件集；迁移来源可选择“旧 SQLite”，后端按固定库名只读导入 `users.db`、`regcode.db`、`invites.db`、`api_keys.db`、`announcements.db`、`bangumi.db`、`signin.db`、`login_log.db`、`playback.db`、`scheduler_*.db`、`telegram_roster.db` 等数据，再写入 JSON 或 PostgreSQL。
 
@@ -87,7 +87,7 @@ npm ci
 NEXT_PUBLIC_API_URL=http://127.0.0.1:5000 npm run dev
 ```
 
-生产部署请优先阅读 [docs/INSTALL.md](docs/INSTALL.md)。如果使用 1Panel 的 Go 运行环境，后端入口建议配置为 `./cmd/twilight` 或已构建的 `bin/twilight`，运行参数使用 `api --config /path/to/config.toml`，本地运行配置、环境变量文件和面板生成文件不要提交到 Git。
+生产部署请优先阅读 [docs/INSTALL.md](docs/INSTALL.md)。如果使用 1Panel 的 Go 运行环境，运行目录必须指向项目根目录，后端入口建议配置为已构建的 `bin/twilight`，运行参数使用 `api --config config.toml`，本地运行配置、环境变量文件和面板生成文件不要提交到 Git。
 
 ## systemd 一键设置
 
@@ -102,7 +102,7 @@ sudo bash deploy/setup-systemd.sh --restart
 
 ## 配置与数据库
 
-主要配置文件为 `config.toml`，本地私密覆盖建议使用 `config.local.toml`，该文件已被 `.gitignore` 忽略。未显式传 `--config` 时，后端优先读取当前目录 `config.toml`；如果不存在，再读取 `TWILIGHT_CONFIG_FILE` 指向的文件；配置字段最终仍可被 `TWILIGHT_*` 环境变量覆盖。
+主要配置文件强制为项目运行目录下的 `config.toml`，本地私密覆盖建议使用 `config.local.toml`，该文件已被 `.gitignore` 忽略。运行入口只接受未传 `--config`、`--config config.toml` 或指向同一个当前目录文件的绝对路径；不会通过 `TWILIGHT_CONFIG_FILE` 切换到其它路径，避免特殊部署环境误读配置；具体字段仍可被 `TWILIGHT_*` 环境变量覆盖。
 
 服务器图标不再从 `config.toml` 配置。后端公开信息固定返回内置 `/favicon.svg`；如需替换图标，请走前端静态资源或前端构建环境变量，不要把本地图片路径写入后端配置。
 
@@ -110,7 +110,7 @@ sudo bash deploy/setup-systemd.sh --restart
 
 ```toml
 [Database]
-driver = "json"        # json 或 postgres
+driver = "postgres"    # 生产推荐 postgres；json 仅作 Go JSON 兼容存储
 state_file = ""        # 留空时使用 <databases_dir>/twilight_go_state.json
 backup_dir = "db/backups"
 
@@ -125,6 +125,15 @@ postgres_sslmode = "disable"
 postgres_max_open_conns = 8
 postgres_max_idle_conns = 4
 ```
+
+日志配置在 `[Global]` 中维护，保存后会热重载：
+
+```toml
+log_level = "info"          # debug / info / warn / error；兼容旧数字 10/20/30/40
+runtime_log_limit = 5000    # 管理后台实时日志保留行数
+```
+
+后台“实时日志”页面只读取 Go 进程内脱敏缓冲，不读取任意系统文件。后端会脱敏 Cookie、Token、密码、API Key 和 DSN 等敏感字段。
 
 数据库恢复和迁移均需要预览与二次确认。执行前后端会创建 `pre_operation_backup`，避免误操作后没有回滚点。已有 JSON 数据切换 PostgreSQL 时，先保持 JSON 能登录，进入管理端完成 PostgreSQL 迁移预检和确认后，再重启到 PostgreSQL。旧 SQLite 管理员引导只用于恢复后台入口，不会在启动时全量迁移旧业务数据。
 

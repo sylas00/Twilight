@@ -19,7 +19,7 @@ cp config.production.toml config.toml
 bash start_backend_prod.sh
 ```
 
-API 默认端口为 `5000`，监听地址以 `config.toml` 或启动参数为准；也可以通过 `TWILIGHT_API_HOST` 和 `TWILIGHT_API_PORT` 覆盖。
+API 默认端口为 `5000`，监听地址以项目运行目录下的 `config.toml` 或启动参数为准；也可以通过 `TWILIGHT_API_HOST` 和 `TWILIGHT_API_PORT` 覆盖。
 
 HTTPS 反向代理部署时必须注意：
 
@@ -29,7 +29,7 @@ HTTPS 反向代理部署时必须注意：
 
 ## PostgreSQL 配置
 
-默认配置使用 JSON 状态文件。需要 PostgreSQL 时，在 `config.toml` 中修改 `[Database]`：
+默认配置使用 PostgreSQL。请在项目目录下的 `config.toml` 中配置 `[Database]`：
 
 ```toml
 [Database]
@@ -55,7 +55,7 @@ driver = "postgres"
 url = "postgres://twilight:请替换为高强度密码@127.0.0.1:5432/twilight?sslmode=disable"
 ```
 
-环境变量覆盖：
+字段级环境变量覆盖：
 
 ```bash
 TWILIGHT_DATABASE_DRIVER=postgres
@@ -88,7 +88,7 @@ pnpm start -p 3000
 
 ## 特殊部署环境注意事项
 
-- 1Panel Go 运行环境：运行目录指向项目根目录，启动命令使用 `./bin/twilight api --host 0.0.0.0 --port 5000 --config config.toml`，不要把 `config.toml`、`.env`、1Panel 运行配置提交到 Git。
+- 1Panel Go 运行环境：运行目录必须指向项目根目录，启动命令使用 `./bin/twilight api --host 0.0.0.0 --port 5000 --config config.toml`。运行入口会拒绝其它目录的配置文件，避免面板环境误读；不要把 `config.toml`、`.env`、1Panel 运行配置提交到 Git。
 - 反向代理：推荐后端只监听 `127.0.0.1:5000`，由 Nginx/Caddy/1Panel OpenResty 暴露 HTTPS；跨域部署时 `session_cookie_samesite` 必须与域名关系匹配。
 - 同域部署：前端 `/api/*` 反代到后端时，`NEXT_PUBLIC_API_URL` 可以留空；分离域名部署时必须设置为后端 HTTPS 地址，并同步后端 `cors_origins`。
 - Cloudflare/OpenNext：标准 Node/1Panel 部署不需要启用 OpenNext dev 初始化；只有 Cloudflare 本地开发需要设置 `TWILIGHT_OPENNEXT_DEV=true`。
@@ -119,7 +119,6 @@ sudo bash deploy/setup-systemd.sh --restart
 
 ```bash
 sudo TWILIGHT_PROJECT_ROOT=/opt/Twilight \
-  TWILIGHT_CONFIG_FILE=/opt/Twilight/config.toml \
   TWILIGHT_API_HOST=127.0.0.1 \
   TWILIGHT_API_PORT=5000 \
   TWILIGHT_SYSTEMD_USER=twilight \

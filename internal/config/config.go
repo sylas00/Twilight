@@ -3,6 +3,7 @@ package config
 import (
 	"bufio"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/url"
 	"os"
@@ -38,6 +39,8 @@ type Config struct {
 	UploadDir            string
 	MaxUploadSize        int64
 	RedisURL             string
+	LogLevel             string
+	RuntimeLogLimit      int
 
 	CORSOrigins       []string
 	AllowCredential   bool
@@ -155,6 +158,8 @@ func Load(path string) (Config, error) {
 
 	cfg.AppName = first(values, "Global.server_name", "server_name", cfg.AppName)
 	cfg.RedisURL = first(values, "Global.redis_url", "redis_url", cfg.RedisURL)
+	cfg.LogLevel = normalizeLogLevel(first(values, "Global.log_level", "log_level", cfg.LogLevel))
+	cfg.RuntimeLogLimit = intValue(first(values, "Global.runtime_log_limit", "runtime_log_limit", strconv.Itoa(cfg.RuntimeLogLimit)), cfg.RuntimeLogLimit)
 	cfg.DatabaseDir = first(values, "Global.databases_dir", "databases_dir", cfg.DatabaseDir)
 	cfg.DatabaseDriver = strings.ToLower(first(values, "Database.driver", "Global.database_driver", "database_driver", cfg.DatabaseDriver))
 	cfg.DatabaseURL = first(values, "Database.url", "Database.database_url", "Global.database_url", "database_url", cfg.DatabaseURL)
@@ -269,12 +274,6 @@ func Load(path string) (Config, error) {
 }
 
 func defaultConfigPath() string {
-	if _, err := os.Stat("config.toml"); err == nil {
-		return "config.toml"
-	}
-	if path := strings.TrimSpace(os.Getenv("TWILIGHT_CONFIG_FILE")); path != "" {
-		return path
-	}
 	return "config.toml"
 }
 
@@ -285,7 +284,7 @@ func defaults() Config {
 		Host:                            "0.0.0.0",
 		Port:                            5000,
 		DatabaseDir:                     "db",
-		DatabaseDriver:                  "json",
+		DatabaseDriver:                  "postgres",
 		PostgresHost:                    "127.0.0.1",
 		PostgresPort:                    5432,
 		PostgresUser:                    "twilight",
@@ -295,6 +294,8 @@ func defaults() Config {
 		PostgresMaxIdleConns:            4,
 		UploadDir:                       "uploads",
 		MaxUploadSize:                   5 * 1024 * 1024,
+		LogLevel:                        "info",
+		RuntimeLogLimit:                 5000,
 		CORSOrigins:                     []string{"http://localhost:3000", "http://127.0.0.1:3000"},
 		AllowCredential:                 true,
 		TrustProxyHeaders:               false,
@@ -354,6 +355,12 @@ func applyEnv(cfg *Config) {
 	}
 	if v := os.Getenv("TWILIGHT_REDIS_URL"); v != "" {
 		cfg.RedisURL = v
+	}
+	if v := os.Getenv("TWILIGHT_LOG_LEVEL"); v != "" {
+		cfg.LogLevel = normalizeLogLevel(v)
+	}
+	if v := os.Getenv("TWILIGHT_RUNTIME_LOG_LIMIT"); v != "" {
+		cfg.RuntimeLogLimit = intValue(v, cfg.RuntimeLogLimit)
 	}
 	if v := os.Getenv("TWILIGHT_GLOBAL_REDIS_URL"); v != "" {
 		cfg.RedisURL = v
@@ -671,6 +678,34 @@ func boolValue(value string, fallback bool) bool {
 		return false
 	default:
 		return fallback
+	}
+}
+
+func normalizeLogLevel(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "10", "debug":
+		return "debug"
+	case "20", "info", "":
+		return "info"
+	case "30", "warn", "warning":
+		return "warn"
+	case "40", "error":
+		return "error"
+	default:
+		return "info"
+	}
+}
+
+func (c Config) SlogLevel() slog.Level {
+	switch normalizeLogLevel(c.LogLevel) {
+	case "debug":
+		return slog.LevelDebug
+	case "warn":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
 	}
 }
 

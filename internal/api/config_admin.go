@@ -394,11 +394,13 @@ type configFieldDef struct {
 }
 
 func configSectionDefs() []configSectionDef {
-	selectDriver := []map[string]any{{"label": "JSON 文件", "value": "json"}, {"label": "PostgreSQL", "value": "postgres"}}
+	selectDriver := []map[string]any{{"label": "PostgreSQL（推荐）", "value": "postgres"}, {"label": "Go JSON 文件（兼容）", "value": "json"}}
 	selectUpdate := []map[string]any{{"label": "按间隔", "value": "interval"}, {"label": "每日固定时间", "value": "daily"}, {"label": "手动", "value": "manual"}}
 	return []configSectionDef{
 		{Key: "Global", Title: "全局", Description: "基础运行参数", Category: "runtime", Fields: []configFieldDef{
 			{Key: "databases_dir", Label: "数据目录", Type: "string", Description: "JSON 状态、备份和迁移文件目录"},
+			{Key: "log_level", Label: "日志等级", Type: "select", Description: "后端运行日志等级；兼容旧值 10/20/30/40", Options: []map[string]any{{"label": "DEBUG", "value": "debug"}, {"label": "INFO", "value": "info"}, {"label": "WARN", "value": "warn"}, {"label": "ERROR", "value": "error"}}},
+			{Key: "runtime_log_limit", Label: "实时日志保留行数", Type: "int", Description: "后台实时日志缓冲区行数，热重载生效"},
 			{Key: "redis_url", Label: "Redis URL", Type: "secret", Description: "会话和限流 Redis，留空使用进程内存"},
 			{Key: "telegram_mode", Label: "启用 Telegram", Type: "bool", Description: "启用 Bot 和 Telegram 绑定能力"},
 			{Key: "force_bind_telegram", Label: "强制绑定 Telegram", Type: "bool", Description: "登录/注册流程要求绑定 Telegram"},
@@ -409,7 +411,7 @@ func configSectionDefs() []configSectionDef {
 			{Key: "bangumi_api_url", Label: "Bangumi API URL", Type: "string", Description: "Bangumi API 基础地址"},
 		}},
 		{Key: "Database", Title: "数据库", Description: "JSON/PostgreSQL 存储和备份配置", Category: "ops", Fields: []configFieldDef{
-			{Key: "driver", Label: "存储后端", Type: "select", Description: "json 保持原兼容；postgres 使用 PostgreSQL JSONB 状态表", Options: selectDriver},
+			{Key: "driver", Label: "存储后端", Type: "select", Description: "可视化配置仅提供 PostgreSQL 与 Go JSON；旧 SQLite 仅作为手动迁移源，不作为前端可选运行后端", Options: selectDriver},
 			{Key: "state_file", Label: "JSON 状态文件", Type: "string", Description: "Go JSON 状态文件路径，留空使用数据目录下 twilight_go_state.json"},
 			{Key: "backup_dir", Label: "备份目录", Type: "string", Description: "数据库快照备份目录"},
 			{Key: "url", Label: "PostgreSQL URL", Type: "secret", Description: "完整 postgres:// 连接串，优先级高于分项配置"},
@@ -524,6 +526,7 @@ func configValues(cfg config.Config) map[string]map[string]any {
 	return map[string]map[string]any{
 		"Global": {
 			"databases_dir": cfg.DatabaseDir, "redis_url": cfg.RedisURL, "telegram_mode": cfg.TelegramMode, "force_bind_telegram": cfg.ForceBindTelegram,
+			"log_level": cfg.LogLevel, "runtime_log_limit": cfg.RuntimeLogLimit,
 			"tmdb_api_key": cfg.TMDBAPIKey, "tmdb_api_url": cfg.TMDBAPIURL, "tmdb_image_url": cfg.TMDBImageURL, "bangumi_token": cfg.BangumiToken, "bangumi_api_url": cfg.BangumiAPIURL,
 		},
 		"Database": {

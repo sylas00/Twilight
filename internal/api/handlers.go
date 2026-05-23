@@ -284,7 +284,7 @@ func (a *App) handleUpdateMe(w http.ResponseWriter, r *http.Request, _ Params) {
 	if statusFromError(w, err) {
 		return
 	}
-	ok(w, "鏇存柊鎴愬姛", publicUser(u))
+	ok(w, "更新成功", publicUser(u))
 }
 
 func (a *App) handleUpdateUsername(w http.ResponseWriter, r *http.Request, _ Params) {
@@ -309,7 +309,7 @@ func (a *App) handleUpdateUsername(w http.ResponseWriter, r *http.Request, _ Par
 	if statusFromError(w, err) {
 		return
 	}
-	ok(w, "鐢ㄦ埛鍚嶅凡鏇存柊", publicUser(u))
+	ok(w, "用户名已更新", publicUser(u))
 }
 
 func (a *App) handleChangePassword(w http.ResponseWriter, r *http.Request, _ Params) {
@@ -330,7 +330,7 @@ func (a *App) handleChangePassword(w http.ResponseWriter, r *http.Request, _ Par
 	}
 	hash, err := security.HashPassword(newPassword)
 	if err != nil {
-		fail(w, http.StatusInternalServerError, "瀵嗙爜澶勭悊澶辫触")
+		fail(w, http.StatusInternalServerError, "密码处理失败")
 		return
 	}
 	_, err = a.store.UpdateUser(p.User.UID, func(u *store.User) error { u.PasswordHash = hash; return nil })
@@ -348,7 +348,7 @@ func (a *App) handleGeneratedPassword(w http.ResponseWriter, r *http.Request, _ 
 	password := "Twilight-" + randomCode(12)
 	hash, err := security.HashPassword(password)
 	if err != nil {
-		fail(w, http.StatusInternalServerError, "瀵嗙爜澶勭悊澶辫触")
+		fail(w, http.StatusInternalServerError, "密码处理失败")
 		return
 	}
 	_, err = a.store.UpdateUser(p.User.UID, func(u *store.User) error { u.PasswordHash = hash; return nil })
@@ -1444,12 +1444,78 @@ func (a *App) handleServerIcon(w http.ResponseWriter, r *http.Request, _ Params)
 }
 
 func (a *App) handleHealth(w http.ResponseWriter, r *http.Request, _ Params) {
-	ok(w, "OK", map[string]any{"status": "healthy", "time": time.Now().Unix(), "redis": a.redis != nil, "storage": "json"})
+	emby := a.embyOverview(r.Context())
+	data := map[string]any{
+		"status":          "healthy",
+		"time":            time.Now().Unix(),
+		"api":             true,
+		"database":        a.store != nil,
+		"emby":            boolValue(emby, "online", false),
+		"emby_configured": a.cfg.EmbyURL != "",
+		"redis":           a.redis != nil,
+		"storage":         a.store.Backend(),
+		"active_database": a.store.Backend(),
+		"config_database": strings.ToLower(a.cfg.DatabaseDriver),
+	}
+	ok(w, "OK", data)
 }
 
 func (a *App) handleSystemStats(w http.ResponseWriter, r *http.Request, _ Params) {
 	users := a.store.ListUsers()
-	ok(w, "OK", map[string]any{"users": len(users), "total_users": len(users), "active_users": countActive(users), "redis_enabled": a.redis != nil, "routes": len(a.routes), "uptime": 0})
+	activeUsers := countActive(users)
+	regcodes := a.store.ListRegCodes()
+	activeRegcodes := 0
+	for _, code := range regcodes {
+		if code.Active {
+			activeRegcodes++
+		}
+	}
+	usage := 0
+	if a.cfg.UserLimit > 0 {
+		usage = int(float64(len(users)) / float64(a.cfg.UserLimit) * 100)
+	}
+	ok(w, "OK", map[string]any{
+		"timestamp":     time.Now().Unix(),
+		"cpu_count":     nil,
+		"users":         map[string]any{"active": activeUsers, "total": len(users), "limit": zeroNil(int64(a.cfg.UserLimit)), "usage_percent": usage},
+		"regcodes":      map[string]any{"active": activeRegcodes, "total": len(regcodes)},
+		"emby":          a.embyOverview(r.Context()),
+		"total_users":   len(users),
+		"active_users":  activeUsers,
+		"redis_enabled": a.redis != nil,
+		"routes":        len(a.routes),
+		"uptime":        int64(time.Since(runtimeStartedAt).Seconds()),
+	})
+}
+
+func (a *App) embyOverview(ctx context.Context) map[string]any {
+	info := map[string]any{}
+	online := false
+	if a.cfg.EmbyURL != "" {
+		embyCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+		defer cancel()
+		if err := a.embyGet(embyCtx, "/System/Info/Public", &info); err == nil {
+			online = true
+		} else if err := a.embyGet(embyCtx, "/System/Info", &info); err == nil {
+			online = true
+		}
+	}
+	sessions := []map[string]any{}
+	if online {
+		embyCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+		defer cancel()
+		_ = a.embyGet(embyCtx, "/Sessions", &sessions)
+	}
+	return map[string]any{
+		"online":           online,
+		"configured":       a.cfg.EmbyURL != "",
+		"server":           a.cfg.EmbyURL,
+		"server_name":      firstNonEmpty(asString(info["ServerName"]), asString(info["Name"])),
+		"version":          firstNonEmpty(asString(info["Version"]), "unknown"),
+		"operating_system": asString(info["OperatingSystem"]),
+		"active_sessions":  len(sessions),
+		"total_sessions":   len(sessions),
+	}
 }
 
 func (a *App) handleEmbyURLs(w http.ResponseWriter, r *http.Request, _ Params) {
@@ -1761,7 +1827,7 @@ func (a *App) handleAdminToggleUser(w http.ResponseWriter, r *http.Request, para
 		affected = append(affected, targetUID)
 	}
 	u, _ := a.store.User(uid)
-	ok(w, "鐢ㄦ埛鐘舵€佸凡鏇存柊", map[string]any{"user": publicUser(u), "active": enable, "affected": affected, "skipped": skipped, "failed": failed, "cascade_depth": depth, "enable": enable})
+	ok(w, "用户状态已更新", map[string]any{"user": publicUser(u), "active": enable, "affected": affected, "skipped": skipped, "failed": failed, "cascade_depth": depth, "enable": enable})
 }
 
 func (a *App) handleAdminUnbindEmby(w http.ResponseWriter, r *http.Request, params Params) {
@@ -1962,7 +2028,7 @@ func (a *App) handleAdminRenewUser(w http.ResponseWriter, r *http.Request, param
 	if u.EmbyID != "" && a.cfg.EmbyURL != "" {
 		_ = a.embySetUserEnabled(r.Context(), u.EmbyID, a.embyShouldEnableUser(u))
 	}
-	ok(w, "缁湡鎴愬姛", publicUser(u))
+	ok(w, "续期成功", publicUser(u))
 }
 
 func (a *App) handleAdminResetPassword(w http.ResponseWriter, r *http.Request, params Params) {
@@ -2228,7 +2294,16 @@ func (a *App) handleAnnouncements(w http.ResponseWriter, r *http.Request, _ Para
 
 func (a *App) handleCreateAnnouncement(w http.ResponseWriter, r *http.Request, _ Params) {
 	payload := decodeMap(r)
-	ann, err := a.store.UpsertAnnouncement(store.Announcement{Title: firstNonEmpty(stringValue(payload, "title"), "鍏憡"), Content: stringValue(payload, "content"), Visible: boolValue(payload, "visible", true), Level: firstNonEmpty(stringValue(payload, "level"), "info")})
+	ann, err := a.store.UpsertAnnouncement(store.Announcement{
+		Title:        firstNonEmpty(stringValue(payload, "title"), "公告"),
+		Content:      stringValue(payload, "content"),
+		Visible:      boolValue(payload, "visible", true),
+		Level:        firstNonEmpty(stringValue(payload, "level"), "info"),
+		RenderMode:   safeAnnouncementRenderMode(stringValue(payload, "render_mode")),
+		Pinned:       boolValue(payload, "pinned", false),
+		CreatedByUID: current(r).User.UID,
+		ExpiredAt:    int64Value(payload, "expires_at", int64Value(payload, "expired_at", 0)),
+	})
 	if statusFromError(w, err) {
 		return
 	}
@@ -2238,11 +2313,45 @@ func (a *App) handleCreateAnnouncement(w http.ResponseWriter, r *http.Request, _
 func (a *App) handleUpdateAnnouncement(w http.ResponseWriter, r *http.Request, params Params) {
 	id, _ := int64Param(params, "announcement_id")
 	payload := decodeMap(r)
-	ann, err := a.store.UpsertAnnouncement(store.Announcement{ID: id, Title: firstNonEmpty(stringValue(payload, "title"), "鍏憡"), Content: stringValue(payload, "content"), Visible: boolValue(payload, "visible", true), Level: firstNonEmpty(stringValue(payload, "level"), "info")})
+	existing := store.Announcement{ID: id, Title: "公告", Level: "info", Visible: true, RenderMode: "plain"}
+	for _, ann := range a.store.ListAnnouncements(true) {
+		if ann.ID == id {
+			existing = ann
+			break
+		}
+	}
+	ann, err := a.store.UpsertAnnouncement(store.Announcement{
+		ID:           id,
+		Title:        firstNonEmpty(stringValue(payload, "title"), existing.Title, "公告"),
+		Content:      firstNonEmpty(stringValue(payload, "content"), existing.Content),
+		Visible:      boolValue(payload, "visible", existing.Visible),
+		Level:        firstNonEmpty(stringValue(payload, "level"), existing.Level, "info"),
+		RenderMode:   safeAnnouncementRenderMode(firstNonEmpty(stringValue(payload, "render_mode"), existing.RenderMode)),
+		Pinned:       boolValue(payload, "pinned", existing.Pinned),
+		CreatedByUID: existing.CreatedByUID,
+		CreatedAt:    existing.CreatedAt,
+		ExpiredAt:    int64Value(payload, "expires_at", int64Value(payload, "expired_at", existing.ExpiredAt)),
+	})
 	if statusFromError(w, err) {
 		return
 	}
 	ok(w, "announcement updated", ann)
+}
+
+func safeAnnouncementRenderMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "markdown", "bbcode":
+		return strings.ToLower(strings.TrimSpace(mode))
+	default:
+		return "plain"
+	}
+}
+
+func int64Value(payload map[string]any, key string, fallback int64) int64 {
+	if _, ok := payload[key]; !ok {
+		return fallback
+	}
+	return numeric(payload[key])
 }
 
 func (a *App) handleDeleteAnnouncement(w http.ResponseWriter, r *http.Request, params Params) {
