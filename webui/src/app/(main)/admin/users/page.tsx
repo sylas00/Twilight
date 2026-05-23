@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Search,
   MoreHorizontal,
@@ -58,7 +58,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { useAsyncResource } from "@/hooks/use-async-resource";
 import { PageError } from "@/components/layout/page-state";
-import { api, type UserInfo, type EmbyLibraryAccess } from "@/lib/api";
+import { api, type UserInfo, type EmbyLibraryAccess, type EmbyLibraryItem } from "@/lib/api";
 import { formatDate } from "@/lib/utils";
 
 export default function AdminUsersPage() {
@@ -108,6 +108,14 @@ export default function AdminUsersPage() {
   const [selectedLibraryIds, setSelectedLibraryIds] = useState<Set<string>>(new Set());
   const [libraryLoading, setLibraryLoading] = useState(false);
   const [librarySelfServiceBulkLoading, setLibrarySelfServiceBulkLoading] = useState(false);
+  const [selectedUserIds, setSelectedUserIds] = useState<Set<number>>(new Set());
+  const [batchUserLoading, setBatchUserLoading] = useState(false);
+  const [batchLibraryOpen, setBatchLibraryOpen] = useState(false);
+  const [batchLibraries, setBatchLibraries] = useState<EmbyLibraryItem[]>([]);
+  const [batchLibraryAction, setBatchLibraryAction] = useState<"show" | "hide" | "enable_all" | "disable_all" | "set">("show");
+  const [batchLibrarySelectedIds, setBatchLibrarySelectedIds] = useState<Set<string>>(new Set());
+  const [batchLibraryLoading, setBatchLibraryLoading] = useState(false);
+  const [batchDeleteEmby, setBatchDeleteEmby] = useState(true);
 
   // 删除（含邀请树级联）对话框
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -265,6 +273,34 @@ export default function AdminUsersPage() {
     execute: loadUsers,
   } = useAsyncResource(loadUsersResource, { immediate: true });
 
+  const selectedUsers = useMemo(
+    () => users.filter((user) => selectedUserIds.has(user.uid)),
+    [users, selectedUserIds],
+  );
+  const selectedUids = useMemo(() => Array.from(selectedUserIds), [selectedUserIds]);
+  const allPageSelected = users.length > 0 && users.every((user) => selectedUserIds.has(user.uid));
+
+  const toggleSelectedUser = (uid: number) => {
+    setSelectedUserIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(uid)) next.delete(uid);
+      else next.add(uid);
+      return next;
+    });
+  };
+
+  const toggleSelectCurrentPage = () => {
+    setSelectedUserIds((prev) => {
+      const next = new Set(prev);
+      if (allPageSelected) {
+        users.forEach((user) => next.delete(user.uid));
+      } else {
+        users.forEach((user) => next.add(user.uid));
+      }
+      return next;
+    });
+  };
+
   const handleSearch = () => {
     invalidateUsersCache();
     setExpandedUserIds(new Set());
@@ -292,6 +328,14 @@ export default function AdminUsersPage() {
     void loadUsers();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roleFilter, activeFilter, embyFilter, sortBy]);
+
+  useEffect(() => {
+    setSelectedUserIds((prev) => {
+      const visible = new Set(users.map((user) => user.uid));
+      const next = new Set(Array.from(prev).filter((uid) => visible.has(uid)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [users]);
 
   const handleForceSetEmbyPassword = async () => {
     const emby = forcePwdEmbyName.trim();
@@ -842,6 +886,152 @@ export default function AdminUsersPage() {
       toast({ title: "批量开启失败", description: error.message, variant: "destructive" });
     } finally {
       setLibrarySelfServiceBulkLoading(false);
+    }
+  };
+
+  const refreshAfterBatch = async () => {
+    invalidateUsersCache();
+    setSelectedUserIds(new Set());
+    await loadUsers();
+  };
+
+  const handleSelectedToggleActive = async (enable: boolean) => {
+    if (selectedUids.length === 0) return;
+    const ok = await confirmAction({
+      title: enable ? "Enable selected users?" : "Disable selected users?",
+      description: `Apply to ${selectedUids.length} selected users. Admin accounts are protected by the backend and will be skipped.`,
+      tone: enable ? "warning" : "danger",
+      confirmLabel: enable ? "Enable" : "Disable",
+    });
+    if (!ok) return;
+    setBatchUserLoading(true);
+    try {
+      const res = await api.batchToggleUsers(selectedUids, enable);
+      if (res.success && res.data) {
+        toast({
+          title: enable ? "Batch enable complete" : "Batch disable complete",
+          description: `Success ${res.data.success}, failed ${res.data.failed}`,
+          variant: res.data.failed ? "default" : "success",
+        });
+        await refreshAfterBatch();
+      } else {
+        toast({ title: "Batch action failed", description: res.message, variant: "destructive" });
+      }
+    } catch (error: any) {
+      toast({ title: "Batch action failed", description: error.message, variant: "destructive" });
+    } finally {
+      setBatchUserLoading(false);
+    }
+  };
+
+  const handleSelectedLibrarySelfService = async (enabled: boolean) => {
+    if (selectedUids.length === 0) return;
+    setBatchUserLoading(true);
+    try {
+      const res = await api.batchSetLibrarySelfService(selectedUids, enabled);
+      if (res.success && res.data) {
+        toast({
+          title: enabled ? "Self-service enabled" : "Self-service disabled",
+          description: `Success ${res.data.success}, failed ${res.data.failed}`,
+          variant: res.data.failed ? "default" : "success",
+        });
+        await refreshAfterBatch();
+      } else {
+        toast({ title: "Batch action failed", description: res.message, variant: "destructive" });
+      }
+    } catch (error: any) {
+      toast({ title: "Batch action failed", description: error.message, variant: "destructive" });
+    } finally {
+      setBatchUserLoading(false);
+    }
+  };
+
+  const handleSelectedDelete = async () => {
+    if (selectedUids.length === 0) return;
+    const ok = await confirmAction({
+      title: "Delete selected users?",
+      description: `Delete ${selectedUids.length} selected users. Admin accounts and the current admin are protected by the backend and will be skipped.`,
+      tone: "danger",
+      confirmLabel: "Delete selected",
+    });
+    if (!ok) return;
+    setBatchUserLoading(true);
+    try {
+      const res = await api.batchDeleteUsers(selectedUids, batchDeleteEmby);
+      if (res.success && res.data) {
+        toast({
+          title: "Batch delete complete",
+          description: `Success ${res.data.success}, failed ${res.data.failed}`,
+          variant: res.data.failed ? "default" : "success",
+        });
+        await refreshAfterBatch();
+      } else {
+        toast({ title: "Batch delete failed", description: res.message, variant: "destructive" });
+      }
+    } catch (error: any) {
+      toast({ title: "Batch delete failed", description: error.message, variant: "destructive" });
+    } finally {
+      setBatchUserLoading(false);
+    }
+  };
+
+  const openBatchLibraryDialog = async () => {
+    if (selectedUids.length === 0) return;
+    setBatchLibraryOpen(true);
+    setBatchLibraryLoading(true);
+    setBatchLibraryAction("show");
+    setBatchLibrarySelectedIds(new Set());
+    try {
+      const res = await api.getAdminEmbyLibraries();
+      if (res.success && res.data) {
+        setBatchLibraries(res.data);
+      } else {
+        toast({ title: "Load libraries failed", description: res.message, variant: "destructive" });
+      }
+    } catch (error: any) {
+      toast({ title: "Load libraries failed", description: error.message, variant: "destructive" });
+    } finally {
+      setBatchLibraryLoading(false);
+    }
+  };
+
+  const toggleBatchLibrary = (id: string) => {
+    setBatchLibrarySelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const applyBatchLibraryAction = async () => {
+    if (selectedUids.length === 0) return;
+    if ((batchLibraryAction === "show" || batchLibraryAction === "hide" || batchLibraryAction === "set") && batchLibrarySelectedIds.size === 0) {
+      toast({ title: "Select at least one library", variant: "destructive" });
+      return;
+    }
+    setBatchLibraryLoading(true);
+    try {
+      const res = await api.batchUpdateUserLibraries(selectedUids, {
+        action: batchLibraryAction,
+        library_ids: Array.from(batchLibrarySelectedIds),
+        enable_all: batchLibraryAction === "enable_all",
+      });
+      if (res.success && res.data) {
+        toast({
+          title: "Library batch complete",
+          description: `Success ${res.data.success}, failed ${res.data.failed}`,
+          variant: res.data.failed ? "default" : "success",
+        });
+        setBatchLibraryOpen(false);
+        await refreshAfterBatch();
+      } else {
+        toast({ title: "Library batch failed", description: res.message, variant: "destructive" });
+      }
+    } catch (error: any) {
+      toast({ title: "Library batch failed", description: error.message, variant: "destructive" });
+    } finally {
+      setBatchLibraryLoading(false);
     }
   };
 
@@ -1668,6 +1858,53 @@ export default function AdminUsersPage() {
       </Card>
 
       {/* Users Table */}
+      {selectedUserIds.size > 0 && (
+        <Card className="border-primary/30">
+          <CardContent className="flex flex-col gap-3 p-4 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <p className="font-medium">Selected {selectedUserIds.size} users</p>
+              <p className="text-xs text-muted-foreground">
+                {selectedUsers.filter((user) => Boolean(user.emby_id)).length} selected users have Emby accounts. Batch active/delete operations skip admin accounts on the backend.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button variant="outline" size="sm" onClick={() => setSelectedUserIds(new Set())} disabled={batchUserLoading || batchLibraryLoading}>
+                Clear
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => void handleSelectedToggleActive(false)} disabled={batchUserLoading}>
+                <Ban className="mr-2 h-4 w-4" />
+                Disable
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => void handleSelectedLibrarySelfService(true)} disabled={batchUserLoading}>
+                <Eye className="mr-2 h-4 w-4" />
+                Enable self-service
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => void handleSelectedLibrarySelfService(false)} disabled={batchUserLoading}>
+                <EyeOff className="mr-2 h-4 w-4" />
+                Disable self-service
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => void openBatchLibraryDialog()} disabled={batchUserLoading || batchLibraryLoading}>
+                <Eye className="mr-2 h-4 w-4" />
+                Libraries
+              </Button>
+              <label className="flex items-center gap-2 rounded-md border px-2 py-1.5 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={batchDeleteEmby}
+                  onChange={(event) => setBatchDeleteEmby(event.target.checked)}
+                  className="h-4 w-4"
+                />
+                Delete Emby too
+              </label>
+              <Button variant="destructive" size="sm" onClick={() => void handleSelectedDelete()} disabled={batchUserLoading}>
+                {batchUserLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Trash2 className="mr-2 h-4 w-4" />}
+                Delete
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       <Card>
         <CardContent className="p-0">
           {isLoading ? (
@@ -1680,9 +1917,18 @@ export default function AdminUsersPage() {
               {users.map((user) => (
                 <div key={user.uid} className="rounded-xl border bg-background p-4 shadow-sm">
                   <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <p className="truncate text-base font-medium">{user.username}</p>
-                      <p className="mt-1 text-xs text-muted-foreground">UID: {user.uid}</p>
+                    <div className="flex min-w-0 items-start gap-3">
+                      <input
+                        type="checkbox"
+                        checked={selectedUserIds.has(user.uid)}
+                        onChange={() => toggleSelectedUser(user.uid)}
+                        className="mt-1 h-4 w-4"
+                        aria-label={`Select ${user.username}`}
+                      />
+                      <div className="min-w-0">
+                        <p className="truncate text-base font-medium">{user.username}</p>
+                        <p className="mt-1 text-xs text-muted-foreground">UID: {user.uid}</p>
+                      </div>
                     </div>
                     {renderUserActions(user)}
                   </div>
@@ -1742,6 +1988,15 @@ export default function AdminUsersPage() {
               <table className="w-full">
                 <thead>
                   <tr className="border-b bg-muted/50">
+                    <th className="w-10 px-4 py-3 text-left text-sm font-medium">
+                      <input
+                        type="checkbox"
+                        checked={allPageSelected}
+                        onChange={toggleSelectCurrentPage}
+                        className="h-4 w-4"
+                        aria-label="Select current page"
+                      />
+                    </th>
                     <th className="px-4 py-3 text-left text-sm font-medium">用户</th>
                     <th className="px-4 py-3 text-left text-sm font-medium">角色</th>
                     <th className="px-4 py-3 text-left text-sm font-medium">状态</th>
@@ -1754,6 +2009,15 @@ export default function AdminUsersPage() {
                   {users.map((user) => (
                     <Fragment key={user.uid}>
                       <tr className="border-b hover:bg-muted/30">
+                      <td className="px-4 py-3">
+                        <input
+                          type="checkbox"
+                          checked={selectedUserIds.has(user.uid)}
+                          onChange={() => toggleSelectedUser(user.uid)}
+                          className="h-4 w-4"
+                          aria-label={`Select ${user.username}`}
+                        />
+                      </td>
                       <td className="px-4 py-3">
                         <div className="flex items-start justify-between gap-4">
                           <div className="min-w-0">
@@ -1817,7 +2081,7 @@ export default function AdminUsersPage() {
                     </tr>
                     {expandedUserIds.has(user.uid) && (
                       <tr className="bg-muted/10">
-                        <td colSpan={6} className="px-4 py-3 text-sm text-muted-foreground">
+                        <td colSpan={7} className="px-4 py-3 text-sm text-muted-foreground">
                           <div className="grid gap-3 sm:grid-cols-2">
                             <div>
                               <p className="font-medium">更多信息</p>
@@ -1870,6 +2134,69 @@ export default function AdminUsersPage() {
           </Button>
         </div>
       )}
+
+      <Dialog open={batchLibraryOpen} onOpenChange={(open) => { if (!batchLibraryLoading) setBatchLibraryOpen(open); }}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Batch library visibility</DialogTitle>
+            <DialogDescription>
+              Apply Emby library show/hide policy to {selectedUserIds.size} selected users. Users without Emby accounts are skipped.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>Action</Label>
+              <Select value={batchLibraryAction} onValueChange={(value) => setBatchLibraryAction(value as typeof batchLibraryAction)}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="show">Show selected libraries</SelectItem>
+                  <SelectItem value="hide">Hide selected libraries</SelectItem>
+                  <SelectItem value="set">Set visible libraries exactly</SelectItem>
+                  <SelectItem value="enable_all">Show all libraries</SelectItem>
+                  <SelectItem value="disable_all">Hide all libraries</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {batchLibraryAction !== "enable_all" && batchLibraryAction !== "disable_all" && (
+              <div className="max-h-72 space-y-2 overflow-auto rounded-md border p-3">
+                {batchLibraryLoading ? (
+                  <div className="flex h-24 items-center justify-center">
+                    <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+                  </div>
+                ) : batchLibraries.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No libraries returned from Emby.</p>
+                ) : (
+                  batchLibraries.map((library) => (
+                    <label key={library.id} className="flex items-center justify-between gap-3 rounded-md px-2 py-2 hover:bg-muted/60">
+                      <span className="min-w-0">
+                        <span className="block truncate text-sm font-medium">{library.name || library.id}</span>
+                        {library.type && <span className="block text-xs text-muted-foreground">{library.type}</span>}
+                      </span>
+                      <input
+                        type="checkbox"
+                        checked={batchLibrarySelectedIds.has(library.id)}
+                        onChange={() => toggleBatchLibrary(library.id)}
+                        className="h-4 w-4"
+                      />
+                    </label>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setBatchLibraryOpen(false)} disabled={batchLibraryLoading}>
+              Cancel
+            </Button>
+            <Button onClick={() => void applyBatchLibraryAction()} disabled={batchLibraryLoading}>
+              {batchLibraryLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Apply
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Edit Dialog */}
       <Dialog open={editOpen} onOpenChange={setEditOpen}>

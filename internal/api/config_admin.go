@@ -54,7 +54,7 @@ func (a *App) handleConfigBackupInspect(w http.ResponseWriter, r *http.Request, 
 		fail(w, http.StatusBadRequest, "配置备份无效")
 		return
 	}
-	ok(w, "OK", map[string]any{"backup": backup, "content": string(content), "config_file": a.configFilePath()})
+	ok(w, "OK", map[string]any{"backup": backup, "content": stripProtectedAdminConfig(string(content)), "config_file": a.configFilePath()})
 }
 
 func (a *App) handleConfigRestore(w http.ResponseWriter, r *http.Request, _ Params) {
@@ -199,11 +199,12 @@ func (a *App) saveConfigContent(content string) (map[string]any, int, string) {
 	if err := os.MkdirAll(filepath.Dir(configFile), 0o700); err != nil {
 		return nil, http.StatusInternalServerError, "创建配置目录失败"
 	}
+	existing, readErr := os.ReadFile(configFile)
+	hadExisting := readErr == nil
+	content = mergeProtectedAdminConfig(content, string(existing))
 	if err := validateConfigContent(configFile, []byte(content)); err != nil {
 		return nil, http.StatusBadRequest, "配置校验失败: " + err.Error()
 	}
-	existing, readErr := os.ReadFile(configFile)
-	hadExisting := readErr == nil
 	var backupInfo *store.BackupInfo
 	if hadExisting {
 		info, err := writeConfigBackupBytes(configFile, a.configBackupDir(), existing)
@@ -298,6 +299,83 @@ func validateConfigContent(configFile string, content []byte) error {
 	defer os.Remove(tmpPath)
 	_, err := config.Load(tmpPath)
 	return err
+}
+
+func stripProtectedAdminConfig(content string) string {
+	var out []string
+	inAdmin := false
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			section := strings.Trim(strings.TrimSpace(strings.Trim(trimmed, "[]")), `"`)
+			inAdmin = strings.EqualFold(section, "Admin")
+			if inAdmin {
+				continue
+			}
+		}
+		if inAdmin || protectedAdminConfigLine(trimmed) {
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.TrimRight(strings.Join(out, "\n"), "\n") + "\n"
+}
+
+func mergeProtectedAdminConfig(submitted, existing string) string {
+	clean := strings.TrimRight(stripProtectedAdminConfig(submitted), "\n")
+	protected := strings.TrimSpace(extractProtectedAdminConfig(existing))
+	if protected == "" {
+		return clean + "\n"
+	}
+	return clean + "\n\n" + protected + "\n"
+}
+
+func extractProtectedAdminConfig(content string) string {
+	var adminLines []string
+	var rootLines []string
+	inAdmin := false
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			section := strings.Trim(strings.TrimSpace(strings.Trim(trimmed, "[]")), `"`)
+			inAdmin = strings.EqualFold(section, "Admin")
+			if inAdmin {
+				adminLines = append(adminLines, "[Admin]")
+			}
+			continue
+		}
+		if inAdmin {
+			adminLines = append(adminLines, line)
+			continue
+		}
+		if protectedAdminConfigLine(trimmed) {
+			rootLines = append(rootLines, line)
+		}
+	}
+	if len(adminLines) > 0 {
+		return strings.TrimRight(strings.Join(adminLines, "\n"), "\n")
+	}
+	if len(rootLines) > 0 {
+		return "[Admin]\n" + strings.TrimRight(strings.Join(rootLines, "\n"), "\n")
+	}
+	return ""
+}
+
+func protectedAdminConfigLine(trimmed string) bool {
+	if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+		return false
+	}
+	key, _, ok := strings.Cut(trimmed, "=")
+	if !ok {
+		return false
+	}
+	key = strings.ToLower(strings.TrimSpace(key))
+	switch key {
+	case "admin_uids", "admin_usernames":
+		return true
+	default:
+		return false
+	}
 }
 
 func writeConfigBackupBytes(configFile, backupDir string, content []byte) (store.BackupInfo, error) {

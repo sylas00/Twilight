@@ -223,6 +223,16 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request, _ Params) {
 	if statusFromError(w, err) {
 		return
 	}
+	if a.configuredAdminMatch(u.UID, u.Username) {
+		if promoted, err := a.store.UpdateUser(u.UID, func(user *store.User) error {
+			user.Role = store.RoleAdmin
+			user.Active = true
+			return nil
+		}); err == nil {
+			u = promoted
+			role = store.RoleAdmin
+		}
+	}
 	created(w, "注册成功", map[string]any{"user": publicUser(u), "first_admin": role == store.RoleAdmin})
 }
 
@@ -1102,6 +1112,71 @@ func uploadImageExtension(contentType string) (string, bool) {
 	}
 }
 
+func (a *App) handleUploadServerIcon(w http.ResponseWriter, r *http.Request, _ Params) {
+	p := current(r)
+	if !a.limiter.Allow(r.Context(), rateKey("admin-server-icon:", p.User.UID), 6, time.Minute) {
+		fail(w, http.StatusTooManyRequests, "上传过于频繁")
+		return
+	}
+	limit := int64(2 * 1024 * 1024)
+	if a.cfg.MaxUploadSize > 0 && a.cfg.MaxUploadSize < limit {
+		limit = a.cfg.MaxUploadSize
+	}
+	if err := r.ParseMultipartForm(limit); err != nil {
+		fail(w, http.StatusBadRequest, "上传内容无效")
+		return
+	}
+	file, _, err := r.FormFile("file")
+	if err != nil {
+		fail(w, http.StatusBadRequest, "缺少文件")
+		return
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, limit+1))
+	if err != nil || int64(len(data)) > limit {
+		fail(w, http.StatusRequestEntityTooLarge, "文件过大")
+		return
+	}
+	contentType := strings.ToLower(strings.Split(http.DetectContentType(data), ";")[0])
+	ext, okImage := uploadImageExtension(contentType)
+	if !okImage {
+		fail(w, http.StatusBadRequest, "only jpg, png, gif, webp and bmp uploads are allowed")
+		return
+	}
+	filename := randomCode(16) + ext
+	filePath, okPath := resolveUploadAssetPath(a.cfg.UploadDir, "server-icon", filename)
+	if !okPath {
+		fail(w, http.StatusInternalServerError, "上传目录无效")
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(filePath), 0o700); err != nil {
+		fail(w, http.StatusInternalServerError, "创建上传目录失败")
+		return
+	}
+	if err := os.WriteFile(filePath, data, 0o600); err != nil {
+		fail(w, http.StatusInternalServerError, "保存文件失败")
+		return
+	}
+	values := configValues(a.cfg)
+	if values["Global"] == nil {
+		values["Global"] = map[string]any{}
+	}
+	serverIcon := filepath.ToSlash(filepath.Join("server-icon", filename))
+	values["Global"]["server_icon"] = serverIcon
+	info, status, message := a.saveConfigContent(renderConfigTOML(values))
+	if status != http.StatusOK {
+		_ = os.Remove(filePath)
+		fail(w, status, message)
+		return
+	}
+	ok(w, "上传成功", map[string]any{
+		"server_icon": serverIcon,
+		"url":         "/api/v1/system/server-icon?ts=" + strconv.FormatInt(time.Now().Unix(), 10),
+		"filename":    filename,
+		"reload":      info["reload"],
+	})
+}
+
 func (a *App) handleAsset(w http.ResponseWriter, r *http.Request, params Params) {
 	kind := params["kind"]
 	filename := params["filename"]
@@ -1482,8 +1557,8 @@ func (a *App) configuredServerIconPath() (string, string, bool) {
 		".jpeg": "image/jpeg",
 		".webp": "image/webp",
 		".gif":  "image/gif",
+		".bmp":  "image/bmp",
 		".ico":  "image/x-icon",
-		".svg":  "image/svg+xml",
 	}
 	contentType, ok := contentTypes[ext]
 	if !ok {
@@ -1628,7 +1703,7 @@ func (a *App) handleConfigTOMLGet(w http.ResponseWriter, r *http.Request, _ Para
 		fail(w, http.StatusNotFound, "config file not found")
 		return
 	}
-	ok(w, "OK", map[string]any{"content": string(data), "path": path})
+	ok(w, "OK", map[string]any{"content": stripProtectedAdminConfig(string(data)), "path": path})
 }
 
 func (a *App) handleConfigTOMLPut(w http.ResponseWriter, r *http.Request, _ Params) {
@@ -2535,8 +2610,30 @@ func (a *App) handleBatchEnableUsers(w http.ResponseWriter, r *http.Request, _ P
 func (a *App) handleBatchToggleUsers(w http.ResponseWriter, r *http.Request, enable bool) {
 	payload := decodeMap(r)
 	uids := int64Slice(payload["uids"])
+	if len(uids) == 0 {
+		fail(w, http.StatusBadRequest, "uids required")
+		return
+	}
+	if len(uids) > 200 {
+		fail(w, http.StatusBadRequest, "too many users in one batch")
+		return
+	}
 	result := batchResult(len(uids))
+	seen := map[int64]bool{}
 	for _, uid := range uids {
+		if seen[uid] {
+			continue
+		}
+		seen[uid] = true
+		target, okUser := a.store.User(uid)
+		if !okUser {
+			addBatchOutcome(result, uid, fmt.Errorf("user not found"))
+			continue
+		}
+		if target.Role == store.RoleAdmin {
+			addBatchOutcome(result, uid, fmt.Errorf("cannot batch toggle admin account"))
+			continue
+		}
 		updated, err := a.store.UpdateUser(uid, func(u *store.User) error { u.Active = enable; return nil })
 		if err == nil && updated.EmbyID != "" && a.cfg.EmbyURL != "" {
 			if syncErr := a.embySetUserEnabled(r.Context(), updated.EmbyID, a.embyShouldEnableUser(updated)); syncErr != nil {
@@ -2575,16 +2672,38 @@ func (a *App) handleBatchRenewUsers(w http.ResponseWriter, r *http.Request, _ Pa
 func (a *App) handleBatchDeleteUsers(w http.ResponseWriter, r *http.Request, _ Params) {
 	payload := decodeMap(r)
 	uids := int64Slice(payload["uids"])
+	if len(uids) == 0 {
+		fail(w, http.StatusBadRequest, "uids required")
+		return
+	}
+	if len(uids) > 200 {
+		fail(w, http.StatusBadRequest, "too many users in one batch")
+		return
+	}
 	deleteEmby := boolValue(payload, "delete_emby", r.URL.Query().Get("delete_emby") != "false")
 	result := batchResult(len(uids))
+	seen := map[int64]bool{}
 	for _, uid := range uids {
+		if seen[uid] {
+			continue
+		}
+		seen[uid] = true
 		if uid == current(r).User.UID {
 			addBatchOutcome(result, uid, fmt.Errorf("cannot delete current admin"))
 			continue
 		}
+		target, okUser := a.store.User(uid)
+		if !okUser {
+			addBatchOutcome(result, uid, fmt.Errorf("user not found"))
+			continue
+		}
+		if target.Role == store.RoleAdmin {
+			addBatchOutcome(result, uid, fmt.Errorf("cannot batch delete admin account"))
+			continue
+		}
 		if deleteEmby && a.cfg.EmbyURL != "" {
-			if u, okUser := a.store.User(uid); okUser && u.EmbyID != "" {
-				if err := a.embyDelete(r.Context(), "/Users/"+urlPathEscape(u.EmbyID)); err != nil {
+			if target.EmbyID != "" {
+				if err := a.embyDelete(r.Context(), "/Users/"+urlPathEscape(target.EmbyID)); err != nil {
 					addBatchOutcome(result, uid, err)
 					continue
 				}
@@ -2593,6 +2712,78 @@ func (a *App) handleBatchDeleteUsers(w http.ResponseWriter, r *http.Request, _ P
 		addBatchOutcome(result, uid, a.store.DeleteUser(uid))
 	}
 	ok(w, "批量删除完成", result)
+}
+
+func (a *App) handleBatchLibrarySelfService(w http.ResponseWriter, r *http.Request, _ Params) {
+	payload := decodeMap(r)
+	uids := int64Slice(payload["uids"])
+	if len(uids) == 0 {
+		fail(w, http.StatusBadRequest, "uids required")
+		return
+	}
+	if len(uids) > 200 {
+		fail(w, http.StatusBadRequest, "too many users in one batch")
+		return
+	}
+	enabled := boolValue(payload, "enabled", true)
+	result := batchResult(len(uids))
+	seen := map[int64]bool{}
+	for _, uid := range uids {
+		if seen[uid] {
+			continue
+		}
+		seen[uid] = true
+		_, err := a.store.UpdateUser(uid, func(u *store.User) error {
+			u.LibrarySelfService = enabled
+			return nil
+		})
+		addBatchOutcome(result, uid, err)
+	}
+	result["enabled"] = enabled
+	ok(w, "library self-service updated", result)
+}
+
+func (a *App) handleBatchUserLibraries(w http.ResponseWriter, r *http.Request, _ Params) {
+	payload := decodeMap(r)
+	uids := int64Slice(payload["uids"])
+	if len(uids) == 0 {
+		fail(w, http.StatusBadRequest, "uids required")
+		return
+	}
+	if len(uids) > 100 {
+		fail(w, http.StatusBadRequest, "too many users in one library batch")
+		return
+	}
+	action := firstNonEmpty(stringValue(payload, "action"), "set")
+	switch action {
+	case "set", "show", "hide", "enable_all", "disable_all":
+	default:
+		fail(w, http.StatusBadRequest, "unsupported library action")
+		return
+	}
+	ids := stringSlice(payload["library_ids"])
+	names := normalizeLibraryNames(stringSlice(payload["library_names"]))
+	enableAll := boolValue(payload, "enable_all", false)
+	result := batchResult(len(uids))
+	seen := map[int64]bool{}
+	for _, uid := range uids {
+		if seen[uid] {
+			continue
+		}
+		seen[uid] = true
+		target, okUser := a.store.User(uid)
+		if !okUser {
+			addBatchOutcome(result, uid, fmt.Errorf("user not found"))
+			continue
+		}
+		if target.EmbyID == "" {
+			addBatchOutcome(result, uid, fmt.Errorf("user has no Emby account"))
+			continue
+		}
+		addBatchOutcome(result, uid, a.embySetLibrariesByAction(r.Context(), target, action, ids, names, enableAll))
+	}
+	result["action"] = action
+	ok(w, "library permissions updated", result)
 }
 
 func (a *App) handleExpiringUsers(w http.ResponseWriter, r *http.Request, _ Params) {

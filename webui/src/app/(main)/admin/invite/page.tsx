@@ -1,33 +1,21 @@
 "use client";
 
-/**
- * 邀请森林可视化（管理员）
- * ========================
- * 用 SVG 自绘一个紧凑的「星图 / 辐射树」：
- * - 每个根节点是一颗"恒星"，子节点围绕排布，越靠外层颜色越淡。
- * - 鼠标 hover 节点显示提示，点击在右侧抽屉展示用户详情。
- * - 不引入额外可视化库，方便部署到 Cloudflare Workers（rendering tree small）。
- */
-
-import type { PointerEvent } from "react";
-import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
-import { motion } from "framer-motion";
+import { useCallback, useDeferredValue, useEffect, useMemo, useState } from "react";
 import {
+  AlertTriangle,
+  Ban,
+  ChevronDown,
+  ChevronRight,
   GitBranch,
   Loader2,
   RefreshCw,
-  Network,
-  Crown,
-  Ban,
-  Trash2,
-  AlertTriangle,
-  ShieldCheck,
   Search,
+  ShieldCheck,
+  Trash2,
 } from "lucide-react";
-import { Card, CardContent } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -36,348 +24,70 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { useToast } from "@/hooks/use-toast";
+import { Input } from "@/components/ui/input";
 import { useConfirm } from "@/components/ui/confirm-dialog";
+import { useToast } from "@/hooks/use-toast";
 import { api, type InviteForest, type InviteForestNode } from "@/lib/api";
-import {
-  Sheet,
-  SheetClose,
-} from "./sheet-mini";
 
-interface Positioned {
-  uid: number;
-  x: number;
-  y: number;
+interface TreeRow {
+  node: InviteForestNode;
   depth: number;
-  angle: number;
-  rootUid: number;
+  root: number;
+  childCount: number;
 }
 
-interface StarSystem {
-  rootUid: number;
-  x: number;
-  y: number;
-  radius: number;
-  depth: number;
-  count: number;
-}
-
-interface PlacedForest {
-  positions: Map<number, Positioned>;
-  systems: StarSystem[];
-  width: number;
-  height: number;
-}
-
-interface DynamicForest {
-  positions: Map<number, Positioned>;
-  systems: Map<number, DynamicSystemCenter>;
-}
-
-interface DynamicSystemCenter extends StarSystem {
-  influence: number;
-  volume: number;
-}
-
-interface DepthPromptOptions {
+interface DepthPromptState {
   title: string;
   description: string;
-  defaultValue?: string;
-  confirmLabel: string;
-}
-
-interface DepthPromptState extends DepthPromptOptions {
   value: string;
+  confirmLabel: string;
   resolve: (value: string | null) => void;
 }
 
-const DEPTH_COLOR_LIGHT = ["#38bdf8", "#34d399", "#c084fc", "#fbbf24", "#fb7185", "#60a5fa"];
-
-function seededUnit(seed: number): number {
-  const x = Math.sin(seed * 12.9898) * 43758.5453;
-  return x - Math.floor(x);
-}
-
-function buildChildrenMap(forest: InviteForest): Map<number, number[]> {
-  const childrenMap = new Map<number, number[]>();
-  for (const e of forest.edges) {
-    if (!childrenMap.has(e.parent)) childrenMap.set(e.parent, []);
-    childrenMap.get(e.parent)!.push(e.child);
+function buildMaps(forest: InviteForest) {
+  const nodeByUid = new Map<number, InviteForestNode>();
+  const children = new Map<number, number[]>();
+  const parent = new Map<number, number>();
+  for (const node of forest.nodes) nodeByUid.set(node.uid, node);
+  for (const edge of forest.edges) {
+    if (!children.has(edge.parent)) children.set(edge.parent, []);
+    children.get(edge.parent)!.push(edge.child);
+    parent.set(edge.child, edge.parent);
   }
-  for (const children of childrenMap.values()) children.sort((a, b) => a - b);
-  return childrenMap;
+  for (const ids of children.values()) ids.sort((a, b) => a - b);
+  return { nodeByUid, children, parent };
 }
 
-function countSubtree(root: number, childrenMap: Map<number, number[]>): { count: number; depth: number } {
-  let count = 0;
-  let depth = 1;
-  const queue: Array<{ uid: number; d: number }> = [{ uid: root, d: 1 }];
-  const seen = new Set<number>([root]);
-  while (queue.length) {
-    const { uid, d } = queue.shift()!;
-    count += 1;
-    depth = Math.max(depth, d);
-    for (const child of childrenMap.get(uid) || []) {
-      if (seen.has(child)) continue;
-      seen.add(child);
-      queue.push({ uid: child, d: d + 1 });
-    }
+function findRoot(uid: number, parent: Map<number, number>): number {
+  let current = uid;
+  const seen = new Set<number>();
+  while (parent.has(current) && !seen.has(current)) {
+    seen.add(current);
+    current = parent.get(current)!;
   }
-  return { count, depth };
+  return current;
 }
 
-function placeForest(forest: InviteForest): PlacedForest {
-  const childrenMap = buildChildrenMap(forest);
-
-  const positions = new Map<number, Positioned>();
-  const systems: StarSystem[] = [];
-  const roots = [...forest.roots].sort((a, b) => a - b);
-  const metrics = roots.map((rootUid) => ({ rootUid, ...countSubtree(rootUid, childrenMap) }));
-  const cols = Math.max(1, Math.min(3, Math.ceil(Math.sqrt(Math.max(1, roots.length)))));
-  const baseRadius = Math.max(
-    150,
-    ...metrics.map((m) => Math.max(128, 72 * Math.max(1, m.depth - 1) + Math.min(80, m.count * 4))),
-  );
-  const cellW = baseRadius * 2 + 180;
-  const cellH = baseRadius * 2 + 150;
-  const rows = Math.max(1, Math.ceil(roots.length / cols));
-
-  metrics.forEach((metric, index) => {
-    const rootUid = metric.rootUid;
-    const col = index % cols;
-    const row = Math.floor(index / cols);
-    const centerX = 90 + col * cellW + cellW / 2;
-    const centerY = 88 + row * cellH + cellH / 2;
-    const radius = Math.max(120, 72 * Math.max(1, metric.depth - 1) + Math.min(70, metric.count * 3));
-    systems.push({ rootUid, x: centerX, y: centerY, radius, depth: metric.depth, count: metric.count });
-
-    positions.set(rootUid, { uid: rootUid, x: centerX, y: centerY, depth: 1, angle: -Math.PI / 2, rootUid });
-
-    const queue: Array<{ uid: number; angle: number; depth: number; sliceStart: number; sliceEnd: number }> =
-      [{ uid: rootUid, angle: -Math.PI / 2, depth: 1, sliceStart: -Math.PI, sliceEnd: Math.PI }];
-
-    while (queue.length) {
-      const item = queue.shift()!;
-      const children = childrenMap.get(item.uid) || [];
-      if (children.length === 0) continue;
-      const sliceSize = (item.sliceEnd - item.sliceStart) / children.length;
-      children.forEach((child, idx) => {
-        const childAngle = item.sliceStart + sliceSize * (idx + 0.5);
-        const jitter = (seededUnit(child * 31 + rootUid) - 0.5) * 20;
-        const r = Math.min(radius, item.depth * 74 + jitter);
-        const px = centerX + Math.cos(childAngle) * r;
-        const py = centerY + Math.sin(childAngle) * r;
-        positions.set(child, { uid: child, x: px, y: py, depth: item.depth + 1, angle: childAngle, rootUid });
-        queue.push({
-          uid: child,
-          angle: childAngle,
-          depth: item.depth + 1,
-          sliceStart: item.sliceStart + sliceSize * idx,
-          sliceEnd: item.sliceStart + sliceSize * (idx + 1),
-        });
-      });
-    }
-  });
-
-  return {
-    positions,
-    systems,
-    width: Math.max(cols * cellW + 180, 900),
-    height: Math.max(rows * cellH + 170, 560),
-  };
-}
-
-function depthColor(depth: number): string {
-  return DEPTH_COLOR_LIGHT[(depth - 1) % DEPTH_COLOR_LIGHT.length];
-}
-
-function nodeColor(node: InviteForestNode, depth: number): string {
-  if (!node.active) return "#64748b";
-  if (node.role === 0) return "#fbbf24";
-  if (node.role === 2) return "#22d3ee";
-  if (!node.emby_id) return "#94a3b8";
-  return depthColor(depth);
-}
-
-function nodeRadius(node: InviteForestNode, depth: number): number {
-  if (depth === 1) return 18;
-  if (node.role === 0) return 14;
-  if (node.role === 2) return 12;
-  return node.emby_id ? 10 : 8;
-}
-
-function makeStarfield(width: number, height: number): Array<{ x: number; y: number; r: number; o: number }> {
-  const count = Math.min(220, Math.max(80, Math.floor((width * height) / 15000)));
-  return Array.from({ length: count }, (_, index) => ({
-    x: seededUnit(index + 13) * width,
-    y: seededUnit(index + 97) * height,
-    r: 0.45 + seededUnit(index + 181) * 1.35,
-    o: 0.18 + seededUnit(index + 311) * 0.45,
-  }));
-}
-
-function dynamicForest(placed: PlacedForest, pointer: { x: number; y: number } | null, tick: number): DynamicForest {
-  const positions = new Map<number, Positioned>();
-  const systems = new Map<number, DynamicSystemCenter>();
-  const total = Math.max(1, placed.systems.length);
-  const centers: DynamicSystemCenter[] = [];
-
-  placed.systems.forEach((system, index) => {
-    const seed = seededUnit(system.rootUid * 17 + index * 41);
-    const baseAngle = (Math.PI * 2 * index) / total + seed * Math.PI * 2;
-    const speed = 0.28 + seed * 0.18;
-    const angle = baseAngle + tick * speed;
-    const orbitRadius = Math.min(260, 72 + system.radius * 0.34 + Math.sqrt(system.count) * 12);
-    const influence = pointer ? 1 : 0;
-    const center = pointer
-      ? {
-          x: pointer.x + Math.cos(angle) * orbitRadius,
-          y: pointer.y + Math.sin(angle) * orbitRadius * 0.64,
-        }
-      : {
-          x: system.x + Math.cos(angle) * (10 + seed * 8),
-          y: system.y + Math.sin(angle * 1.2) * (8 + seed * 6),
-        };
-    const volume = Math.min(260, Math.max(92, 52 + Math.sqrt(system.count) * 18 + system.depth * 20));
-    centers.push({ ...system, x: center.x, y: center.y, influence, volume });
-  });
-
-  resolveSystemCollisions(centers, placed.width, placed.height);
-
-  for (const center of centers) {
-    const seed = seededUnit(center.rootUid * 17);
-    const original = placed.systems.find((system) => system.rootUid === center.rootUid);
-    if (!original) continue;
-    const dx = center.x - original.x;
-    const dy = center.y - original.y;
-    systems.set(center.rootUid, center);
-
-    for (const pos of placed.positions.values()) {
-      if (pos.rootUid !== center.rootUid) continue;
-      const childPhase = tick * (0.7 + pos.depth * 0.11) + pos.angle + seed * Math.PI * 2;
-      const childDrift = pos.depth <= 1 ? 0 : Math.min(28, 3 + pos.depth * 4 + center.influence * 10);
-      positions.set(pos.uid, {
-        ...pos,
-        x: pos.x + dx + Math.cos(childPhase) * childDrift,
-        y: pos.y + dy + Math.sin(childPhase * 1.15) * childDrift * 0.72,
-      });
-    }
+function subtreeSize(uid: number, children: Map<number, number[]>): number {
+  let total = 0;
+  const stack = [...(children.get(uid) || [])];
+  while (stack.length) {
+    const current = stack.pop()!;
+    total += 1;
+    stack.push(...(children.get(current) || []));
   }
-
-  return { positions, systems };
+  return total;
 }
 
-function resolveSystemCollisions(centers: DynamicSystemCenter[], width: number, height: number) {
-  for (let pass = 0; pass < 8; pass++) {
-    for (let i = 0; i < centers.length; i++) {
-      for (let j = i + 1; j < centers.length; j++) {
-        const a = centers[i];
-        const b = centers[j];
-        let dx = b.x - a.x;
-        let dy = b.y - a.y;
-        let distance = Math.hypot(dx, dy);
-        if (distance < 0.01) {
-          dx = seededUnit(a.rootUid + b.rootUid) - 0.5;
-          dy = seededUnit(a.rootUid * b.rootUid + 3) - 0.5;
-          distance = Math.max(0.01, Math.hypot(dx, dy));
-        }
-        const minDistance = Math.min(360, a.volume * 0.62 + b.volume * 0.62);
-        const overlap = minDistance - distance;
-        if (overlap <= 0) continue;
-        const nx = dx / distance;
-        const ny = dy / distance;
-        const pressure = overlap * 0.52;
-        a.x -= nx * pressure;
-        a.y -= ny * pressure;
-        b.x += nx * pressure;
-        b.y += ny * pressure;
-      }
-    }
-    for (const center of centers) {
-      const margin = Math.min(260, Math.max(80, center.volume * 0.58));
-      center.x = Math.max(margin, Math.min(width - margin, center.x));
-      center.y = Math.max(margin, Math.min(height - margin, center.y));
-    }
-  }
+function roleLabel(role: number): string {
+  if (role === 0) return "Admin";
+  if (role === 2) return "Whitelist";
+  return "User";
 }
 
-function edgePath(parent: Positioned, child: Positioned): string {
-  const mx = (parent.x + child.x) / 2;
-  const my = (parent.y + child.y) / 2;
-  const dx = child.x - parent.x;
-  const dy = child.y - parent.y;
-  const len = Math.max(1, Math.hypot(dx, dy));
-  const bend = Math.min(38, len * 0.18) * (child.angle >= 0 ? 1 : -1);
-  const cx = mx + (-dy / len) * bend;
-  const cy = my + (dx / len) * bend;
-  return `M ${parent.x} ${parent.y} Q ${cx} ${cy} ${child.x} ${child.y}`;
-}
-
-function findRoot(forest: InviteForest, uid: number): number {
-  const parentOf = new Map<number, number>();
-  for (const e of forest.edges) parentOf.set(e.child, e.parent);
-  let cur = uid;
-  const visited = new Set<number>([cur]);
-  while (parentOf.has(cur)) {
-    cur = parentOf.get(cur)!;
-    if (visited.has(cur)) break;
-    visited.add(cur);
-  }
-  return cur;
-}
-
-function subtreeUIDs(root: number, childrenMap: Map<number, number[]>): Set<number> {
-  const visible = new Set<number>([root]);
-  const queue = [root];
-  while (queue.length) {
-    const uid = queue.shift()!;
-    for (const child of childrenMap.get(uid) || []) {
-      if (visible.has(child)) continue;
-      visible.add(child);
-      queue.push(child);
-    }
-  }
-  return visible;
-}
-
-function filterForestByRoot(forest: InviteForest, rootUid: number | null): InviteForest {
-  if (!rootUid) return forest;
-  const childrenMap = buildChildrenMap(forest);
-  const visible = subtreeUIDs(rootUid, childrenMap);
-  return {
-    ...forest,
-    nodes: forest.nodes.filter((node) => visible.has(node.uid)),
-    edges: forest.edges.filter((edge) => visible.has(edge.parent) && visible.has(edge.child)),
-    roots: [rootUid],
-  };
-}
-
-function relationHighlight(forest: InviteForest | null, selectedUid: number | null): Set<string> {
-  const highlighted = new Set<string>();
-  if (!forest || !selectedUid) return highlighted;
-  const childrenMap = buildChildrenMap(forest);
-  const parentOf = new Map<number, number>();
-  for (const edge of forest.edges) parentOf.set(edge.child, edge.parent);
-
-  let cur = selectedUid;
-  const seen = new Set<number>([cur]);
-  while (parentOf.has(cur)) {
-    const parent = parentOf.get(cur)!;
-    highlighted.add(`${parent}-${cur}`);
-    if (seen.has(parent)) break;
-    seen.add(parent);
-    cur = parent;
-  }
-
-  const queue = [selectedUid];
-  while (queue.length) {
-    const uid = queue.shift()!;
-    for (const child of childrenMap.get(uid) || []) {
-      highlighted.add(`${uid}-${child}`);
-      queue.push(child);
-    }
-  }
-  return highlighted;
+function formatUnix(seconds?: number | null): string {
+  if (!seconds || seconds <= 0 || seconds >= 253402214400) return "Permanent";
+  return new Date(seconds * 1000).toLocaleString("zh-CN");
 }
 
 export default function AdminInviteTreePage() {
@@ -386,33 +96,12 @@ export default function AdminInviteTreePage() {
   const [forest, setForest] = useState<InviteForest | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [selectedUid, setSelectedUid] = useState<number | null>(null);
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
-  const [rootFilter, setRootFilter] = useState<number | null>(null);
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const [scale, setScale] = useState(1);
+  const [rootFilter, setRootFilter] = useState<number | "all">("all");
+  const [collapsed, setCollapsed] = useState<Set<number>>(new Set());
+  const [selectedUid, setSelectedUid] = useState<number | null>(null);
   const [depthPrompt, setDepthPrompt] = useState<DepthPromptState | null>(null);
-  const [pointer, setPointer] = useState<{ x: number; y: number } | null>(null);
-  const [orbitTick, setOrbitTick] = useState(0);
-  const [orbitFrozen, setOrbitFrozen] = useState(false);
-
-  const requestDepth = useCallback((options: DepthPromptOptions) => {
-    return new Promise<string | null>((resolve) => {
-      setDepthPrompt({
-        ...options,
-        value: options.defaultValue ?? "1",
-        resolve,
-      });
-    });
-  }, []);
-
-  const closeDepthPrompt = useCallback((value: string | null) => {
-    setDepthPrompt((current) => {
-      if (current) current.resolve(value);
-      return null;
-    });
-  }, []);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -422,10 +111,10 @@ export default function AdminInviteTreePage() {
       if (res.success && res.data) {
         setForest(res.data);
       } else {
-        throw new Error(res.message || "加载失败");
+        throw new Error(res.message || "Load failed");
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "加载失败");
+      setError(err instanceof Error ? err.message : "Load failed");
     } finally {
       setLoading(false);
     }
@@ -435,284 +124,235 @@ export default function AdminInviteTreePage() {
     void reload();
   }, [reload]);
 
-  const visibleForest = useMemo(() => (forest ? filterForestByRoot(forest, rootFilter) : null), [forest, rootFilter]);
-  const placed = useMemo(() => (visibleForest ? placeForest(visibleForest) : null), [visibleForest]);
-  const dynamicPlaced = useMemo(() => (placed ? dynamicForest(placed, pointer, orbitTick) : null), [placed, pointer, orbitTick]);
-  const starfield = useMemo(() => (placed ? makeStarfield(placed.width, placed.height) : []), [placed]);
-  const highlightedEdges = useMemo(() => relationHighlight(visibleForest, selectedUid), [visibleForest, selectedUid]);
+  const maps = useMemo(() => (forest ? buildMaps(forest) : null), [forest]);
+  const rootOptions = useMemo(() => {
+    if (!forest || !maps) return [];
+    return forest.roots
+      .filter((uid) => maps.nodeByUid.has(uid))
+      .sort((a, b) => a - b)
+      .map((uid) => ({ uid, node: maps.nodeByUid.get(uid)! }));
+  }, [forest, maps]);
 
-  const nodeByUid = useMemo(() => {
-    const map = new Map<number, InviteForestNode>();
-    if (visibleForest) for (const n of visibleForest.nodes) map.set(n.uid, n);
-    return map;
-  }, [visibleForest]);
-
-  const matchingUIDs = useMemo(() => {
+  const includedBySearch = useMemo(() => {
+    const set = new Set<number>();
     const q = deferredQuery.trim().toLowerCase();
-    const matches = new Set<number>();
-    if (!q || !visibleForest) return matches;
-    for (const node of visibleForest.nodes) {
-      if (node.username.toLowerCase().includes(q) || String(node.uid).includes(q) || String(node.telegram_id || "").includes(q)) {
-        matches.add(node.uid);
+    if (!q || !forest || !maps) return set;
+    for (const node of forest.nodes) {
+      const matched =
+        node.username.toLowerCase().includes(q) ||
+        String(node.uid).includes(q) ||
+        String(node.telegram_id || "").includes(q);
+      if (!matched) continue;
+      let current: number | undefined = node.uid;
+      while (current && !set.has(current)) {
+        set.add(current);
+        current = maps.parent.get(current);
       }
     }
-    return matches;
-  }, [deferredQuery, visibleForest]);
+    return set;
+  }, [deferredQuery, forest, maps]);
 
-  const showLabels = (visibleForest?.nodes.length || 0) <= 260 && scale >= 0.7;
-
-  const selected = selectedUid && nodeByUid.get(selectedUid) ? nodeByUid.get(selectedUid)! : null;
-  const selectedPosition = selectedUid && dynamicPlaced ? dynamicPlaced.positions.get(selectedUid) : null;
-  const pointerNearestUid = useMemo(() => {
-    if (!pointer || !dynamicPlaced || (visibleForest?.nodes.length || 0) > 1200) return null;
-    let best: { uid: number; d: number } | null = null;
-    for (const node of visibleForest?.nodes || []) {
-      const pos = dynamicPlaced.positions.get(node.uid);
-      if (!pos) continue;
-      const d = Math.hypot(pos.x - pointer.x, pos.y - pointer.y);
-      if (d < 92 && (!best || d < best.d)) best = { uid: node.uid, d };
+  const rows = useMemo(() => {
+    if (!forest || !maps) return [];
+    const q = deferredQuery.trim();
+    const out: TreeRow[] = [];
+    const roots = rootFilter === "all" ? forest.roots : [rootFilter];
+    for (const root of roots) {
+      const stack: Array<{ uid: number; depth: number }> = [{ uid: root, depth: 0 }];
+      while (stack.length) {
+        const item = stack.pop()!;
+        const node = maps.nodeByUid.get(item.uid);
+        if (!node) continue;
+        if (!q || includedBySearch.has(item.uid)) {
+          out.push({
+            node,
+            depth: item.depth,
+            root: findRoot(item.uid, maps.parent),
+            childCount: maps.children.get(item.uid)?.length || 0,
+          });
+        }
+        if (!collapsed.has(item.uid)) {
+          const childIds = [...(maps.children.get(item.uid) || [])].reverse();
+          for (const child of childIds) stack.push({ uid: child, depth: item.depth + 1 });
+        }
+      }
     }
-    return best?.uid ?? null;
-  }, [dynamicPlaced, pointer, visibleForest]);
+    return out;
+  }, [collapsed, deferredQuery, forest, includedBySearch, maps, rootFilter]);
+
+  const selected = selectedUid && maps?.nodeByUid.get(selectedUid) ? maps.nodeByUid.get(selectedUid)! : null;
 
   useEffect(() => {
-    if (!placed || orbitFrozen || (visibleForest?.nodes.length || 0) > 1400) return;
-    let raf = 0;
-    let mounted = true;
-    const start = performance.now();
-    const frame = (now: number) => {
-      if (!mounted) return;
-      setOrbitTick((now - start) / 1000);
-      raf = requestAnimationFrame(frame);
-    };
-    raf = requestAnimationFrame(frame);
-    return () => {
-      mounted = false;
-      cancelAnimationFrame(raf);
-    };
-  }, [orbitFrozen, placed, visibleForest]);
-
-  const handleMapPointerMove = useCallback((event: PointerEvent<SVGSVGElement>) => {
-    if (!placed || orbitFrozen || (visibleForest?.nodes.length || 0) > 1200) return;
-    const rect = event.currentTarget.getBoundingClientRect();
-    const x = ((event.clientX - rect.left) / rect.width) * placed.width;
-    const y = ((event.clientY - rect.top) / rect.height) * placed.height;
-    setPointer({ x, y });
-  }, [orbitFrozen, placed, visibleForest]);
-
-  useEffect(() => {
-    if (forest && rootFilter && !forest.roots.includes(rootFilter)) {
-      setRootFilter(null);
-    }
+    if (forest && rootFilter !== "all" && !forest.roots.includes(rootFilter)) setRootFilter("all");
   }, [forest, rootFilter]);
 
   useEffect(() => {
-    if (selectedUid && visibleForest && !visibleForest.nodes.some((node) => node.uid === selectedUid)) {
-      setSelectedUid(null);
-    }
-  }, [selectedUid, visibleForest]);
+    if (selectedUid && maps && !maps.nodeByUid.has(selectedUid)) setSelectedUid(null);
+  }, [maps, selectedUid]);
+
+  const requestDepth = useCallback((title: string, description: string, confirmLabel: string) => {
+    return new Promise<string | null>((resolve) => {
+      setDepthPrompt({ title, description, value: "1", confirmLabel, resolve });
+    });
+  }, []);
+
+  const closeDepthPrompt = (value: string | null) => {
+    setDepthPrompt((current) => {
+      if (current) current.resolve(value);
+      return null;
+    });
+  };
 
   const handleDetach = async () => {
     if (!selected) return;
     const ok = await confirm({
-      title: "把该用户从上级断开？",
-      description: "断开后他将成为新树根；下级关系不变。",
+      title: "Detach invite parent?",
+      description: "The user becomes a new root. Children remain attached to this user.",
       tone: "warning",
-      confirmLabel: "断开",
+      confirmLabel: "Detach",
     });
     if (!ok) return;
     const res = await api.adminDetachInviteUser(selected.uid).catch((err) => ({
       success: false,
-      message: err instanceof Error ? err.message : "请求异常",
+      message: err instanceof Error ? err.message : "Request failed",
     }));
     if (res.success) {
-      toast({ title: "已断开上级关系" });
+      toast({ title: "Detached" });
       await reload();
     } else {
-      toast({ title: "操作失败", description: res.message, variant: "destructive" });
+      toast({ title: "Action failed", description: res.message, variant: "destructive" });
     }
   };
 
   const handleCascadeToggle = async (enable: boolean) => {
     if (!selected) return;
-    const action = enable ? "启用" : "禁用";
-    const cascadeRaw = await requestDepth({
-      title: `设置级联${action}层级`,
-      description: "1 = 仅本人（默认）；N = 本人 + 下 N-1 层；0 = 整棵子树（不限层级）。",
-      defaultValue: "1",
-      confirmLabel: `继续${action}`,
-    });
-    if (cascadeRaw === null) return;
-    const parsed = parseInt(cascadeRaw, 10);
-    if (!Number.isFinite(parsed) || parsed < 0) {
-      toast({ title: "请输入 ≥ 0 的整数", variant: "destructive" });
+    const action = enable ? "enable" : "disable";
+    const raw = await requestDepth(
+      `Cascade ${action}`,
+      "1 = selected user only, N = selected user plus N-1 levels, 0 = whole subtree.",
+      `Confirm ${action}`,
+    );
+    if (raw === null) return;
+    const depth = parseInt(raw, 10);
+    if (!Number.isFinite(depth) || depth < 0) {
+      toast({ title: "Depth must be a non-negative integer", variant: "destructive" });
       return;
     }
     const ok = await confirm({
-      title: parsed === 0 ? `整棵子树都${action}？` : `级联${action} ${parsed} 层？`,
-      description:
-        parsed === 1
-          ? `仅${action}本用户，下级账号不受影响。`
-          : parsed === 0
-            ? `沿邀请关系递归${action}该用户与全部后代账号。`
-            : `${action}该用户与向下 ${parsed - 1} 层的所有下级账号。`,
+      title: `Confirm cascade ${action}?`,
+      description: depth === 0 ? "This applies to the whole subtree." : `This applies depth ${depth}.`,
       tone: enable ? "warning" : "danger",
-      confirmLabel: `确认${action}`,
+      confirmLabel: `Confirm ${action}`,
     });
     if (!ok) return;
-    const res = await api.toggleUserActive(selected.uid, {
-      enable,
-      cascadeDepth: parsed,
-    }).catch((err) => ({
+    const res = await api.toggleUserActive(selected.uid, { enable, cascadeDepth: depth }).catch((err) => ({
       success: false,
-      message: err instanceof Error ? err.message : "请求异常",
+      message: err instanceof Error ? err.message : "Request failed",
       data: null,
     }));
     if (res.success) {
-      const affected = res.data?.affected?.length ?? 0;
-      const skipped = res.data?.skipped?.length ?? 0;
       toast({
-        title: `${action}完成`,
-        description: `成功 ${affected}，跳过 ${skipped}`,
+        title: "Cascade updated",
+        description: `Affected ${res.data?.affected?.length ?? 0}, skipped ${res.data?.skipped?.length ?? 0}`,
         variant: "success",
       });
       await reload();
     } else {
-      toast({ title: "操作失败", description: res.message, variant: "destructive" });
+      toast({ title: "Action failed", description: res.message, variant: "destructive" });
     }
   };
 
   const handleCascadeDelete = async () => {
     if (!selected) return;
-    const cascadeDepth = await requestDepth({
-      title: "设置级联删除层级",
-      description: "1 = 仅本人（默认）；2 = 本人 + 直接下级；N = 本人 + 下 N-1 层；0 = 整棵子树（不限层级）。",
-      defaultValue: "1",
-      confirmLabel: "继续删除",
-    });
-    if (cascadeDepth === null) return;
-    const parsed = parseInt(cascadeDepth, 10);
-    if (!Number.isFinite(parsed) || parsed < 0) {
-      toast({ title: "请输入 ≥ 0 的整数", variant: "destructive" });
+    const raw = await requestDepth(
+      "Cascade delete",
+      "1 = selected user only, N = selected user plus N-1 levels, 0 = whole subtree.",
+      "Continue delete",
+    );
+    if (raw === null) return;
+    const depth = parseInt(raw, 10);
+    if (!Number.isFinite(depth) || depth < 0) {
+      toast({ title: "Depth must be a non-negative integer", variant: "destructive" });
       return;
     }
     const ok = await confirm({
-      title: parsed === 0 ? "整棵子树都删？" : `级联删除 ${parsed} 层？`,
-      description:
-        parsed === 1
-          ? "仅删除本用户，子节点晋升为新树根。"
-          : parsed === 0
-            ? "将一并删除该用户与其全部后代的本地账号 + Emby 账号。"
-            : `将一并删除该用户与其向下 ${parsed - 1} 层的所有下级（本地 + Emby）。`,
+      title: "Confirm cascade delete?",
+      description: depth === 0 ? "This deletes the whole subtree locally and in Emby." : `This deletes depth ${depth} locally and in Emby.`,
       tone: "danger",
-      confirmLabel: "确认删除",
+      confirmLabel: "Delete",
     });
     if (!ok) return;
-    const res = await api.deleteUserScoped(selected.uid, {
-      mode: "with_emby",
-      cascadeDepth: parsed,
-    }).catch((err) => ({
+    const res = await api.deleteUserScoped(selected.uid, { mode: "with_emby", cascadeDepth: depth }).catch((err) => ({
       success: false,
-      message: err instanceof Error ? err.message : "请求异常",
-      data: null,
+      message: err instanceof Error ? err.message : "Request failed",
     }));
     if (res.success) {
-      toast({ title: "级联删除完成" });
+      toast({ title: "Deleted", variant: "success" });
       setSelectedUid(null);
       await reload();
     } else {
-      toast({ title: "操作失败", description: res.message, variant: "destructive" });
+      toast({ title: "Action failed", description: res.message, variant: "destructive" });
     }
   };
 
+  const toggleCollapse = (uid: number) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(uid)) next.delete(uid);
+      else next.add(uid);
+      return next;
+    });
+  };
+
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 12 }}
-      animate={{ opacity: 1, y: 0 }}
-      className="space-y-4"
-    >
+    <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold flex items-center gap-2">
-            <Network className="h-5 w-5" />
-            邀请森林
+          <h1 className="flex items-center gap-2 text-2xl font-bold">
+            <GitBranch className="h-5 w-5" />
+            Invite Tree
           </h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            管理员视角的整棵邀请关系。点击任意节点查看用户详情、断开/级联删除。
+          <p className="mt-1 text-sm text-muted-foreground">
+            Lightweight invite relationship table with search, root filtering, and cascade operations.
           </p>
         </div>
-        <div className="grid w-full grid-cols-[auto_1fr_auto_auto] items-center gap-2 sm:flex sm:w-auto">
-          <Button variant="outline" size="sm" onClick={() => setScale((s) => Math.max(0.4, s - 0.1))}>
-            −
-          </Button>
-          <span className="text-xs tabular-nums w-12 text-center">{Math.round(scale * 100)}%</span>
-          <Button variant="outline" size="sm" onClick={() => setScale((s) => Math.min(2, s + 0.1))}>
-            ＋
-          </Button>
-          <Button variant="outline" size="sm" onClick={() => void reload()} disabled={loading}>
-            <RefreshCw className={`mr-1 h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
-            刷新
-          </Button>
-        </div>
+        <Button variant="outline" size="sm" onClick={() => void reload()} disabled={loading}>
+          {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
+          Refresh
+        </Button>
       </div>
 
-      {forest && (
-        <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
-          <div className="relative w-full lg:max-w-sm">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="搜索用户名 / UID / Telegram ID"
-              className="pl-9"
-            />
+      <Card>
+        <CardContent className="flex flex-col gap-3 p-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="grid gap-2 sm:grid-cols-[minmax(220px,1fr)_220px]">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search username / UID / Telegram ID" className="pl-9" />
+            </div>
+            <select
+              value={rootFilter}
+              onChange={(event) => setRootFilter(event.target.value === "all" ? "all" : Number(event.target.value))}
+              className="h-10 rounded-md border bg-background px-3 text-sm"
+            >
+              <option value="all">All roots</option>
+              {rootOptions.map(({ uid, node }) => (
+                <option key={uid} value={uid}>
+                  #{uid} {node.username}
+                </option>
+              ))}
+            </select>
           </div>
-              <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar">
-            <Button size="sm" variant={rootFilter === null ? "default" : "outline"} onClick={() => setRootFilter(null)}>
-              全部
-            </Button>
-            {forest.roots.slice(0, 12).map((root) => {
-              const node = forest.nodes.find((item) => item.uid === root);
-              return (
-                <Button
-                  key={root}
-                  size="sm"
-                  variant={rootFilter === root ? "default" : "outline"}
-                  onClick={() => setRootFilter(root)}
-                  className="max-w-40 shrink-0"
-                >
-                  <span className="truncate">{node?.username || `#${root}`}</span>
-                </Button>
-              );
-            })}
+          <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+            <Badge variant="outline">{forest?.nodes.length ?? 0} users</Badge>
+            <Badge variant="outline">{forest?.edges.length ?? 0} relations</Badge>
+            <Badge variant="outline">{forest?.roots.length ?? 0} roots</Badge>
           </div>
-        </div>
-      )}
-
-      {forest && (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <Card><CardContent className="p-4">
-            <p className="text-[11px] uppercase tracking-widest text-muted-foreground">节点</p>
-            <p className="text-2xl font-bold">{visibleForest?.nodes.length ?? forest.nodes.length}</p>
-          </CardContent></Card>
-          <Card><CardContent className="p-4">
-            <p className="text-[11px] uppercase tracking-widest text-muted-foreground">树根</p>
-            <p className="text-2xl font-bold">{visibleForest?.roots.length ?? forest.roots.length}</p>
-          </CardContent></Card>
-          <Card><CardContent className="p-4">
-            <p className="text-[11px] uppercase tracking-widest text-muted-foreground">最大深度</p>
-            <p className="text-2xl font-bold">{forest.max_depth}</p>
-          </CardContent></Card>
-          <Card><CardContent className="p-4">
-            <p className="text-[11px] uppercase tracking-widest text-muted-foreground">配置上限</p>
-            <p className="text-2xl font-bold">{forest.config.max_depth}</p>
-          </CardContent></Card>
-        </div>
-      )}
+        </CardContent>
+      </Card>
 
       {error ? (
         <Card className="border-destructive/40">
-          <CardContent className="p-4 text-sm text-destructive flex items-center gap-2">
+          <CardContent className="flex items-center gap-2 p-4 text-sm text-destructive">
             <AlertTriangle className="h-4 w-4" />
             {error}
           </CardContent>
@@ -723,391 +363,163 @@ export default function AdminInviteTreePage() {
         </div>
       ) : !forest || forest.nodes.length === 0 ? (
         <Card className="border-dashed">
-          <CardContent className="p-10 text-center space-y-2">
-            <GitBranch className="h-10 w-10 mx-auto text-muted-foreground" />
-            <p className="font-medium">暂无邀请关系</p>
-            <p className="text-xs text-muted-foreground">用户启用邀请系统后会自动出现在这里。</p>
+          <CardContent className="space-y-2 p-10 text-center">
+            <GitBranch className="mx-auto h-10 w-10 text-muted-foreground" />
+            <p className="font-medium">No invite relationships</p>
+            <p className="text-xs text-muted-foreground">Invite users will appear here after invite codes are used.</p>
           </CardContent>
         </Card>
       ) : (
-        <Card className="overflow-hidden border-slate-800/70 bg-slate-950 text-slate-100 shadow-2xl shadow-sky-950/20">
+        <Card>
           <CardContent className="p-0">
-            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800/80 bg-gradient-to-r from-slate-950 via-slate-900 to-slate-950 px-4 py-3">
-              <div>
-                <p className="text-sm font-semibold tracking-wide text-slate-100">Constellation Map</p>
-                <p className="text-[11px] text-slate-400">根节点是恒星，层级像轨道向外扩散；灰色节点代表禁用或未绑定状态。</p>
-              </div>
-              <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-300">
-                <span className="rounded-full border border-amber-300/30 bg-amber-400/10 px-2 py-1 text-amber-200">管理员</span>
-                <span className="rounded-full border border-cyan-300/30 bg-cyan-400/10 px-2 py-1 text-cyan-200">白名单</span>
-                <span className="rounded-full border border-slate-500/30 bg-slate-700/40 px-2 py-1 text-slate-300">禁用/未绑定</span>
-              </div>
-            </div>
-            <div
-              ref={containerRef}
-              className="overflow-auto bg-[radial-gradient(circle_at_top_left,rgba(14,165,233,0.22),transparent_30%),radial-gradient(circle_at_bottom_right,rgba(168,85,247,0.18),transparent_28%),linear-gradient(180deg,#020617,#0f172a)]"
-              style={{ maxHeight: "min(70vh, 720px)", touchAction: "pan-x pan-y" }}
-            >
-              <div
-                style={{
-                  width: placed!.width * scale,
-                  height: placed!.height * scale,
-                  position: "relative",
-                }}
-              >
-                <svg
-                  viewBox={`0 0 ${placed!.width} ${placed!.height}`}
-                  width={placed!.width * scale}
-                  height={placed!.height * scale}
-                  className="block select-none text-slate-100"
-                  onPointerMove={handleMapPointerMove}
-                  onPointerDown={(event) => {
-                    if (event.button === 0) {
-                      setOrbitFrozen(true);
-                      event.currentTarget.setPointerCapture?.(event.pointerId);
-                    }
-                  }}
-                  onPointerUp={(event) => {
-                    if (event.button === 0) {
-                      setOrbitFrozen(false);
-                      event.currentTarget.releasePointerCapture?.(event.pointerId);
-                    }
-                  }}
-                  onPointerCancel={() => setOrbitFrozen(false)}
-                >
-                  <defs>
-                    <radialGradient id="invite-node-glow" cx="50%" cy="45%" r="70%">
-                      <stop offset="0%" stopColor="#ffffff" stopOpacity="0.95" />
-                      <stop offset="42%" stopColor="#7dd3fc" stopOpacity="0.45" />
-                      <stop offset="100%" stopColor="#0f172a" stopOpacity="0" />
-                    </radialGradient>
-                    <filter id="invite-soft-glow" x="-80%" y="-80%" width="260%" height="260%">
-                      <feGaussianBlur stdDeviation="5" result="blur" />
-                      <feMerge>
-                        <feMergeNode in="blur" />
-                        <feMergeNode in="SourceGraphic" />
-                      </feMerge>
-                    </filter>
-                    <linearGradient id="invite-edge-gradient" x1="0" x2="1" y1="0" y2="1">
-                      <stop offset="0%" stopColor="#38bdf8" stopOpacity="0.2" />
-                      <stop offset="50%" stopColor="#a78bfa" stopOpacity="0.65" />
-                      <stop offset="100%" stopColor="#34d399" stopOpacity="0.2" />
-                    </linearGradient>
-                    <radialGradient id="invite-root-volume" cx="38%" cy="30%" r="72%">
-                      <stop offset="0%" stopColor="#fef3c7" stopOpacity="0.98" />
-                      <stop offset="38%" stopColor="#38bdf8" stopOpacity="0.58" />
-                      <stop offset="74%" stopColor="#8b5cf6" stopOpacity="0.22" />
-                      <stop offset="100%" stopColor="#020617" stopOpacity="0" />
-                    </radialGradient>
-                  </defs>
-                  <rect x={0} y={0} width={placed!.width} height={placed!.height} fill="transparent" />
-                  {pointer && (
-                    <circle
-                      cx={pointer.x}
-                      cy={pointer.y}
-                      r={180}
-                      fill="#38bdf8"
-                      opacity={0.08}
-                      style={{ transition: "cx 80ms linear, cy 80ms linear" }}
-                    />
-                  )}
-                  {starfield.map((star, index) => (
-                    <circle key={`star-${index}`} cx={star.x} cy={star.y} r={star.r} fill="#e0f2fe" opacity={star.o} />
-                  ))}
-                  {placed!.systems.map((system) => {
-                    const fallbackVolume = Math.min(260, Math.max(92, 52 + Math.sqrt(system.count) * 18 + system.depth * 20));
-                    const orbit = dynamicPlaced?.systems.get(system.rootUid) ?? { ...system, influence: 0, volume: fallbackVolume };
-                    const volume = Math.min(42, 10 + Math.sqrt(system.count) * 3 + system.depth * 2 + (orbit.volume || 0) * 0.04);
+            <div className="overflow-auto">
+              <table className="w-full min-w-[920px] text-sm">
+                <thead>
+                  <tr className="border-b bg-muted/50">
+                    <th className="px-4 py-3 text-left font-medium">User</th>
+                    <th className="px-4 py-3 text-left font-medium">Role</th>
+                    <th className="px-4 py-3 text-left font-medium">Status</th>
+                    <th className="px-4 py-3 text-left font-medium">Emby</th>
+                    <th className="px-4 py-3 text-left font-medium">Telegram</th>
+                    <th className="px-4 py-3 text-left font-medium">Children</th>
+                    <th className="px-4 py-3 text-right font-medium">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map(({ node, depth, root, childCount }) => {
+                    const descendants = maps ? subtreeSize(node.uid, maps.children) : 0;
+                    const isCollapsed = collapsed.has(node.uid);
                     return (
-                      <g key={`system-${system.rootUid}`}>
-                        <circle cx={orbit.x} cy={orbit.y} r={system.radius + 28} fill="url(#invite-node-glow)" opacity={0.08} />
-                        <g transform={`translate(${orbit.x}, ${orbit.y})`}>
-                          <circle r={volume + system.radius * 0.1} fill="url(#invite-root-volume)" opacity={0.14 + orbit.influence * 0.12} filter="url(#invite-soft-glow)" />
-                          <g>
-                            <animateTransform
-                              attributeName="transform"
-                              type="rotate"
-                              from="0"
-                              to="360"
-                              dur={`${10 + (system.rootUid % 7)}s`}
-                              repeatCount="indefinite"
-                            />
-                            <ellipse rx={system.radius * 0.42 + volume} ry={Math.max(22, volume * 0.72)} fill="none" stroke="#7dd3fc" strokeOpacity={0.18 + orbit.influence * 0.42} strokeWidth={1.4} strokeDasharray="8 12" />
-                            <ellipse rx={system.radius * 0.28 + volume * 0.7} ry={Math.max(16, volume * 0.52)} fill="none" stroke="#f0abfc" strokeOpacity={0.12 + orbit.influence * 0.26} strokeWidth={1} strokeDasharray="3 8" transform="rotate(62)" />
-                          </g>
-                          {pointer && (
-                            <line
-                              x1={0}
-                              y1={0}
-                              x2={pointer.x - orbit.x}
-                              y2={pointer.y - orbit.y}
-                              stroke="#38bdf8"
-                              strokeOpacity={0.05 + orbit.influence * 0.16}
-                              strokeWidth={1}
-                              strokeDasharray="2 9"
-                            />
-                          )}
-                        </g>
-                        {Array.from({ length: Math.max(1, system.depth - 1) }, (_, index) => {
-                          const ring = 74 * (index + 1);
-                          if (ring > system.radius + 8) return null;
-                          return (
-                            <circle
-                              key={`orbit-${system.rootUid}-${index}`}
-                              cx={orbit.x}
-                              cy={orbit.y}
-                              r={ring}
-                              fill="none"
-                              stroke="#94a3b8"
-                              strokeOpacity={0.12}
-                              strokeWidth={1}
-                              strokeDasharray="4 10"
-                            />
-                          );
-                        })}
-                        <text x={orbit.x} y={orbit.y + system.radius + 46} textAnchor="middle" fontSize={11} fill="#94a3b8">
-                          ROOT #{system.rootUid} · {system.count} nodes · depth {system.depth}
-                        </text>
-                      </g>
-                    );
-                  })}
-                  {/* 边 */}
-                  {visibleForest!.edges.map((e) => {
-                    const p = dynamicPlaced?.positions.get(e.parent);
-                    const c = dynamicPlaced?.positions.get(e.child);
-                    if (!p || !c) return null;
-                    const edgeKey = `${e.parent}-${e.child}`;
-                    const isPointerEdge = pointerNearestUid != null && (e.parent === pointerNearestUid || e.child === pointerNearestUid);
-                    const isHighlighted = highlightedEdges.has(edgeKey) || isPointerEdge;
-                    return (
-                      <path
-                        key={edgeKey}
-                        d={edgePath(p, c)}
-                        fill="none"
-                        stroke={isHighlighted ? "#f8fafc" : "url(#invite-edge-gradient)"}
-                        strokeOpacity={isHighlighted ? 0.9 : 0.34}
-                        strokeWidth={isHighlighted ? 2.8 : 1.35}
-                        strokeLinecap="round"
-                      />
-                    );
-                  })}
-                  {selectedPosition && (
-                    <circle
-                      cx={selectedPosition.x}
-                      cy={selectedPosition.y}
-                      r={44}
-                      fill="none"
-                      stroke="#f8fafc"
-                      strokeOpacity={0.45}
-                      strokeWidth={1.5}
-                      strokeDasharray="6 8"
-                    />
-                  )}
-                  {/* 节点 */}
-                  {visibleForest!.nodes.map((n) => {
-                    const pos = dynamicPlaced?.positions.get(n.uid);
-                    if (!pos) return null;
-                    const isSelected = selectedUid === n.uid;
-                    const isPointerNear = pointerNearestUid === n.uid;
-                    const searchActive = deferredQuery.trim().length > 0;
-                    const isMatched = matchingUIDs.has(n.uid);
-                    const dimmed = searchActive && !isMatched && !isSelected;
-                    const color = nodeColor(n, pos.depth);
-                    const r = nodeRadius(n, pos.depth);
-                    return (
-                      <g
-                        key={n.uid}
-                        transform={`translate(${pos.x}, ${pos.y})`}
-                        style={{ cursor: "pointer" }}
-                        onClick={() => setSelectedUid(n.uid)}
+                      <tr
+                        key={node.uid}
+                        className={`border-b hover:bg-muted/30 ${selectedUid === node.uid ? "bg-primary/5" : ""}`}
                         onContextMenu={(event) => {
                           event.preventDefault();
-                          setSelectedUid(n.uid);
+                          setSelectedUid(node.uid);
                         }}
                       >
-                        <circle
-                          r={r + 14}
-                          fill={color}
-                          opacity={dimmed ? 0.04 : isSelected || isMatched ? 0.34 : pos.depth === 1 ? 0.18 : 0.1}
-                          filter="url(#invite-soft-glow)"
-                        />
-                        <circle r={r + 6} fill="none" stroke={color} strokeOpacity={0.25} strokeWidth={1} />
-                        <circle
-                          r={r}
-                          fill={color}
-                          opacity={dimmed ? 0.24 : n.active ? 0.98 : 0.55}
-                          stroke={isSelected || isMatched || isPointerNear ? "#f8fafc" : n.emby_id ? "#e0f2fe" : "#64748b"}
-                          strokeWidth={isSelected || isMatched || isPointerNear ? 2.4 : 1.1}
-                          filter={n.active ? "url(#invite-soft-glow)" : undefined}
-                        />
-                        {isPointerNear && (
-                          <circle r={r + 20} fill="none" stroke="#7dd3fc" strokeOpacity={0.42} strokeWidth={1.2} strokeDasharray="5 8" />
-                        )}
-                        {n.role === 0 && <path d={`M -6 ${-r - 5} L 0 ${-r - 13} L 6 ${-r - 5} Z`} fill="#fbbf24" opacity={0.95} />}
-                        {!n.emby_id && <circle r={r + 2} fill="none" stroke="#cbd5e1" strokeOpacity={0.55} strokeDasharray="2 3" />}
-                        {(showLabels || isSelected || isMatched || pos.depth === 1) && (
-                          <text
-                            textAnchor="middle"
-                            y={r + 14}
-                            fontSize={pos.depth === 1 ? 12 : 10.5}
-                            fontFamily="ui-sans-serif, system-ui"
-                            fill="#e2e8f0"
-                            opacity={dimmed ? 0.34 : n.active ? 0.95 : 0.58}
-                            paintOrder="stroke"
-                            stroke="#020617"
-                            strokeWidth={3}
-                          >
-                            {n.username}
-                          </text>
-                        )}
-                        {pos.depth === 1 && (
-                          <text
-                            textAnchor="middle"
-                            y={-r - 6}
-                            fontSize={9}
-                            fontWeight={700}
-                            fill="#fde68a"
-                            letterSpacing={1.5}
-                          >
-                            STAR
-                          </text>
-                        )}
-                        <title>{`${n.username} · UID ${n.uid} · L${pos.depth} · ${n.active ? "启用" : "禁用"}`}</title>
-                      </g>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-2" style={{ paddingLeft: depth * 18 }}>
+                            {childCount > 0 ? (
+                              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => toggleCollapse(node.uid)}>
+                                {isCollapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                              </Button>
+                            ) : (
+                              <span className="h-7 w-7" />
+                            )}
+                            <div className="min-w-0">
+                              <button className="truncate text-left font-medium hover:underline" onClick={() => setSelectedUid(node.uid)}>
+                                {node.username}
+                              </button>
+                              <p className="text-xs text-muted-foreground">
+                                UID {node.uid} · L{depth + 1} · root {root}
+                              </p>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-4 py-3">{roleLabel(node.role)}</td>
+                        <td className="px-4 py-3">
+                          <Badge variant={node.active ? "success" : "destructive"}>{node.active ? "Active" : "Disabled"}</Badge>
+                        </td>
+                        <td className="px-4 py-3">
+                          <Badge variant={node.emby_id ? "outline" : "secondary"}>{node.emby_id ? "Bound" : "Unbound"}</Badge>
+                        </td>
+                        <td className="px-4 py-3">{node.telegram_id || "-"}</td>
+                        <td className="px-4 py-3">{childCount} direct / {descendants} total</td>
+                        <td className="px-4 py-3 text-right">
+                          <Button variant="outline" size="sm" onClick={() => setSelectedUid(node.uid)}>
+                            Details
+                          </Button>
+                        </td>
+                      </tr>
                     );
                   })}
-                </svg>
-              </div>
+                </tbody>
+              </table>
             </div>
-            <div className="border-t border-slate-800/80 bg-slate-950/95 px-4 py-3 flex flex-wrap items-center gap-3 text-[11px] text-slate-400">
-              <span>颜色对应层级：</span>
-              {DEPTH_COLOR_LIGHT.slice(0, Math.max(1, forest.max_depth)).map((c, idx) => (
-                <span key={c} className="flex items-center gap-1">
-                  <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: c }} />
-                  L{idx + 1}
-                </span>
-              ))}
-              <span className="ml-auto">点击节点查看详情；选中后高亮祖先链和整棵子树</span>
-            </div>
+            {rows.length === 0 && (
+              <div className="p-8 text-center text-sm text-muted-foreground">No users match the current filter.</div>
+            )}
           </CardContent>
         </Card>
       )}
 
-      {selected && (
-        <Sheet onClose={() => setSelectedUid(null)}>
-          <div className="space-y-3">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <h3 className="text-lg font-bold flex items-center gap-2">
-                  <Crown className="h-4 w-4 text-primary" />
-                  {selected.username}
-                </h3>
-                <p className="text-xs text-muted-foreground mt-0.5">UID #{selected.uid}</p>
-              </div>
-              <SheetClose />
-            </div>
-            <div className="flex flex-wrap gap-2 text-[11px]">
-              <Badge variant={selected.active ? "success" : "secondary"}>
-                {selected.active ? "启用" : "禁用"}
-              </Badge>
-              <Badge variant={selected.emby_id ? "outline" : "secondary"}>
-                {selected.emby_id ? "已绑 Emby" : "未绑 Emby"}
-              </Badge>
-              {selected.is_root && <Badge>树根</Badge>}
-              {selected.telegram_id && (
-                <Badge variant="outline">TG {selected.telegram_id}</Badge>
-              )}
-            </div>
-            <dl className="space-y-1 text-xs">
-              <div className="flex justify-between gap-2">
-                <dt className="text-muted-foreground">角色</dt>
-                <dd>{selected.role === 0 ? "管理员" : selected.role === 2 ? "白名单" : "普通用户"}</dd>
-              </div>
-              <div className="flex justify-between gap-2">
-                <dt className="text-muted-foreground">注册时间</dt>
-                <dd>
-                  {selected.register_time
-                    ? new Date(selected.register_time * 1000).toLocaleString("zh-CN")
-                    : "—"}
-                </dd>
-              </div>
-              <div className="flex justify-between gap-2">
-                <dt className="text-muted-foreground">到期</dt>
-                <dd>
-                  {!selected.expired_at || selected.expired_at <= 0 || selected.expired_at >= 253402214400
-                    ? "永久"
-                    : new Date(selected.expired_at * 1000).toLocaleString("zh-CN")}
-                </dd>
-              </div>
-              <div className="flex justify-between gap-2">
-                <dt className="text-muted-foreground">所属根</dt>
-                <dd>{forest ? findRoot(forest, selected.uid) : "—"}</dd>
-              </div>
-            </dl>
-            <div className="grid gap-2 pt-2">
-              <Button variant="outline" size="sm" onClick={handleDetach} disabled={selected.is_root}>
-                <Ban className="mr-2 h-4 w-4" />
-                {selected.is_root ? "已是树根" : "断开上级"}
-              </Button>
-              <Button variant="outline" size="sm" onClick={() => handleCascadeToggle(false)}>
-                <Ban className="mr-2 h-4 w-4" />
-                级联禁用（自定义层级）
-              </Button>
-              <Button variant="outline" size="sm" onClick={() => handleCascadeToggle(true)}>
-                <ShieldCheck className="mr-2 h-4 w-4" />
-                级联启用（自定义层级）
-              </Button>
-              <Button variant="destructive" size="sm" onClick={handleCascadeDelete}>
-                <Trash2 className="mr-2 h-4 w-4" />
-                级联删除（自定义层级）
-              </Button>
-            </div>
-          </div>
-        </Sheet>
-      )}
-
-      <Dialog
-        open={depthPrompt !== null}
-        onOpenChange={(open) => {
-          if (!open) closeDepthPrompt(null);
-        }}
-      >
+      <Dialog open={selected !== null} onOpenChange={(open) => { if (!open) setSelectedUid(null); }}>
         <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{selected?.username}</DialogTitle>
+            <DialogDescription>UID {selected?.uid}</DialogDescription>
+          </DialogHeader>
+          {selected && maps && (
+            <div className="space-y-3 text-sm">
+              <div className="flex flex-wrap gap-2">
+                <Badge variant={selected.active ? "success" : "secondary"}>{selected.active ? "Active" : "Disabled"}</Badge>
+                <Badge variant={selected.emby_id ? "outline" : "secondary"}>{selected.emby_id ? "Emby bound" : "No Emby"}</Badge>
+                {selected.is_root && <Badge>Root</Badge>}
+              </div>
+              <dl className="space-y-2">
+                <div className="flex justify-between gap-3">
+                  <dt className="text-muted-foreground">Role</dt>
+                  <dd>{roleLabel(selected.role)}</dd>
+                </div>
+                <div className="flex justify-between gap-3">
+                  <dt className="text-muted-foreground">Registered</dt>
+                  <dd>{formatUnix(selected.register_time)}</dd>
+                </div>
+                <div className="flex justify-between gap-3">
+                  <dt className="text-muted-foreground">Expires</dt>
+                  <dd>{formatUnix(selected.expired_at)}</dd>
+                </div>
+                <div className="flex justify-between gap-3">
+                  <dt className="text-muted-foreground">Root</dt>
+                  <dd>{findRoot(selected.uid, maps.parent)}</dd>
+                </div>
+                <div className="flex justify-between gap-3">
+                  <dt className="text-muted-foreground">Subtree</dt>
+                  <dd>{subtreeSize(selected.uid, maps.children)} descendants</dd>
+                </div>
+              </dl>
+              <div className="grid gap-2 pt-2">
+                <Button variant="outline" size="sm" onClick={() => void handleDetach()} disabled={selected.is_root}>
+                  <Ban className="mr-2 h-4 w-4" />
+                  {selected.is_root ? "Already root" : "Detach parent"}
+                </Button>
+                <Button variant="outline" size="sm" onClick={() => void handleCascadeToggle(false)}>
+                  <Ban className="mr-2 h-4 w-4" />
+                  Cascade disable
+                </Button>
+                <Button variant="outline" size="sm" onClick={() => void handleCascadeToggle(true)}>
+                  <ShieldCheck className="mr-2 h-4 w-4" />
+                  Cascade enable
+                </Button>
+                <Button variant="destructive" size="sm" onClick={() => void handleCascadeDelete()}>
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Cascade delete
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={depthPrompt !== null} onOpenChange={(open) => { if (!open) closeDepthPrompt(null); }}>
+        <DialogContent className="max-w-sm">
           <DialogHeader>
             <DialogTitle>{depthPrompt?.title}</DialogTitle>
             <DialogDescription>{depthPrompt?.description}</DialogDescription>
           </DialogHeader>
-          <div className="space-y-2">
-            <Input
-              type="number"
-              min={0}
-              inputMode="numeric"
-              value={depthPrompt?.value ?? "1"}
-              onChange={(event) =>
-                setDepthPrompt((current) =>
-                  current ? { ...current, value: event.target.value } : current,
-                )
-              }
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  closeDepthPrompt(depthPrompt?.value.trim() || "1");
-                }
-              }}
-            />
-            <p className="text-xs text-muted-foreground">
-              输入 0 表示整棵子树；输入 1 表示仅当前用户。
-            </p>
-          </div>
+          <Input
+            type="number"
+            min={0}
+            value={depthPrompt?.value || "1"}
+            onChange={(event) => setDepthPrompt((current) => current ? { ...current, value: event.target.value } : current)}
+          />
           <DialogFooter>
-            <Button variant="outline" onClick={() => closeDepthPrompt(null)}>
-              取消
-            </Button>
-            <Button onClick={() => closeDepthPrompt(depthPrompt?.value.trim() || "1")}>
-              {depthPrompt?.confirmLabel ?? "确认"}
-            </Button>
+            <Button variant="outline" onClick={() => closeDepthPrompt(null)}>Cancel</Button>
+            <Button onClick={() => closeDepthPrompt(depthPrompt?.value || "1")}>{depthPrompt?.confirmLabel || "Continue"}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </motion.div>
+    </div>
   );
 }

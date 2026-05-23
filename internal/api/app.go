@@ -91,6 +91,7 @@ func New(cfg config.Config, st *store.Store) (*App, error) {
 	}
 	app.configSignature = configFileSignature(cfg.ConfigFile)
 	app.registerRoutes()
+	app.applyConfiguredAdmins()
 	ConfigureRuntimeLoggingStore(st, cfg.SlogLevel(), cfg.RuntimeLogLimit)
 	return app, nil
 }
@@ -184,6 +185,7 @@ func (a *App) reloadConfigLocked() (map[string]any, error) {
 	}
 
 	a.cfg = next
+	a.applyConfiguredAdmins()
 	ConfigureRuntimeLoggingStore(a.store, next.SlogLevel(), next.RuntimeLogLimit)
 	reinitialized = append(reinitialized, "runtime_logger")
 	if a.store.Backend() == store.BackendPostgres && (previous.PostgresMaxOpenConns != next.PostgresMaxOpenConns || previous.PostgresMaxIdleConns != next.PostgresMaxIdleConns) {

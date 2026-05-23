@@ -48,6 +48,8 @@ type Config struct {
 	RedisURL                      string
 	LogLevel                      string
 	RuntimeLogLimit               int
+	AdminUIDs                     []int64
+	AdminUsernames                []string
 
 	CORSOrigins       []string
 	AllowCredential   bool
@@ -169,6 +171,8 @@ func Load(path string) (Config, error) {
 	cfg.RedisURL = first(values, "Global.redis_url", "redis_url", cfg.RedisURL)
 	cfg.LogLevel = normalizeLogLevel(first(values, "Global.log_level", "log_level", cfg.LogLevel))
 	cfg.RuntimeLogLimit = intValue(first(values, "Global.runtime_log_limit", "runtime_log_limit", strconv.Itoa(cfg.RuntimeLogLimit)), cfg.RuntimeLogLimit)
+	cfg.AdminUIDs = int64ListValue(first(values, "Admin.uids", "Admin.admin_uids", "admin_uids", strings.Join(int64ListToStrings(cfg.AdminUIDs), ",")))
+	cfg.AdminUsernames = listValue(first(values, "Admin.usernames", "Admin.admin_usernames", "Admin.users", "admin_usernames", strings.Join(cfg.AdminUsernames, ",")))
 	cfg.DatabaseDir = first(values, "Global.databases_dir", "databases_dir", cfg.DatabaseDir)
 	cfg.DatabaseDriver = strings.ToLower(first(values, "Database.driver", "Global.database_driver", "database_driver", cfg.DatabaseDriver))
 	cfg.DatabaseURL = first(values, "Database.url", "Database.database_url", "Global.database_url", "database_url", cfg.DatabaseURL)
@@ -375,6 +379,12 @@ func applyEnv(cfg *Config) {
 	}
 	if v := os.Getenv("TWILIGHT_RUNTIME_LOG_LIMIT"); v != "" {
 		cfg.RuntimeLogLimit = intValue(v, cfg.RuntimeLogLimit)
+	}
+	if v := os.Getenv("TWILIGHT_ADMIN_UIDS"); v != "" {
+		cfg.AdminUIDs = int64ListValue(v)
+	}
+	if v := os.Getenv("TWILIGHT_ADMIN_USERNAMES"); v != "" {
+		cfg.AdminUsernames = listValue(v)
 	}
 	if v := os.Getenv("TWILIGHT_GLOBAL_REDIS_URL"); v != "" {
 		cfg.RedisURL = v

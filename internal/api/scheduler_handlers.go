@@ -29,10 +29,10 @@ func (a *App) handleSchedulerJobs(w http.ResponseWriter, r *http.Request, _ Para
 			item["trigger_spec"] = schedule.TriggerSpec
 			item["is_custom"] = schedule.IsCustom
 		} else {
-			item["trigger_spec"] = defaultTriggerSpec(jobID)
+			item["trigger_spec"] = a.schedulerDefaultTriggerSpec(jobID)
 			item["is_custom"] = false
 		}
-		item["default_trigger_spec"] = defaultTriggerSpec(jobID)
+		item["default_trigger_spec"] = a.schedulerDefaultTriggerSpec(jobID)
 		item["last_run"] = nil
 		if runs := a.store.SchedulerRuns(jobID, 1); len(runs) > 0 {
 			item["last_run"] = runs[0]
@@ -61,7 +61,7 @@ func (a *App) handleSchedulerSchedule(w http.ResponseWriter, r *http.Request, pa
 		return
 	}
 	if r.Method == http.MethodDelete {
-		schedule, err := a.store.SetSchedulerSchedule(jobID, defaultTriggerSpec(jobID), false)
+		schedule, err := a.store.SetSchedulerSchedule(jobID, a.schedulerDefaultTriggerSpec(jobID), false)
 		if statusFromError(w, err) {
 			return
 		}
