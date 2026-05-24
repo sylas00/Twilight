@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { ComponentType, ReactNode } from "react";
 import {
   AlertTriangle,
@@ -36,18 +36,9 @@ import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { useConfirm } from "@/components/ui/confirm-dialog";
-import type { DatabaseBackup, DatabaseBackupInspectResult, DatabaseMigrationResult, DatabaseRestoreResult, DatabaseStatus, LegacySQLiteMapping } from "@/lib/api";
+import type { DatabaseBackup, DatabaseBackupInspectResult, DatabaseMigrationResult, DatabaseRestoreResult, DatabaseStatus } from "@/lib/api";
 
 const DATABASE_MIGRATE_CONFIRM = "MIGRATE_DATABASE";
-
-const FALLBACK_LEGACY_MAPPINGS: LegacySQLiteMapping[] = [
-  { source_database: "users", source_table: "users", source_key: "users.users", target: "users", rows: 0, mapped: true },
-  { source_database: "api_keys", source_table: "api_keys", source_key: "api_keys.api_keys", target: "api_keys", rows: 0, mapped: true },
-  { source_database: "regcode", source_table: "regcode", source_key: "regcode.regcode", target: "regcodes", rows: 0, mapped: true },
-  { source_database: "invites", source_table: "invite_codes", source_key: "invites.invite_codes", target: "invite_codes", rows: 0, mapped: true },
-  { source_database: "bangumi", source_table: "require_bangumi", source_key: "bangumi.require_bangumi", target: "media_requests", rows: 0, mapped: true },
-  { source_database: "bangumi", source_table: "require_tmdb", source_key: "bangumi.require_tmdb", target: "media_requests", rows: 0, mapped: true },
-];
 
 function formatBytes(value?: number): string {
   const size = Number(value || 0);
@@ -130,7 +121,7 @@ export default function AdminDatabaseMigrationPage() {
   const { confirm } = useConfirm();
   const [dbStatus, setDbStatus] = useState<DatabaseStatus | null>(null);
   const [dbBackups, setDbBackups] = useState<DatabaseBackup[]>([]);
-  const [source, setSource] = useState<"current" | "sqlite">("sqlite");
+  const [source, setSource] = useState<"current">("current");
   const [target, setTarget] = useState<"postgres" | "json">("postgres");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -151,9 +142,6 @@ export default function AdminDatabaseMigrationPage() {
       ]);
       if (statusRes.success && statusRes.data) {
         setDbStatus(statusRes.data);
-        if (!statusRes.data.legacy_sqlite_detected) {
-          setSource("current");
-        }
       }
       if (backupsRes.success && backupsRes.data) {
         setDbBackups(backupsRes.data.backups || []);
@@ -170,24 +158,10 @@ export default function AdminDatabaseMigrationPage() {
   }, [loadDatabase]);
 
   const latestBackup = dbBackups[0];
-  const legacyDetected = Boolean(dbStatus?.legacy_sqlite_detected && dbStatus.legacy_sqlite);
   const migrationEnabled = Boolean(dbStatus?.migration_panel_enabled);
   const postgresReady = target !== "postgres" || Boolean(dbStatus?.postgres_configured);
-  const sourceReady = source !== "sqlite" || legacyDetected;
+  const sourceReady = true;
   const canPreview = migrationEnabled && sourceReady && postgresReady && !busy;
-
-  const mappings = useMemo(() => {
-    const fromPreview = migrationResult?.legacy_sqlite_import?.mappings || [];
-    if (fromPreview.length > 0) return fromPreview;
-    if (!dbStatus?.legacy_sqlite?.table_counts) return FALLBACK_LEGACY_MAPPINGS;
-    return FALLBACK_LEGACY_MAPPINGS.map((item) => ({
-      ...item,
-      rows: dbStatus.legacy_sqlite?.table_counts?.[item.source_key] || 0,
-    }));
-  }, [dbStatus?.legacy_sqlite?.table_counts, migrationResult?.legacy_sqlite_import?.mappings]);
-
-  const mappedCount = mappings.filter((item) => item.mapped).length;
-  const unmappedCount = mappings.filter((item) => !item.mapped).length;
 
   const createBackup = async () => {
     setBusy(true);
@@ -295,7 +269,7 @@ export default function AdminDatabaseMigrationPage() {
     setMigrationResult(null);
     try {
       const res = await api.migrateDatabase({
-        source_driver: source === "sqlite" ? "sqlite" : undefined,
+        source_driver: undefined,
         target_driver: target,
         dry_run: true,
       });
@@ -324,7 +298,7 @@ export default function AdminDatabaseMigrationPage() {
     setBusy(true);
     try {
       const res = await api.migrateDatabase({
-        source_driver: source === "sqlite" ? "sqlite" : undefined,
+        source_driver: undefined,
         target_driver: target,
         dry_run: false,
         confirm: migrationResult?.confirm || DATABASE_MIGRATE_CONFIRM,
@@ -489,22 +463,6 @@ export default function AdminDatabaseMigrationPage() {
               <div className="flex justify-between gap-3"><span className="text-muted-foreground">用户</span><strong>{dbStatus?.user_count ?? "-"}</strong></div>
               <div className="break-all text-muted-foreground">状态文件：{dbStatus?.state_file || "-"}</div>
             </EndpointCard>
-
-            <EndpointCard
-              title="旧 SQLite"
-              description="读取 db 目录下的旧版 SQLite/WAL 文件，并按字段映射导入。"
-              icon={HardDrive}
-              active={source === "sqlite"}
-              disabled={!legacyDetected}
-              onClick={() => { setSource("sqlite"); setMigrationResult(null); }}
-            >
-              <div className="flex flex-wrap gap-2">
-                <StatusPill ok={legacyDetected} label={legacyDetected ? "已检测到" : "未检测到"} />
-                <StatusPill ok={Boolean(dbStatus?.legacy_sqlite?.sqlite_available)} label={dbStatus?.legacy_sqlite?.sqlite_available ? "sqlite3 可用" : "sqlite3 不可用"} />
-              </div>
-              <div className="flex justify-between gap-3"><span className="text-muted-foreground">文件</span><strong>{dbStatus?.legacy_sqlite?.file_count ?? 0}</strong></div>
-              <div className="flex justify-between gap-3"><span className="text-muted-foreground">体积</span><strong>{formatBytes(dbStatus?.legacy_sqlite?.total_size)}</strong></div>
-            </EndpointCard>
           </CardContent>
         </Card>
 
@@ -562,7 +520,7 @@ export default function AdminDatabaseMigrationPage() {
                 <StatusPill ok label="执行时自动创建" />
               </div>
               <p className="mt-2 text-xs text-muted-foreground">
-                正式迁移前后端会先备份当前状态；选择旧 SQLite 时还会备份 SQLite/WAL 文件。
+                正式迁移前后端会先备份当前运行状态；SQLite 数据源已禁用。
               </p>
               <p className="mt-2 break-all text-xs text-muted-foreground">
                 最近备份：{latestBackup ? `${latestBackup.name} · ${formatUnixTime(latestBackup.created_at)}` : "暂无"}
@@ -570,11 +528,11 @@ export default function AdminDatabaseMigrationPage() {
             </div>
             <div className="rounded-xl border p-3">
               <div className="flex items-center justify-between gap-3">
-                <span className="font-medium">字段映射</span>
-                <Badge variant={unmappedCount ? "secondary" : "success"}>{mappedCount} 已映射 / {unmappedCount} 未映射</Badge>
+                <span className="font-medium">迁移来源</span>
+                <Badge variant="success">当前运行状态</Badge>
               </div>
               <p className="mt-2 text-xs text-muted-foreground">
-                预检后会显示每张旧表的目标结构、行数和字段转换。未知表不会写入目标，但会在预览中列出。
+                预检只读取当前运行中的 JSON 或 PostgreSQL 状态快照，不再读取 SQLite 文件。
               </p>
             </div>
             <div className="rounded-xl border p-3">
@@ -590,41 +548,6 @@ export default function AdminDatabaseMigrationPage() {
                   本次预检已自动创建 PostgreSQL 目标数据库。
                 </p>
               )}
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2"><Info className="h-5 w-5" />字段映射</CardTitle>
-            <CardDescription>从旧 SQLite 到 Twilight 状态结构的映射关系。</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="max-h-[420px] space-y-2 overflow-y-auto pr-1">
-              {mappings.map((mapping) => (
-                <div key={mapping.source_key} className="rounded-xl border bg-background/70 p-3 text-xs">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="min-w-0">
-                      <p className="font-mono font-semibold">{mapping.source_key}</p>
-                      <p className="mt-0.5 text-muted-foreground">目标：{mapping.target}</p>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Badge variant={mapping.mapped ? "success" : "secondary"}>{mapping.mapped ? "已映射" : "未映射"}</Badge>
-                      <Badge variant="outline">{mapping.rows} 行</Badge>
-                    </div>
-                  </div>
-                  {mapping.fields?.length ? (
-                    <div className="mt-2 flex flex-wrap gap-1.5">
-                      {mapping.fields.slice(0, 8).map((field) => (
-                        <Badge key={`${mapping.source_key}-${field.source}-${field.target}`} variant="outline" className="max-w-full truncate">
-                          {field.source} → {field.target}{field.transform ? ` · ${field.transform}` : ""}
-                        </Badge>
-                      ))}
-                      {mapping.fields.length > 8 && <Badge variant="secondary">+{mapping.fields.length - 8}</Badge>}
-                    </div>
-                  ) : null}
-                </div>
-              ))}
             </div>
           </CardContent>
         </Card>

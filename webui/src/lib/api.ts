@@ -1062,7 +1062,7 @@ class ApiClient {
   }
 
   async createDatabaseBackup(note?: string) {
-    return this.request<{ backup: DatabaseBackup; legacy_sqlite_backup?: LegacySQLiteBackupInfo }>("/system/admin/database/backup", {
+    return this.request<{ backup: DatabaseBackup }>("/system/admin/database/backup", {
       method: "POST",
       body: JSON.stringify({ note: note?.trim() || undefined }),
     });
@@ -1083,7 +1083,7 @@ class ApiClient {
   }
 
   async migrateDatabase(payload: {
-    source_driver?: "json" | "postgres" | "sqlite" | "legacy_sqlite";
+    source_driver?: "json" | "postgres";
     target_driver: "json" | "postgres";
     dry_run?: boolean;
     preview?: boolean;
@@ -2562,63 +2562,6 @@ export interface DatabaseBackupInspectResult {
   announcements: number;
 }
 
-export interface LegacySQLiteFile {
-  name: string;
-  path: string;
-  size: number;
-  modified_at: number;
-}
-
-export interface LegacySQLiteReport {
-  detected: boolean;
-  sqlite_available: boolean;
-  database_dir: string;
-  file_count: number;
-  total_size: number;
-  files: LegacySQLiteFile[];
-  table_counts?: Record<string, number>;
-  active_admin_count?: number;
-  warnings?: string[];
-}
-
-export interface LegacySQLiteBackupInfo {
-  name: string;
-  path: string;
-  size: number;
-  file_count: number;
-  created_at: number;
-  files: LegacySQLiteFile[];
-}
-
-export interface LegacySQLiteFieldMapping {
-  source: string;
-  target: string;
-  transform?: string;
-}
-
-export interface LegacySQLiteMapping {
-  source_database: string;
-  source_table: string;
-  source_key: string;
-  target: string;
-  fields?: LegacySQLiteFieldMapping[];
-  rows: number;
-  mapped: boolean;
-}
-
-export interface LegacySQLiteImportResult {
-  detected: boolean;
-  imported: boolean;
-  source: LegacySQLiteReport;
-  counts: Record<string, number>;
-  table_counts?: Record<string, number>;
-  mapped_tables?: string[];
-  skipped_tables?: string[];
-  mappings?: LegacySQLiteMapping[];
-  warnings?: string[];
-  snapshot_bytes?: number;
-}
-
 export interface DatabaseStatus {
   active_driver: string;
   configured_driver: string;
@@ -2632,8 +2575,6 @@ export interface DatabaseStatus {
   postgres_configured: boolean;
   redis_enabled: boolean;
   user_count: number;
-  legacy_sqlite_detected?: boolean;
-  legacy_sqlite?: LegacySQLiteReport;
 }
 
 export interface DatabaseOperationResult {
@@ -2665,9 +2606,6 @@ export interface DatabaseOperationResult {
   pre_restore_backup?: DatabaseBackup;
   pre_migration_backup?: DatabaseBackup;
   pre_operation_backup?: DatabaseBackup;
-  legacy_sqlite?: LegacySQLiteReport;
-  legacy_sqlite_import?: LegacySQLiteImportResult;
-  legacy_sqlite_backup?: LegacySQLiteBackupInfo;
 }
 
 export type DatabaseMigrationResult = DatabaseOperationResult & {

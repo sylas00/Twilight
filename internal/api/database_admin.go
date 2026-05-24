@@ -20,9 +20,6 @@ const (
 
 func (a *App) handleDatabaseStatus(w http.ResponseWriter, r *http.Request, _ Params) {
 	backups, _ := store.ListBackups(a.cfg.DatabaseBackupDir)
-	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
-	defer cancel()
-	legacySQLite := store.InspectLegacySQLite(ctx, a.cfg.DatabaseDir)
 	ok(w, "OK", map[string]any{
 		"active_driver":     a.store.Backend(),
 		"configured_driver": a.cfg.DatabaseDriver,
@@ -31,7 +28,6 @@ func (a *App) handleDatabaseStatus(w http.ResponseWriter, r *http.Request, _ Par
 		"supported_drivers": []map[string]string{
 			{"driver": "postgres", "label": "postgresql", "role": "runtime"},
 			{"driver": "json", "label": "gojson", "role": "runtime"},
-			{"driver": "sqlite", "label": "sqlite3", "role": "manual_import_only"},
 		},
 		"state_file":              a.cfg.StateFile,
 		"backup_dir":              a.cfg.DatabaseBackupDir,
@@ -42,8 +38,7 @@ func (a *App) handleDatabaseStatus(w http.ResponseWriter, r *http.Request, _ Par
 		"postgres_configured":     a.cfg.PostgresDSN() != "",
 		"redis_enabled":           a.redis != nil,
 		"user_count":              a.store.UserCount(),
-		"legacy_sqlite_detected":  legacySQLite.Detected,
-		"legacy_sqlite":           legacySQLite,
+		"legacy_sqlite_detected":  false,
 	})
 }
 
@@ -53,8 +48,6 @@ func databaseDriverLabel(driver string) string {
 		return "postgresql"
 	case store.BackendJSON, "file", "":
 		return "gojson"
-	case "sqlite", "sqlite3", "legacy_sqlite":
-		return "sqlite3"
 	default:
 		return driver
 	}
@@ -63,7 +56,7 @@ func databaseDriverLabel(driver string) string {
 func (a *App) handleDatabaseBackups(w http.ResponseWriter, r *http.Request, _ Params) {
 	backups, err := store.ListBackups(a.cfg.DatabaseBackupDir)
 	if err != nil {
-		fail(w, http.StatusInternalServerError, "读取备份列表失败")
+		fail(w, http.StatusInternalServerError, "读取数据库备份列表失败")
 		return
 	}
 	ok(w, "OK", map[string]any{"backups": backups})
@@ -134,16 +127,7 @@ func (a *App) handleDatabaseBackup(w http.ResponseWriter, r *http.Request, _ Par
 		fail(w, http.StatusInternalServerError, "数据库备份失败")
 		return
 	}
-	legacyInfo, legacyDetected, err := store.BackupLegacySQLite(a.cfg.DatabaseDir, a.cfg.DatabaseBackupDir)
-	if err != nil {
-		fail(w, http.StatusInternalServerError, "旧 SQLite 数据库备份失败")
-		return
-	}
-	data := map[string]any{"backup": info}
-	if legacyDetected {
-		data["legacy_sqlite_backup"] = legacyInfo
-	}
-	ok(w, "数据库备份已创建", data)
+	ok(w, "数据库备份已创建", map[string]any{"backup": info})
 }
 
 func (a *App) handleDatabaseRestore(w http.ResponseWriter, r *http.Request, _ Params) {
@@ -154,7 +138,6 @@ func (a *App) handleDatabaseRestore(w http.ResponseWriter, r *http.Request, _ Pa
 		fail(w, http.StatusBadRequest, "备份文件无效")
 		return
 	}
-
 	targetData, err := os.ReadFile(target)
 	if err != nil {
 		fail(w, http.StatusBadRequest, "读取备份失败")
@@ -166,7 +149,6 @@ func (a *App) handleDatabaseRestore(w http.ResponseWriter, r *http.Request, _ Pa
 		return
 	}
 	targetState.EnsureForMigration()
-
 	currentSnapshot, err := a.store.Snapshot()
 	if err != nil {
 		fail(w, http.StatusInternalServerError, "生成当前数据库快照失败")
@@ -178,7 +160,6 @@ func (a *App) handleDatabaseRestore(w http.ResponseWriter, r *http.Request, _ Pa
 		return
 	}
 	currentState.EnsureForMigration()
-
 	backupInfo, err := databaseBackupInfo(target)
 	if err != nil {
 		fail(w, http.StatusBadRequest, "备份文件无效")
@@ -210,7 +191,6 @@ func (a *App) handleDatabaseRestore(w http.ResponseWriter, r *http.Request, _ Pa
 		ok(w, "恢复预览已生成", result)
 		return
 	}
-
 	preRestore, backupErr := a.store.BackupWithNote(a.cfg.DatabaseBackupDir, "数据库恢复前保护性备份")
 	if backupErr != nil {
 		fail(w, http.StatusInternalServerError, "恢复前备份失败")
@@ -235,7 +215,7 @@ func (a *App) handleDatabaseMigrate(w http.ResponseWriter, r *http.Request, _ Pa
 	payload := decodeMap(r)
 	sourceDriver := strings.ToLower(firstNonEmpty(stringValue(payload, "source_driver"), stringValue(payload, "source"), a.store.Backend()))
 	if sourceDriver == "sqlite" || sourceDriver == "legacy_sqlite" || sourceDriver == "legacy-sqlite" {
-		a.handleLegacySQLiteMigrate(w, r, payload)
+		fail(w, http.StatusForbidden, "SQLite 数据源已禁用；请使用当前运行状态或 PostgreSQL")
 		return
 	}
 	defer runtime.GC()
@@ -348,132 +328,23 @@ func (a *App) handleDatabaseMigrate(w http.ResponseWriter, r *http.Request, _ Pa
 	}
 }
 
-func (a *App) handleLegacySQLiteMigrate(w http.ResponseWriter, r *http.Request, payload map[string]any) {
-	if !a.cfg.DatabaseMigrationPanelEnabled {
-		fail(w, http.StatusForbidden, "数据库迁移功能未开启，请先在配置文件中启用 Database.migration_panel_enabled")
-		return
+func databasePostgresErrorMessage(prefix string, err error) string {
+	if err == nil {
+		return prefix
 	}
-	defer runtime.GC()
-	targetDriver := strings.ToLower(firstNonEmpty(stringValue(payload, "target_driver"), stringValue(payload, "driver"), a.cfg.DatabaseDriver))
-	if targetDriver == "" {
-		targetDriver = store.BackendJSON
-	}
-	confirmed := stringValue(payload, "confirm") == databaseMigrateConfirmPhrase
-	dryRun := boolValue(payload, "dry_run", false) || boolValue(payload, "preview", false) || !confirmed
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-	defer cancel()
-	snapshot, importResult, err := store.BuildLegacySQLiteSnapshot(ctx, a.cfg.DatabaseDir)
-	if err != nil {
-		if err == store.ErrNotFound {
-			fail(w, http.StatusBadRequest, "未检测到旧 SQLite 数据库")
-			return
-		}
-		fail(w, http.StatusBadRequest, "读取旧 SQLite 数据库失败")
-		return
-	}
+	return prefix + ": " + err.Error()
+}
 
-	switch targetDriver {
-	case store.BackendPostgres, "postgresql":
-		targetDriver = store.BackendPostgres
-		dsn := firstNonEmpty(stringValue(payload, "database_url"), stringValue(payload, "postgres_dsn"), a.cfg.PostgresDSN())
-		if dsn == "" {
-			fail(w, http.StatusBadRequest, "未配置 PostgreSQL 连接信息")
-			return
-		}
-		targetReady := map[string]any{"driver": targetDriver, "configured": true, "connected": false, "schema_ready": false}
-		if dryRun {
-			status, err := store.CheckPostgresTarget(ctx, dsn)
-			if err != nil {
-				fail(w, http.StatusBadRequest, databasePostgresErrorMessage("连接 PostgreSQL 失败", err))
-				return
-			}
-			targetReady = postgresTargetReadyMap(targetDriver, status)
-			ok(w, "旧 SQLite 迁移预检通过", a.databaseLegacySQLiteMigrationSummary(targetDriver, dryRun, targetReady, importResult))
-			return
-		}
-		preMigration, backupErr := a.store.BackupWithNote(a.cfg.DatabaseBackupDir, "旧 SQLite 迁移前保护性备份")
-		if backupErr != nil {
-			fail(w, http.StatusInternalServerError, "迁移前备份失败")
-			return
-		}
-		legacyBackup, legacyDetected, backupErr := store.BackupLegacySQLite(a.cfg.DatabaseDir, a.cfg.DatabaseBackupDir)
-		if backupErr != nil {
-			fail(w, http.StatusInternalServerError, "旧 SQLite 迁移前备份失败")
-			return
-		}
-		targetStore, err := store.OpenPostgres(ctx, dsn)
-		if err != nil {
-			fail(w, http.StatusBadRequest, databasePostgresErrorMessage("连接 PostgreSQL 失败", err))
-			return
-		}
-		defer targetStore.Close()
-		targetStore.ConfigurePostgres(a.cfg.PostgresMaxOpenConns, a.cfg.PostgresMaxIdleConns)
-		if err := targetStore.LoadSnapshot(snapshot); err != nil {
-			fail(w, http.StatusInternalServerError, "写入 PostgreSQL 失败")
-			return
-		}
-		targetReady["connected"] = true
-		targetReady["schema_ready"] = true
-		summary := a.databaseLegacySQLiteMigrationSummary(targetDriver, false, targetReady, importResult)
-		summary["pre_migration_backup"] = preMigration
-		summary["pre_operation_backup"] = preMigration
-		if legacyDetected {
-			summary["legacy_sqlite_backup"] = legacyBackup
-		}
-		ok(w, "旧 SQLite 数据已迁移到 PostgreSQL", summary)
-	case store.BackendJSON, "file":
-		targetDriver = store.BackendJSON
-		targetPath := strings.TrimSpace(stringValue(payload, "state_file"))
-		var err error
-		if targetPath == "" {
-			targetPath = a.cfg.StateFile
-		} else {
-			targetPath, err = resolveStateFileTarget(a.cfg.DatabaseDir, targetPath)
-			if err != nil {
-				fail(w, http.StatusBadRequest, "目标状态文件路径无效")
-				return
-			}
-		}
-		targetReady := map[string]any{"driver": targetDriver, "configured": targetPath != "", "path": targetPath, "parent_dir": filepath.Dir(targetPath)}
-		if dryRun {
-			summary := a.databaseLegacySQLiteMigrationSummary(targetDriver, true, targetReady, importResult)
-			summary["state_file"] = targetPath
-			ok(w, "旧 SQLite 迁移预检通过", summary)
-			return
-		}
-		preMigration, backupErr := a.store.BackupWithNote(a.cfg.DatabaseBackupDir, "旧 SQLite 迁移前保护性备份")
-		if backupErr != nil {
-			fail(w, http.StatusInternalServerError, "迁移前备份失败")
-			return
-		}
-		legacyBackup, legacyDetected, backupErr := store.BackupLegacySQLite(a.cfg.DatabaseDir, a.cfg.DatabaseBackupDir)
-		if backupErr != nil {
-			fail(w, http.StatusInternalServerError, "旧 SQLite 迁移前备份失败")
-			return
-		}
-		if err := os.MkdirAll(filepath.Dir(targetPath), 0o700); err != nil {
-			fail(w, http.StatusInternalServerError, "创建数据库目录失败")
-			return
-		}
-		tmp := targetPath + ".tmp"
-		if err := os.WriteFile(tmp, snapshot, 0o600); err != nil {
-			fail(w, http.StatusInternalServerError, "写入状态文件失败")
-			return
-		}
-		if err := os.Rename(tmp, targetPath); err != nil {
-			fail(w, http.StatusInternalServerError, "替换状态文件失败")
-			return
-		}
-		summary := a.databaseLegacySQLiteMigrationSummary(targetDriver, false, targetReady, importResult)
-		summary["state_file"] = targetPath
-		summary["pre_migration_backup"] = preMigration
-		summary["pre_operation_backup"] = preMigration
-		if legacyDetected {
-			summary["legacy_sqlite_backup"] = legacyBackup
-		}
-		ok(w, "旧 SQLite 数据已迁移到 JSON 状态文件", summary)
-	default:
-		fail(w, http.StatusBadRequest, "不支持的数据库目标")
+func postgresTargetReadyMap(driver string, status store.PostgresTargetStatus) map[string]any {
+	return map[string]any{
+		"driver":           driver,
+		"configured":       true,
+		"connected":        status.Connected,
+		"schema_ready":     status.SchemaReady,
+		"database_created": status.DatabaseCreated,
+		"host":             status.Host,
+		"user":             status.User,
+		"database":         status.Database,
 	}
 }
 
@@ -516,80 +387,6 @@ func (a *App) databaseMigrationSummary(driver string, state store.State, dryRun 
 		"media_requests": counts["media_requests"],
 		"announcements":  counts["announcements"],
 	}
-}
-
-func (a *App) databaseLegacySQLiteMigrationSummary(driver string, dryRun bool, targetReady map[string]any, result store.LegacySQLiteImportResult) map[string]any {
-	result.Imported = !dryRun
-	counts := result.Counts
-	warnings := append([]string{}, result.Warnings...)
-	if a.store.Backend() != driver {
-		warnings = append(warnings, "active database backend will not change until the service restarts with the target driver")
-	}
-	if strings.ToLower(a.cfg.DatabaseDriver) != driver {
-		warnings = append(warnings, "configured database.driver differs from migration target; update config before restart")
-	}
-	return map[string]any{
-		"source_driver":         "sqlite",
-		"configured_driver":     strings.ToLower(a.cfg.DatabaseDriver),
-		"target_driver":         driver,
-		"dry_run":               dryRun,
-		"operation":             "migrate",
-		"requires_confirmation": dryRun,
-		"confirm":               databaseMigrateConfirmPhrase,
-		"snapshot_bytes":        result.SnapshotBytes,
-		"source_ready": map[string]any{
-			"driver":           "sqlite",
-			"detected":         result.Detected,
-			"sqlite_available": result.Source.SQLiteAvailable,
-			"files":            result.Source.FileCount,
-			"tables":           len(result.Source.TableCounts),
-			"counts":           counts,
-		},
-		"target_ready": targetReady,
-		"backup_ready": map[string]any{
-			"automatic":       true,
-			"current_state":   true,
-			"legacy_sqlite":   result.Source.Detected,
-			"legacy_files":    result.Source.FileCount,
-			"legacy_size":     result.Source.TotalSize,
-			"backup_dir":      a.cfg.DatabaseBackupDir,
-			"requires_backup": result.Source.Detected,
-		},
-		"warnings":             warnings,
-		"counts":               counts,
-		"users":                counts["users"],
-		"api_keys":             counts["api_keys"],
-		"regcodes":             counts["regcodes"],
-		"invite_codes":         counts["invite_codes"],
-		"media_requests":       counts["media_requests"],
-		"announcements":        counts["announcements"],
-		"legacy_sqlite":        result.Source,
-		"legacy_sqlite_import": result,
-	}
-}
-
-func postgresTargetReadyMap(driver string, status store.PostgresTargetStatus) map[string]any {
-	return map[string]any{
-		"driver":           driver,
-		"configured":       true,
-		"connected":        status.Connected,
-		"schema_ready":     status.SchemaReady,
-		"database_created": status.DatabaseCreated,
-		"host":             status.Host,
-		"user":             status.User,
-		"database":         status.Database,
-	}
-}
-
-func databasePostgresErrorMessage(prefix string, err error) string {
-	if err == nil {
-		return prefix
-	}
-	text := strings.TrimSpace(err.Error())
-	if text == "" {
-		return prefix
-	}
-	return prefix + "：" + text
 }
 
 func databaseStateCounts(state store.State) map[string]int {

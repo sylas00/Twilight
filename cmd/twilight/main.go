@@ -290,7 +290,6 @@ func openStore(ctx context.Context, cfg config.Config) (*store.Store, error) {
 		if err != nil {
 			return nil, err
 		}
-		bootstrapLegacyAdminsIfNeeded(cfg, st)
 		applyConfiguredAdmins(cfg, st)
 		return st, nil
 	case store.BackendPostgres, "postgresql":
@@ -306,25 +305,6 @@ func openStore(ctx context.Context, cfg config.Config) (*store.Store, error) {
 		}
 		st.ConfigurePostgres(cfg.PostgresMaxOpenConns, cfg.PostgresMaxIdleConns)
 		applyConfiguredAdmins(cfg, st)
-		if !storeHasAdmin(st) {
-			legacy, err := openLegacyJSONStoreIfPopulated(cfg)
-			if err != nil {
-				_ = st.Close()
-				return nil, err
-			}
-			if legacy != nil {
-				bootstrapLegacyAdminsIfNeeded(cfg, legacy)
-				applyConfiguredAdmins(cfg, legacy)
-				if storeHasAdmin(legacy) {
-					_ = st.Close()
-					zap.L().Warn("PostgreSQL has no administrator; using legacy JSON state so existing admins can log in and run database migration", zap.String("state_file", cfg.StateFile))
-					return legacy, nil
-				}
-				_ = legacy.Close()
-			}
-			bootstrapLegacyAdminsIfNeeded(cfg, st)
-			applyConfiguredAdmins(cfg, st)
-		}
 		return st, nil
 	default:
 		return nil, fmt.Errorf("unsupported database driver %q", cfg.DatabaseDriver)
@@ -364,44 +344,6 @@ func applyConfiguredAdmins(cfg config.Config, st *store.Store) {
 			zap.L().Info("configured administrator applied", zap.Int64("uid", updated.UID), zap.String("username", updated.Username))
 		}
 	}
-}
-
-func storeHasAdmin(st *store.Store) bool {
-	if st == nil {
-		return false
-	}
-	for _, user := range st.ListUsers() {
-		if user.Role == store.RoleAdmin && user.Active {
-			return true
-		}
-	}
-	return false
-}
-
-func openLegacyJSONStoreIfPopulated(cfg config.Config) (*store.Store, error) {
-	stateFile := strings.TrimSpace(cfg.StateFile)
-	if stateFile == "" {
-		stateFile = filepath.Join(firstNonEmpty(cfg.DatabaseDir, "db"), "twilight_go_state.json")
-	}
-	info, err := os.Stat(stateFile)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	if info.IsDir() || !info.Mode().IsRegular() || info.Size() == 0 {
-		return nil, nil
-	}
-	legacy, err := store.Open(stateFile)
-	if err != nil {
-		return nil, fmt.Errorf("open legacy JSON state %q: %w", stateFile, err)
-	}
-	if legacy.UserCount() == 0 {
-		_ = legacy.Close()
-		return nil, nil
-	}
-	return legacy, nil
 }
 
 func firstNonEmpty(values ...string) string {

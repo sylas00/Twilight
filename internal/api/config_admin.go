@@ -545,7 +545,7 @@ func configSectionDefs() []configSectionDef {
 			{Key: "bangumi_api_url", Label: "Bangumi API URL", Type: "string", Description: "Bangumi API 基础地址"},
 		}},
 		{Key: "Database", Title: "数据库", Description: "JSON/PostgreSQL 存储和备份配置", Category: "ops", Fields: []configFieldDef{
-			{Key: "driver", Label: "存储后端", Type: "select", Description: "可视化配置仅提供 PostgreSQL 与 Go JSON；旧 SQLite 只作为迁移源", Options: selectDriver},
+			{Key: "driver", Label: "存储后端", Type: "select", Description: "可视化配置仅提供 PostgreSQL 与 Go JSON；SQLite 已禁用", Options: selectDriver},
 			{Key: "state_file", Label: "JSON 状态文件", Type: "string", Description: "Go JSON 状态文件路径，留空使用数据目录中的 twilight_go_state.json"},
 			{Key: "backup_dir", Label: "备份目录", Type: "string", Description: "数据库快照备份目录"},
 			{Key: "migration_panel_enabled", Label: "启用数据库迁移", Type: "bool", Description: "开启后显示数据库迁移面板并允许管理员调用迁移 API"},

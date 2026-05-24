@@ -1555,19 +1555,16 @@ func TestDatabaseAdminBackupRestoreAndAuth(t *testing.T) {
 	if forbidden.Code != http.StatusForbidden {
 		t.Fatalf("database status user = %d body=%s", forbidden.Code, forbidden.Body.String())
 	}
-	if err := os.WriteFile(filepath.Join(app.cfg.DatabaseDir, "users.db"), []byte("legacy"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	status := doJSON(app, http.MethodGet, "/api/v1/system/admin/database/status", ``, []*http.Cookie{adminCookie})
-	if status.Code != http.StatusOK || !strings.Contains(status.Body.String(), `"legacy_sqlite_detected":true`) {
-		t.Fatalf("database status did not report legacy sqlite status=%d body=%s", status.Code, status.Body.String())
+	if status.Code != http.StatusOK || !strings.Contains(status.Body.String(), `"legacy_sqlite_detected":false`) {
+		t.Fatalf("database status did not report sqlite disabled status=%d body=%s", status.Code, status.Body.String())
 	}
 	backup := doJSONWithHeaders(app, http.MethodPost, "/api/v1/system/admin/database/backup", `{"note":"before restore test"}`, []*http.Cookie{adminCookie}, map[string]string{"X-Twilight-Client": "webui"})
 	if backup.Code != http.StatusOK {
 		t.Fatalf("backup status=%d body=%s", backup.Code, backup.Body.String())
 	}
-	if !strings.Contains(backup.Body.String(), `"legacy_sqlite_backup"`) {
-		t.Fatalf("backup did not include legacy sqlite files body=%s", backup.Body.String())
+	if strings.Contains(backup.Body.String(), `"legacy_sqlite_backup"`) {
+		t.Fatalf("backup unexpectedly included legacy sqlite files body=%s", backup.Body.String())
 	}
 	var env envelope
 	if err := json.Unmarshal(backup.Body.Bytes(), &env); err != nil {
