@@ -88,6 +88,41 @@ emby_url_list = [
 	}
 }
 
+func TestTelegramForceBindGroupAndChannelConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte(`[Telegram]
+group_id = ["@group"]
+channel_id = ["@channel"]
+force_subscribe = true
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.TelegramForceBindGroup || !cfg.TelegramForceBindChannel {
+		t.Fatalf("legacy force_subscribe should enable both split checks: group=%v channel=%v", cfg.TelegramForceBindGroup, cfg.TelegramForceBindChannel)
+	}
+
+	if err := os.WriteFile(path, []byte(`[Telegram]
+group_id = ["@group"]
+channel_id = ["@channel"]
+force_subscribe = true
+force_bind_group = false
+force_bind_channel = true
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.TelegramForceBindGroup || !cfg.TelegramForceBindChannel {
+		t.Fatalf("split force bind fields should override legacy value: group=%v channel=%v", cfg.TelegramForceBindGroup, cfg.TelegramForceBindChannel)
+	}
+}
+
 func TestLoadDefaultPathPrefersConfigTomlOverEnv(t *testing.T) {
 	dir := t.TempDir()
 	chdir(t, dir)

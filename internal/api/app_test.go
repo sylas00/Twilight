@@ -1081,6 +1081,64 @@ func TestTelegramGetUpdatesAllowsCallbacks(t *testing.T) {
 	}
 }
 
+func TestTelegramBindRequirementSplitsGroupAndChannel(t *testing.T) {
+	app := newTestApp(t)
+	app.cfg.TelegramMode = true
+	app.cfg.TelegramBotToken = "123:ABC"
+	app.cfg.TelegramGroupIDs = []string{"-1001"}
+	app.cfg.TelegramChannelIDs = []string{"@RequiredChannel"}
+	app.cfg.TelegramForceBindGroup = true
+	app.cfg.TelegramForceBindChannel = false
+	requests := []map[string]any{}
+	tg := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		body["_path"] = r.URL.Path
+		requests = append(requests, body)
+		switch r.URL.Path {
+		case "/bot123:ABC/getChatMember":
+			if asString(body["chat_id"]) == "@RequiredChannel" {
+				_, _ = w.Write([]byte(`{"ok":true,"result":{"status":"left","user":{"id":42,"is_bot":false}}}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"ok":true,"result":{"status":"member","user":{"id":42,"is_bot":false}}}`))
+		case "/bot123:ABC/sendMessage":
+			_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":1}}`))
+		default:
+			t.Fatalf("unexpected telegram path: %s", r.URL.Path)
+		}
+	}))
+	defer tg.Close()
+	app.cfg.TelegramAPIURL = tg.URL
+
+	now := time.Now().Unix()
+	if err := app.store.UpsertBindCode(store.BindCode{Code: "GROUP1", Scene: "register", CreatedAt: now, ExpiresAt: now + 600}); err != nil {
+		t.Fatal(err)
+	}
+	app.telegramConfirmBindCode(context.Background(), 42, 42, "tguser", "GROUP1")
+	bind, ok := app.store.BindCode("GROUP1")
+	if !ok || !bind.Confirmed {
+		t.Fatalf("group-only requirement should confirm bind code: %#v", bind)
+	}
+	for _, req := range requests {
+		if req["_path"] == "/bot123:ABC/getChatMember" && asString(req["chat_id"]) == "@RequiredChannel" {
+			t.Fatalf("channel was checked even though force_bind_channel=false: %#v", requests)
+		}
+	}
+
+	app.cfg.TelegramForceBindChannel = true
+	if err := app.store.UpsertBindCode(store.BindCode{Code: "CHAN01", Scene: "register", CreatedAt: now, ExpiresAt: now + 600}); err != nil {
+		t.Fatal(err)
+	}
+	app.telegramConfirmBindCode(context.Background(), 42, 43, "tguser2", "CHAN01")
+	channelBind, ok := app.store.BindCode("CHAN01")
+	if !ok || channelBind.Confirmed {
+		t.Fatalf("channel requirement should reject user missing required channel: %#v", channelBind)
+	}
+}
+
 func TestTelegramAnonymousGroupUserRequiresInlineAuth(t *testing.T) {
 	app := newTestApp(t)
 	app.cfg.TelegramMode = true
@@ -1380,6 +1438,47 @@ func TestConfigTOMLGetReturnsCompletedConfig(t *testing.T) {
 	}
 	if strings.Contains(content, "[Admin]") || strings.Contains(content, "usernames =") {
 		t.Fatalf("protected admin config leaked: %s", content)
+	}
+}
+
+func TestConfigSaveMigratesLegacyTelegramForceSubscribe(t *testing.T) {
+	app := newTestApp(t)
+	app.cfg.ConfigFile = filepath.Join(app.cfg.DatabaseDir, "config.toml")
+	existing := "[Global]\nserver_name = \"old\"\n\n[Admin]\nusernames = [\"root\"]\n"
+	if err := os.WriteFile(app.cfg.ConfigFile, []byte(existing), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	legacy := `[Global]
+server_name = "new"
+databases_dir = "` + strings.ReplaceAll(app.cfg.DatabaseDir, `\`, `\\`) + `"
+
+[Database]
+driver = "json"
+state_file = "` + strings.ReplaceAll(app.cfg.StateFile, `\`, `\\`) + `"
+backup_dir = "` + strings.ReplaceAll(app.cfg.DatabaseBackupDir, `\`, `\\`) + `"
+
+[Telegram]
+group_id = ["@group"]
+channel_id = ["@channel"]
+force_subscribe = true
+`
+	info, status, message := app.saveConfigContent(legacy)
+	if status != http.StatusOK {
+		t.Fatalf("saveConfigContent status=%d message=%s info=%v", status, message, info)
+	}
+	data, err := os.ReadFile(app.cfg.ConfigFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	if strings.Contains(content, "force_subscribe") {
+		t.Fatalf("legacy force_subscribe was not removed: %s", content)
+	}
+	if !strings.Contains(content, "force_bind_group = true") || !strings.Contains(content, "force_bind_channel = true") {
+		t.Fatalf("legacy force_subscribe was not migrated to split true values: %s", content)
+	}
+	if !strings.Contains(content, "[Admin]") || !strings.Contains(content, "root") {
+		t.Fatalf("protected admin config was not preserved: %s", content)
 	}
 }
 

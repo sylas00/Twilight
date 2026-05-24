@@ -42,9 +42,15 @@ export default function RegisterPage() {
   }, [fetchSystemInfo]);
 
   const forceBindTelegram = Boolean(systemInfo?.features?.force_bind_telegram);
+  const requiredTelegramLinks = [
+    ...(systemInfo?.required_telegram_links?.groups || []),
+    ...(systemInfo?.required_telegram_links?.channels || []),
+  ];
   const telegramLinks = [
-    ...(systemInfo?.telegram_links?.groups || []),
-    ...(systemInfo?.telegram_links?.channels || []),
+    ...(requiredTelegramLinks.length > 0 ? requiredTelegramLinks : [
+      ...(systemInfo?.telegram_links?.groups || []),
+      ...(systemInfo?.telegram_links?.channels || []),
+    ]),
   ];
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {

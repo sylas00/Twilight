@@ -256,6 +256,13 @@ func (a *App) telegramConfirmBindCode(ctx context.Context, chatID, telegramID in
 		_ = a.telegramSendMessage(ctx, chatID, fmt.Sprintf("该 Telegram 已绑定到账号 %s。", existing.Username))
 		return
 	}
+	if missing, err := a.telegramBindRequirementMissing(ctx, telegramID); err != nil {
+		_ = a.telegramSendMessage(ctx, chatID, "Telegram 加群/频道校验失败，请稍后重试或联系管理员："+a.telegramSanitizeError(err))
+		return
+	} else if len(missing) > 0 {
+		_ = a.telegramSendMessage(ctx, chatID, "绑定前需要先加入指定 Telegram 群组/频道："+strings.Join(missing, ", "))
+		return
+	}
 	bind.Confirmed = true
 	bind.TelegramID = telegramID
 	bind.TelegramUsername = username

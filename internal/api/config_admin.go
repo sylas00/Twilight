@@ -200,6 +200,11 @@ func (a *App) saveConfigContent(content string) (map[string]any, int, string) {
 	if err := os.MkdirAll(filepath.Dir(configFile), 0o700); err != nil {
 		return nil, http.StatusInternalServerError, "创建配置目录失败"
 	}
+	normalizedContent, err := normalizeConfigContent(configFile, content)
+	if err != nil {
+		return nil, http.StatusBadRequest, "配置校验失败: " + err.Error()
+	}
+	content = normalizedContent
 	existing, readErr := os.ReadFile(configFile)
 	hadExisting := readErr == nil
 	content = mergeProtectedAdminConfig(content, string(existing))
@@ -244,6 +249,20 @@ func (a *App) saveConfigContent(content string) (map[string]any, int, string) {
 		info["backup_path"] = backupInfo.Path
 	}
 	return info, http.StatusOK, ""
+}
+
+func normalizeConfigContent(configFile, content string) (string, error) {
+	dir := filepath.Dir(configFile)
+	tmpPath := filepath.Join(dir, ".twilight_config_normalize_"+strconv.FormatInt(time.Now().UnixNano(), 10)+".toml")
+	if err := os.WriteFile(tmpPath, []byte(content), 0o600); err != nil {
+		return "", err
+	}
+	defer os.Remove(tmpPath)
+	cfg, err := config.Load(tmpPath)
+	if err != nil {
+		return "", err
+	}
+	return renderConfigTOML(configValues(cfg)), nil
 }
 
 func (a *App) configBackupDir() string {
@@ -554,9 +573,10 @@ func configSectionDefs() []configSectionDef {
 			{Key: "telegram_api_url", Label: "Bot API URL", Type: "string", Description: "Telegram Bot API 基础地址"},
 			{Key: "bot_token", Label: "Bot Token", Type: "secret", Description: "Telegram Bot Token"},
 			{Key: "admin_id", Label: "管理员 Telegram ID", Type: "list", Description: "Bot 管理员 ID 列表"},
-			{Key: "group_id", Label: "群组 ID", Type: "list", Description: "强制订阅或巡检群组"},
-			{Key: "channel_id", Label: "频道 ID", Type: "list", Description: "强制订阅频道"},
-			{Key: "force_subscribe", Label: "强制订阅", Type: "bool", Description: "要求订阅指定群组或频道"},
+			{Key: "group_id", Label: "群组 ID", Type: "list", Description: "Bot 管理、强制绑定检查和巡检群组"},
+			{Key: "force_bind_group", Label: "强制群组绑定检查", Type: "bool", Description: "用户在 Bot 中确认绑定码时，必须已加入配置的群组"},
+			{Key: "channel_id", Label: "频道 ID", Type: "list", Description: "Bot 推送和强制绑定检查的频道"},
+			{Key: "force_bind_channel", Label: "强制频道绑定检查", Type: "bool", Description: "用户在 Bot 中确认绑定码时，必须已加入配置的频道"},
 			{Key: "enable_tg_panel", Label: "启用 Bot 面板", Type: "bool", Description: "启用更多 Bot 查询命令和管理查询入口"},
 			{Key: "require_group_membership", Label: "强制群成员", Type: "bool", Description: "巡检发现退群时禁用本地或 Emby"},
 			{Key: "ban_on_leave", Label: "退群封禁", Type: "bool", Description: "退群后在群组永久封禁"},
@@ -672,8 +692,9 @@ func configValues(cfg config.Config) map[string]map[string]any {
 		},
 		"Telegram": {
 			"telegram_api_url": cfg.TelegramAPIURL, "bot_token": cfg.TelegramBotToken, "admin_id": int64sToAny(cfg.TelegramAdminIDs), "group_id": cfg.TelegramGroupIDs,
-			"channel_id": cfg.TelegramChannelIDs, "force_subscribe": cfg.TelegramForceSubscribe, "require_group_membership": cfg.TelegramRequireMembership,
-			"enable_tg_panel": cfg.TelegramEnablePanel, "ban_on_leave": cfg.TelegramBanOnLeave, "group_check_concurrency": cfg.TelegramGroupCheckConcurrency, "group_action_concurrency": cfg.TelegramGroupActionConcurrency,
+			"force_bind_group": cfg.TelegramForceBindGroup, "channel_id": cfg.TelegramChannelIDs, "force_bind_channel": cfg.TelegramForceBindChannel,
+			"require_group_membership": cfg.TelegramRequireMembership,
+			"enable_tg_panel":          cfg.TelegramEnablePanel, "ban_on_leave": cfg.TelegramBanOnLeave, "group_check_concurrency": cfg.TelegramGroupCheckConcurrency, "group_action_concurrency": cfg.TelegramGroupActionConcurrency,
 			"bot_start_text": cfg.TelegramBotStartText, "bot_group_start_text": cfg.TelegramBotGroupStartText, "bot_start_title": cfg.TelegramBotStartTitle,
 			"bot_start_intro": cfg.TelegramBotStartIntro, "bot_bind_prompt_text": cfg.TelegramBotBindPromptText, "bot_help_text": cfg.TelegramBotHelpText,
 			"bot_admin_help_text": cfg.TelegramBotAdminHelpText, "bot_help_header": cfg.TelegramBotHelpHeader, "bot_help_footer": cfg.TelegramBotHelpFooter,

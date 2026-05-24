@@ -2020,6 +2020,10 @@ export interface SystemInfo {
     groups: Array<{ label: string; url: string }>;
     channels: Array<{ label: string; url: string }>;
   };
+  required_telegram_links?: {
+    groups: Array<{ label: string; url: string }>;
+    channels: Array<{ label: string; url: string }>;
+  };
 }
 
 export interface SystemHealth {

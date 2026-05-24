@@ -1469,14 +1469,20 @@ func (a *App) handleSystemInfo(w http.ResponseWriter, r *http.Request, _ Params)
 			"emby_direct_register": a.cfg.EmbyDirectRegisterEnabled,
 			"telegram":             a.cfg.TelegramMode,
 			"force_bind_telegram":  a.cfg.ForceBindTelegram,
+			"force_bind_group":     a.cfg.TelegramForceBindGroup,
+			"force_bind_channel":   a.cfg.TelegramForceBindChannel,
 			"bangumi_sync":         a.cfg.BangumiEnabled,
 			"media_request":        a.cfg.MediaRequestEnabled,
 			"signin":               a.cfg.SigninEnabled,
 			"invite":               a.cfg.InviteEnabled,
 		},
-		"limits":               map[string]any{"user_limit": a.cfg.UserLimit, "stream_limit": a.cfg.MaxStreams},
-		"telegram_bot":         a.publicTelegramBotInfo(r.Context()),
-		"telegram_links":       publicTelegramLinks(a.cfg.TelegramGroupIDs, a.cfg.TelegramChannelIDs),
+		"limits":         map[string]any{"user_limit": a.cfg.UserLimit, "stream_limit": a.cfg.MaxStreams},
+		"telegram_bot":   a.publicTelegramBotInfo(r.Context()),
+		"telegram_links": publicTelegramLinks(a.cfg.TelegramGroupIDs, a.cfg.TelegramChannelIDs),
+		"required_telegram_links": publicTelegramLinks(
+			requiredTelegramLinkIDs(a.cfg.TelegramGroupIDs, a.cfg.TelegramForceBindGroup),
+			requiredTelegramLinkIDs(a.cfg.TelegramChannelIDs, a.cfg.TelegramForceBindChannel),
+		),
 		"telegram_mode":        a.cfg.TelegramMode,
 		"bangumi_sync_enabled": a.cfg.BangumiEnabled,
 	})
@@ -1528,6 +1534,13 @@ func publicTelegramLinks(groupIDs, channelIDs []string) map[string]any {
 		"groups":   publicTelegramLinkList(groupIDs),
 		"channels": publicTelegramLinkList(channelIDs),
 	}
+}
+
+func requiredTelegramLinkIDs(ids []string, required bool) []string {
+	if !required {
+		return nil
+	}
+	return ids
 }
 
 func publicTelegramLinkList(values []string) []map[string]string {

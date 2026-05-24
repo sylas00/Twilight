@@ -24,9 +24,15 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const requiredTelegramLinks = [
+    ...(systemInfo?.required_telegram_links?.groups || []),
+    ...(systemInfo?.required_telegram_links?.channels || []),
+  ];
   const telegramLinks = [
-    ...(systemInfo?.telegram_links?.groups || []),
-    ...(systemInfo?.telegram_links?.channels || []),
+    ...(requiredTelegramLinks.length > 0 ? requiredTelegramLinks : [
+      ...(systemInfo?.telegram_links?.groups || []),
+      ...(systemInfo?.telegram_links?.channels || []),
+    ]),
   ];
 
   useEffect(() => {

@@ -188,6 +188,21 @@ func (a *App) telegramBanChatMember(ctx context.Context, chatID string, userID i
 
 func (a *App) telegramMembershipMissing(ctx context.Context, telegramID int64, strict bool) ([]string, error) {
 	chats := telegramChatIDs(a.cfg.TelegramGroupIDs)
+	return a.telegramMembershipMissingForChats(ctx, telegramID, chats, strict)
+}
+
+func (a *App) telegramBindRequirementMissing(ctx context.Context, telegramID int64) ([]string, error) {
+	chats := []string{}
+	if a.cfg.TelegramForceBindGroup {
+		chats = append(chats, telegramChatIDs(a.cfg.TelegramGroupIDs)...)
+	}
+	if a.cfg.TelegramForceBindChannel {
+		chats = append(chats, telegramChatIDs(a.cfg.TelegramChannelIDs)...)
+	}
+	return a.telegramMembershipMissingForChats(ctx, telegramID, chats, true)
+}
+
+func (a *App) telegramMembershipMissingForChats(ctx context.Context, telegramID int64, chats []string, strict bool) ([]string, error) {
 	if len(chats) == 0 || telegramID == 0 {
 		return nil, nil
 	}

@@ -80,6 +80,8 @@ type Config struct {
 	TelegramGroupIDs               []string
 	TelegramChannelIDs             []string
 	TelegramForceSubscribe         bool
+	TelegramForceBindGroup         bool
+	TelegramForceBindChannel       bool
 	TelegramRequireMembership      bool
 	TelegramGroupCheckConcurrency  int
 	TelegramGroupActionConcurrency int
@@ -235,6 +237,14 @@ func Load(path string) (Config, error) {
 	cfg.TelegramGroupIDs = reader.stringListValue(cfg.TelegramGroupIDs, "Telegram.group_id", "group_id")
 	cfg.TelegramChannelIDs = reader.stringListValue(cfg.TelegramChannelIDs, "Telegram.channel_id", "channel_id")
 	cfg.TelegramForceSubscribe = reader.boolValue(cfg.TelegramForceSubscribe, "Telegram.force_subscribe", "force_subscribe")
+	_, forceBindGroupSet := reader.rawValue("Telegram.force_bind_group", "Telegram.force_group_membership", "force_bind_group", "force_group_membership")
+	_, forceBindChannelSet := reader.rawValue("Telegram.force_bind_channel", "Telegram.force_channel_membership", "force_bind_channel", "force_channel_membership")
+	cfg.TelegramForceBindGroup = reader.boolValue(cfg.TelegramForceBindGroup, "Telegram.force_bind_group", "Telegram.force_group_membership", "force_bind_group", "force_group_membership")
+	cfg.TelegramForceBindChannel = reader.boolValue(cfg.TelegramForceBindChannel, "Telegram.force_bind_channel", "Telegram.force_channel_membership", "force_bind_channel", "force_channel_membership")
+	if cfg.TelegramForceSubscribe && !forceBindGroupSet && !forceBindChannelSet {
+		cfg.TelegramForceBindGroup = true
+		cfg.TelegramForceBindChannel = true
+	}
 	cfg.TelegramRequireMembership = reader.boolValue(cfg.TelegramRequireMembership, "Telegram.require_group_membership", "require_group_membership")
 	cfg.TelegramGroupCheckConcurrency = reader.intValue(cfg.TelegramGroupCheckConcurrency, "Telegram.group_check_concurrency", "group_check_concurrency")
 	cfg.TelegramGroupActionConcurrency = reader.intValue(cfg.TelegramGroupActionConcurrency, "Telegram.group_action_concurrency", "group_action_concurrency")
@@ -538,8 +548,22 @@ func applyEnv(cfg *Config) {
 	if v := os.Getenv("TWILIGHT_TELEGRAM_GROUP_ID"); v != "" {
 		cfg.TelegramGroupIDs = listValue(v)
 	}
+	if v := os.Getenv("TWILIGHT_TELEGRAM_CHANNEL_ID"); v != "" {
+		cfg.TelegramChannelIDs = listValue(v)
+	}
+	if v := os.Getenv("TWILIGHT_TELEGRAM_FORCE_SUBSCRIBE"); v != "" {
+		cfg.TelegramForceSubscribe = boolValue(v, cfg.TelegramForceSubscribe)
+		cfg.TelegramForceBindGroup = boolValue(v, cfg.TelegramForceBindGroup)
+		cfg.TelegramForceBindChannel = boolValue(v, cfg.TelegramForceBindChannel)
+	}
 	if v := os.Getenv("TWILIGHT_TELEGRAM_REQUIRE_GROUP_MEMBERSHIP"); v != "" {
 		cfg.TelegramRequireMembership = boolValue(v, cfg.TelegramRequireMembership)
+	}
+	if v := os.Getenv("TWILIGHT_TELEGRAM_FORCE_BIND_GROUP"); v != "" {
+		cfg.TelegramForceBindGroup = boolValue(v, cfg.TelegramForceBindGroup)
+	}
+	if v := os.Getenv("TWILIGHT_TELEGRAM_FORCE_BIND_CHANNEL"); v != "" {
+		cfg.TelegramForceBindChannel = boolValue(v, cfg.TelegramForceBindChannel)
 	}
 	if v := os.Getenv("TWILIGHT_TELEGRAM_BAN_ON_LEAVE"); v != "" {
 		cfg.TelegramBanOnLeave = boolValue(v, cfg.TelegramBanOnLeave)
