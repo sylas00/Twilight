@@ -2033,6 +2033,13 @@ func TestRegisterCodeCapacityExcludesCodeBeingConsumedAndRejectsBoundUser(t *tes
 	if err := app.store.UpsertRegCode(store.RegCode{Code: "REG-BOUND", Type: 1, Days: 7, ValidityTime: -1, UseCountLimit: 1, Active: true}); err != nil {
 		t.Fatal(err)
 	}
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/users/me/use-code", strings.NewReader(`{"reg_code":"REG-BOUND","check_only":true}`))
+	req = req.WithContext(context.WithValue(req.Context(), principalKey, principal{User: bound}))
+	rr = httptest.NewRecorder()
+	app.handleUseCode(rr, req, nil)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("Emby-bound user should not preview register code as usable, status=%d body=%s", rr.Code, rr.Body.String())
+	}
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/users/me/use-code", strings.NewReader(`{"reg_code":"REG-BOUND"}`))
 	req = req.WithContext(context.WithValue(req.Context(), principalKey, principal{User: bound}))
 	rr = httptest.NewRecorder()
@@ -2043,6 +2050,55 @@ func TestRegisterCodeCapacityExcludesCodeBeingConsumedAndRejectsBoundUser(t *tes
 	reg, _ := app.store.RegCode("REG-BOUND")
 	if reg.UseCount != 0 {
 		t.Fatalf("rejected register code was consumed: %#v", reg)
+	}
+
+	if err := app.store.UpsertRegCode(store.RegCode{Code: "VIP-BOUND", Type: 3, Days: -1, ValidityTime: -1, UseCountLimit: 1, Active: true}); err != nil {
+		t.Fatal(err)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/users/me/use-code", strings.NewReader(`{"reg_code":"VIP-BOUND"}`))
+	req = req.WithContext(context.WithValue(req.Context(), principalKey, principal{User: bound}))
+	rr = httptest.NewRecorder()
+	app.handleUseCode(rr, req, nil)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("Emby-bound user should not use whitelist code as registration entitlement, status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	reg, _ = app.store.RegCode("VIP-BOUND")
+	if reg.UseCount != 0 {
+		t.Fatalf("rejected whitelist code was consumed: %#v", reg)
+	}
+
+	parent, err := app.store.CreateUser(store.User{Username: "invite-parent-bound-check", Role: store.RoleNormal, Active: true, EmbyID: "emby-parent", ExpiredAt: time.Now().AddDate(0, 0, 30).Unix()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.store.UpsertInviteCode(store.InviteCode{Code: "INV-BOUND-CHECK", UID: parent.UID, InviterUID: parent.UID, Days: 7, UseCountLimit: 1, Active: true, CreatedAt: time.Now().Unix(), ExpiredAt: time.Now().Add(time.Hour).Unix()}); err != nil {
+		t.Fatal(err)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/users/me/use-code", strings.NewReader(`{"reg_code":"INV-BOUND-CHECK","check_only":true}`))
+	req = req.WithContext(context.WithValue(req.Context(), principalKey, principal{User: bound}))
+	rr = httptest.NewRecorder()
+	app.handleUseCode(rr, req, nil)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("Emby-bound user should not preview invite code as usable, status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	invite, _ := app.store.InviteCode("INV-BOUND-CHECK")
+	if invite.UseCount != 0 {
+		t.Fatalf("rejected invite code was consumed: %#v", invite)
+	}
+
+	if err := app.store.UpsertRegCode(store.RegCode{Code: "RENEW-BOUND", Type: 2, Days: 7, ValidityTime: -1, UseCountLimit: 1, Active: true}); err != nil {
+		t.Fatal(err)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/users/me/use-code", strings.NewReader(`{"reg_code":"RENEW-BOUND"}`))
+	req = req.WithContext(context.WithValue(req.Context(), principalKey, principal{User: bound}))
+	rr = httptest.NewRecorder()
+	app.handleUseCode(rr, req, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("Emby-bound user should still use renewal code, status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	reg, _ = app.store.RegCode("RENEW-BOUND")
+	if reg.UseCount != 1 {
+		t.Fatalf("renewal code was not consumed: %#v", reg)
 	}
 }
 

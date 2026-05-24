@@ -22,16 +22,21 @@ func (a *App) handleUseCode(w http.ResponseWriter, r *http.Request, _ Params) {
 		fail(w, http.StatusBadRequest, "卡码无效或已过期")
 		return
 	}
-	if boolValue(payload, "check_only", false) {
-		ok(w, "OK", preview)
-		return
-	}
 	days := 30
 	if _, ok := preview["days"]; ok {
 		days = int(numeric(preview["days"]))
 	}
-	grantsEmby := source == "invite" || int(numeric(preview["type"])) == 1 || int(numeric(preview["type"])) == 3
-	replacesPendingEntitlement := source == "regcode" && p.User.EmbyID == "" && p.User.PendingEmby && (int(numeric(preview["type"])) == 1 || int(numeric(preview["type"])) == 3)
+	codeType := int(numeric(preview["type"]))
+	grantsEmby := codeGrantsEmbyRegistration(source, codeType)
+	if grantsEmby && p.User.EmbyID != "" {
+		fail(w, http.StatusBadRequest, "当前账号已绑定 Emby，请使用续期码")
+		return
+	}
+	if boolValue(payload, "check_only", false) {
+		ok(w, "OK", preview)
+		return
+	}
+	replacesPendingEntitlement := source == "regcode" && p.User.EmbyID == "" && p.User.PendingEmby && codeGrantsEmbyRegistration(source, codeType)
 	var inviteForUse store.InviteCode
 	var inviterForUse store.User
 	if grantsEmby && p.User.EmbyID == "" && !replacesPendingEntitlement {
@@ -67,10 +72,6 @@ func (a *App) handleUseCode(w http.ResponseWriter, r *http.Request, _ Params) {
 			fail(w, http.StatusForbidden, "此邀请码仅限指定用户使用")
 			return
 		}
-		if p.User.EmbyID != "" {
-			fail(w, http.StatusBadRequest, "当前账号已绑定 Emby，不能使用邀请码")
-			return
-		}
 		inviter, okInviter := a.store.User(inviteForUse.InviterUID)
 		if !okInviter || !inviter.Active {
 			fail(w, http.StatusForbidden, "邀请人状态不可用")
@@ -102,10 +103,6 @@ func (a *App) handleUseCode(w http.ResponseWriter, r *http.Request, _ Params) {
 	}
 	var reg store.RegCode
 	if source == "regcode" {
-		if int(numeric(preview["type"])) == 1 && p.User.EmbyID != "" {
-			fail(w, http.StatusBadRequest, "当前账号已绑定 Emby，请使用续期码")
-			return
-		}
 		var err error
 		reg, err = a.store.ConsumeRegCode(code, p.User.UID, p.User.TelegramID)
 		if statusFromError(w, err) {
@@ -160,6 +157,11 @@ func (a *App) handleUseCode(w http.ResponseWriter, r *http.Request, _ Params) {
 	data["role_name"] = roleName(u.Role)
 	ok(w, "使用成功", data)
 }
+
+func codeGrantsEmbyRegistration(source string, codeType int) bool {
+	return source == "invite" || codeType == 1 || codeType == 3
+}
+
 func codePreview(source string, codeType int, days int, inviter string) map[string]any {
 	typeName := map[int]string{1: "注册码", 2: "续期码", 3: "白名单码"}[codeType]
 	if source == "invite" {
