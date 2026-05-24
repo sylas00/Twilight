@@ -1784,7 +1784,9 @@ func (a *App) handleConfigTOMLGet(w http.ResponseWriter, r *http.Request, _ Para
 		fail(w, http.StatusNotFound, "config file not found")
 		return
 	}
-	ok(w, "OK", map[string]any{"content": stripProtectedAdminConfig(string(data)), "path": path})
+	rawContent := stripProtectedAdminConfig(string(data))
+	normalizedContent := stripProtectedAdminConfig(renderConfigTOML(configValues(a.cfg)))
+	ok(w, "OK", map[string]any{"content": normalizedContent, "raw_content": rawContent, "path": path, "completed": normalizedContent != rawContent})
 }
 
 func (a *App) handleConfigTOMLPut(w http.ResponseWriter, r *http.Request, _ Params) {

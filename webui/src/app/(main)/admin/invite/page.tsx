@@ -127,8 +127,13 @@ export default function AdminInviteTreePage() {
   }, [fetchSystemInfo]);
 
   useEffect(() => {
+    if (!systemInfo) return;
+    if (systemInfo.features?.invite === false) {
+      setLoading(false);
+      return;
+    }
     void reload();
-  }, [reload]);
+  }, [reload, systemInfo]);
 
   const maps = useMemo(() => (forest ? buildMaps(forest) : null), [forest]);
   const rootOptions = useMemo(() => {

@@ -59,15 +59,50 @@ func (a *App) systemUserLimitReached() (bool, int, int) {
 func (a *App) embyCapacityReached(excludeUID int64) (bool, int, int) {
 	limit := a.cfg.EmbyUserLimit
 	current := 0
-	for _, u := range a.store.ListUsers() {
+	now := time.Now().Unix()
+	users := a.store.ListUsers()
+	for _, u := range users {
 		if u.UID == excludeUID {
 			continue
 		}
-		if u.EmbyID != "" || u.PendingEmby {
+		if u.EmbyID != "" || u.PendingEmby || (a.cfg.EmbyDirectRegisterEnabled && u.Active) {
 			current++
 		}
 	}
+	for _, code := range a.store.ListAllInviteCodes() {
+		current += remainingInviteSlots(code, now)
+	}
+	for _, code := range a.store.ListRegCodes() {
+		current += remainingRegCodeEmbySlots(code, now)
+	}
 	return limit > 0 && current >= limit, current, limit
+}
+
+func remainingInviteSlots(code store.InviteCode, now int64) int {
+	if !code.Active || (code.ExpiredAt > 0 && code.ExpiredAt < now) {
+		return 0
+	}
+	return remainingUseSlots(code.UseCount, code.UseCountLimit)
+}
+
+func remainingRegCodeEmbySlots(code store.RegCode, now int64) int {
+	if !code.Active || code.IsDecoy || (code.ValidityTime > 0 && code.CreatedAt+code.ValidityTime*3600 < now) {
+		return 0
+	}
+	if code.Type != 1 && code.Type != 3 {
+		return 0
+	}
+	return remainingUseSlots(code.UseCount, code.UseCountLimit)
+}
+
+func remainingUseSlots(used, limit int) int {
+	if limit == -1 {
+		return 1
+	}
+	if limit <= used {
+		return 0
+	}
+	return limit - used
 }
 
 func (a *App) protectedUserReason(u store.User) string {

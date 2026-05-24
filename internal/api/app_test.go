@@ -1334,6 +1334,82 @@ func TestConfigAdminBackupRestoreAndDelete(t *testing.T) {
 	}
 }
 
+func TestConfigTOMLGetReturnsCompletedConfig(t *testing.T) {
+	app := newTestApp(t)
+	app.cfg.ConfigFile = filepath.Join(app.cfg.DatabaseDir, "config.toml")
+	minimal := "[Global]\ndatabases_dir = " + strconv.Quote(app.cfg.DatabaseDir) + "\n\n[Database]\ndriver = " + strconv.Quote(app.cfg.DatabaseDriver) + "\nstate_file = " + strconv.Quote(app.cfg.StateFile) + "\nbackup_dir = " + strconv.Quote(app.cfg.DatabaseBackupDir) + "\n\n[API]\nhost = \"127.0.0.1\"\nport = 5010\n\n[Admin]\nusernames = [\"root\"]\n"
+	if err := os.WriteFile(app.cfg.ConfigFile, []byte(minimal), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	rr := httptest.NewRecorder()
+	app.handleConfigTOMLGet(rr, httptest.NewRequest(http.MethodGet, "/api/v1/system/admin/config/toml", nil), nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("config toml status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var env envelope
+	if err := json.Unmarshal(rr.Body.Bytes(), &env); err != nil {
+		t.Fatal(err)
+	}
+	data := env.Data.(map[string]any)
+	content := data["content"].(string)
+	if data["completed"] != true {
+		t.Fatalf("expected completed config marker, got %#v", data["completed"])
+	}
+	if !strings.Contains(content, "[Signin]") || !strings.Contains(content, "daily_min") {
+		t.Fatalf("completed config missing signin section: %s", content)
+	}
+	if strings.Contains(content, "[Admin]") || strings.Contains(content, "usernames =") {
+		t.Fatalf("protected admin config leaked: %s", content)
+	}
+}
+
+func TestEmbyCapacityCountsPendingEntitlementsSeparatelyFromSystemLimit(t *testing.T) {
+	app := newTestApp(t)
+	app.cfg.UserLimit = 100
+	app.cfg.EmbyUserLimit = 3
+	now := time.Now().Unix()
+	if _, err := app.store.CreateUser(store.User{Username: "emby", Role: store.RoleNormal, Active: true, EmbyID: "emby-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.store.UpsertInviteCode(store.InviteCode{Code: "INV-A", UID: 1, InviterUID: 1, Days: 30, UseCountLimit: 1, Active: true, CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.store.UpsertRegCode(store.RegCode{Code: "REG-A", Type: 1, Days: 30, ValidityTime: -1, UseCountLimit: 1, Active: true, CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.store.UpsertRegCode(store.RegCode{Code: "REG-RENEW", Type: 2, Days: 30, ValidityTime: -1, UseCountLimit: 100, Active: true, CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+
+	if reached, current, limit := app.systemUserLimitReached(); reached || current != 1 || limit != 100 {
+		t.Fatalf("system limit should only count local users, got reached=%v current=%d limit=%d", reached, current, limit)
+	}
+	if reached, current, limit := app.embyCapacityReached(0); !reached || current != 3 || limit != 3 {
+		t.Fatalf("emby capacity should count existing users and pending code slots, got reached=%v current=%d limit=%d", reached, current, limit)
+	}
+}
+
+func TestMediaRequestInventoryIssueBypassesDuplicateGuard(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := store.MediaRequest{UID: 1, Title: "Movie", Source: "tmdb", MediaID: 42, MediaType: "movie", MediaInfo: map[string]any{"title": "Movie"}}
+	if _, err := st.CreateMediaRequest(base); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateMediaRequest(base); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("expected duplicate conflict, got %v", err)
+	}
+	issue := base
+	issue.MediaInfo = map[string]any{"title": "Movie", "inventory_issue": true}
+	issue.Note = "字幕不同步"
+	if _, err := st.CreateMediaRequest(issue); err != nil {
+		t.Fatalf("inventory issue report should bypass duplicate guard: %v", err)
+	}
+}
+
 func TestTelegramRosterStatsUsesObservedMembers(t *testing.T) {
 	app := newTestApp(t)
 	app.cfg.TelegramGroupIDs = []string{"-1001"}

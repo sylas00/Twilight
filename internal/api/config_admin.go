@@ -147,10 +147,11 @@ func (a *App) handleConfigSchemaFull(w http.ResponseWriter, r *http.Request, _ P
 	}
 	ok(w, "OK", map[string]any{
 		"categories": []map[string]string{
-			{"key": "runtime", "title": "杩愯"},
-			{"key": "integration", "title": "闆嗘垚"},
+			{"key": "runtime", "title": "运行"},
+			{"key": "integration", "title": "集成"},
 			{"key": "policy", "title": "策略"},
-			{"key": "ops", "title": "杩愮淮"},
+			{"key": "security", "title": "安全"},
+			{"key": "ops", "title": "运维"},
 		},
 		"sections": sections,
 	})
@@ -475,6 +476,16 @@ func configSectionDefs() []configSectionDef {
 	selectDriver := []map[string]any{{"label": "PostgreSQL（推荐）", "value": "postgres"}, {"label": "Go JSON 文件（兼容）", "value": "json"}}
 	selectUpdate := []map[string]any{{"label": "按间隔", "value": "interval"}, {"label": "每日固定时间", "value": "daily"}, {"label": "手动", "value": "manual"}}
 	return []configSectionDef{
+		{Key: "Signin", Title: "签到", Description: "签到开关、每日随机奖励和连签奖励", Category: "policy", Fields: []configFieldDef{
+			{Key: "enabled", Label: "启用签到", Type: "bool", Description: "允许用户进入签到页面并领取每日积分"},
+			{Key: "currency_name", Label: "积分名称", Type: "string", Description: "签到积分在前端展示的名称"},
+			{Key: "daily_min", Label: "每日最少积分", Type: "int", Description: "单次签到可获得的最少积分"},
+			{Key: "daily_max", Label: "每日最多积分", Type: "int", Description: "单次签到可获得的最多积分"},
+			{Key: "streak_bonus_enabled", Label: "启用连签奖励", Type: "bool", Description: "按连续签到天数发放额外奖励"},
+			{Key: "streak_bonus_days", Label: "连签奖励天数", Type: "list", Description: "数字列表，与连签奖励积分一一对应"},
+			{Key: "streak_bonus_points", Label: "连签奖励积分", Type: "list", Description: "数字列表，与连签奖励天数一一对应"},
+			{Key: "reset_after_miss", Label: "漏签重置连签", Type: "bool", Description: "漏签后是否从 1 天重新计算连续签到"},
+		}},
 		{Key: "Global", Title: "全局", Description: "基础运行参数", Category: "runtime", Fields: []configFieldDef{
 			{Key: "server_name", Label: "服务器名称", Type: "string", Description: "前端展示的站点或服务器名称"},
 			{Key: "server_icon", Label: "服务器图标", Type: "string", Description: "HTTPS 图片 URL 或本地图片路径；留空使用内置图标"},
@@ -539,7 +550,7 @@ func configSectionDefs() []configSectionDef {
 			{Key: "bot_about", Label: "Bot 关于文案", Type: "textarea", Description: "/about 的服务说明，支持换行"},
 			{Key: "bot_custom_commands", Label: "Bot 自定义指令回复", Type: "command_map", Description: "自定义 /command 与回复内容的映射，回复支持换行"},
 		}},
-		{Key: "SAR", Title: "注册/邀请", Description: "注册、卡码、邀请树、求片和签到", Category: "policy", Fields: []configFieldDef{
+		{Key: "SAR", Title: "注册/邀请", Description: "注册、卡码、邀请树和求片", Category: "policy", Fields: []configFieldDef{
 			{Key: "register_mode", Label: "开放注册", Type: "bool", Description: "是否允许注册系统账号"},
 			{Key: "register_code_limit", Label: "注册必须用码", Type: "bool", Description: "注册时必须提供注册码"},
 			{Key: "allow_pending_register", Label: "允许待补建", Type: "bool", Description: "允许无 Emby 账号先注册"},
@@ -551,14 +562,6 @@ func configSectionDefs() []configSectionDef {
 			{Key: "emby_user_limit", Label: "Emby 用户上限", Type: "int", Description: "-1 表示不限"},
 			{Key: "media_request_enabled", Label: "启用求片", Type: "bool", Description: "允许用户提交媒体请求"},
 			{Key: "max_concurrent_requests_per_user", Label: "每用户并发求片", Type: "int", Description: "-1 表示不限"},
-			{Key: "signin_enabled", Label: "启用签到", Type: "bool", Description: "允许用户进入签到页面并领取每日积分"},
-			{Key: "currency_name", Label: "积分名称", Type: "string", Description: "签到积分在前端展示的名称"},
-			{Key: "daily_min", Label: "每日最少积分", Type: "int", Description: "单次签到可获得的最少积分"},
-			{Key: "daily_max", Label: "每日最多积分", Type: "int", Description: "单次签到可获得的最多积分"},
-			{Key: "streak_bonus_enabled", Label: "启用连签奖励", Type: "bool", Description: "按连续签到天数发放额外奖励"},
-			{Key: "streak_bonus_days", Label: "连签奖励天数", Type: "list", Description: "数字列表，与连签奖励积分一一对应"},
-			{Key: "streak_bonus_points", Label: "连签奖励积分", Type: "list", Description: "数字列表，与连签奖励天数一一对应"},
-			{Key: "reset_after_miss", Label: "漏签重置连签", Type: "bool", Description: "漏签后是否从 1 天重新计算连续签到"},
 			{Key: "invite_enabled", Label: "启用邀请树", Type: "bool", Description: "允许用户生成邀请码或续期码"},
 			{Key: "invite_limit", Label: "邀请码数量", Type: "int", Description: "每个用户可持有的邀请码数量"},
 			{Key: "invite_root_user_limit", Label: "根邀请上限", Type: "int", Description: "单棵邀请树最多成功邀请人数"},
@@ -652,15 +655,17 @@ func configValues(cfg config.Config) map[string]map[string]any {
 			"bot_admin_help_text": cfg.TelegramBotAdminHelpText, "bot_help_header": cfg.TelegramBotHelpHeader, "bot_help_footer": cfg.TelegramBotHelpFooter,
 			"bot_about": cfg.TelegramBotAbout, "bot_custom_commands": commandRepliesToAny(cfg.TelegramCustomCommands),
 		},
+		"Signin": {
+			"enabled": cfg.SigninEnabled, "currency_name": cfg.SigninCurrencyName, "daily_min": cfg.SigninDailyMin, "daily_max": cfg.SigninDailyMax,
+			"streak_bonus_enabled": cfg.SigninStreakBonusEnabled, "streak_bonus_days": intsToAny(cfg.SigninStreakBonusDays), "streak_bonus_points": intsToAny(cfg.SigninStreakBonusPoints),
+			"reset_after_miss": cfg.SigninResetAfterMiss,
+		},
 		"SAR": {
 			"register_mode": cfg.RegisterEnabled, "register_code_limit": cfg.RegisterCodeLimit, "allow_pending_register": cfg.AllowPendingRegister,
 			"emby_direct_register_enabled": cfg.EmbyDirectRegisterEnabled, "emby_direct_register_days": cfg.EmbyDirectRegisterDays, "emby_user_limit": cfg.EmbyUserLimit,
 			"user_limit": cfg.UserLimit, "regcode_format": cfg.RegCodeFormat, "regcode_random_algorithm": cfg.RegCodeRandomAlgorithm,
 			"media_request_enabled": cfg.MediaRequestEnabled, "max_concurrent_requests_per_user": cfg.MaxConcurrentRequestsPerUser, "invite_enabled": cfg.InviteEnabled,
-			"signin_enabled": cfg.SigninEnabled, "currency_name": cfg.SigninCurrencyName, "daily_min": cfg.SigninDailyMin, "daily_max": cfg.SigninDailyMax,
-			"streak_bonus_enabled": cfg.SigninStreakBonusEnabled, "streak_bonus_days": intsToAny(cfg.SigninStreakBonusDays), "streak_bonus_points": intsToAny(cfg.SigninStreakBonusPoints),
-			"reset_after_miss": cfg.SigninResetAfterMiss,
-			"invite_limit":     cfg.InviteLimit, "invite_root_user_limit": cfg.InviteRootUserLimit, "invite_max_depth": cfg.InviteMaxDepth, "invite_require_emby": cfg.InviteRequireEmby,
+			"invite_limit": cfg.InviteLimit, "invite_root_user_limit": cfg.InviteRootUserLimit, "invite_max_depth": cfg.InviteMaxDepth, "invite_require_emby": cfg.InviteRequireEmby,
 			"invite_code_default_days": cfg.InviteDefaultDays, "permanent_invite_max_days": cfg.PermanentInviteMaxDays, "auto_cleanup_no_emby": cfg.AutoCleanupNoEmby,
 			"auto_cleanup_no_emby_days": cfg.AutoCleanupNoEmbyDays,
 		},

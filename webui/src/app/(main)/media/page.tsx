@@ -378,8 +378,14 @@ export default function MediaPage() {
         source: selectedMedia.source,
         media_id: selectedMedia.id,
         media_type: selectedMedia.media_type,
+        title: mediaDetail?.title || selectedMedia.title,
+        original_title: mediaDetail?.original_title || selectedMedia.original_title,
+        poster: mediaDetail?.poster || selectedMedia.poster,
+        poster_url: mediaDetail?.poster_url || selectedMedia.poster_url,
+        overview: mediaDetail?.overview || selectedMedia.overview,
+        year: mediaDetail?.year || selectedMedia.year,
         season: selectedSeason,
-        note: requestNote || undefined,
+        note: requestNote.trim() || undefined,
       });
 
       if (res.success) {
@@ -497,6 +503,14 @@ export default function MediaPage() {
   const activeSegmentClass = "bg-primary text-primary-foreground";
   const inactiveSegmentClass = "text-muted-foreground hover:bg-accent/80";
   const mediaRequestDisabled = systemInfo?.features?.media_request === false;
+  const selectedSeasonAvailable = Boolean(
+    selectedSeason !== undefined && inventoryCheck?.seasons_available?.includes(selectedSeason)
+  );
+  const requestNeedsIssueNote = Boolean(
+    inventoryCheck?.exists && (selectedSeason === undefined || selectedSeasonAvailable)
+  );
+  const inventoryIssueReady = Boolean(requestNeedsIssueNote && requestNote.trim());
+  const requestBlockedByInventory = Boolean(requestNeedsIssueNote && !requestNote.trim());
 
   if (mediaRequestDisabled) {
     return (
@@ -730,24 +744,24 @@ export default function MediaPage() {
                   </Button>
                 </div>
               ) : (
-                <div className="grid gap-4">
+                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                   {myRequests.map((req) => (
                     <motion.div
                       key={req.require_key || `${req.source}-${req.id}`}
                       initial={{ opacity: 0, x: -10 }}
                       animate={{ opacity: 1, x: 0 }}
-                      className="group flex flex-col md:flex-row md:items-center justify-between gap-4 p-4 rounded-3xl bg-secondary/30 border border-white/40 hover:bg-white/60 transition-all duration-300 dark:bg-slate-950/40 dark:border-slate-700/70 dark:hover:bg-slate-900/80"
+                      className="group flex h-full flex-col gap-4 rounded-3xl border border-white/40 bg-secondary/30 p-4 transition-all duration-300 hover:bg-white/60 dark:border-slate-700/70 dark:bg-slate-950/40 dark:hover:bg-slate-900/80"
                     >
-                      <div className="flex items-center gap-4 flex-1 min-w-0">
-                        <div className="relative flex h-20 w-14 shrink-0 items-center justify-center rounded-2xl bg-white/90 overflow-hidden shadow-sm border border-white/60 dark:bg-slate-950/70 dark:border-slate-700/70">
+                      <div className="flex min-w-0 flex-1 gap-4">
+                        <div className="relative flex aspect-[2/3] w-24 shrink-0 items-center justify-center overflow-hidden rounded-2xl border border-white/60 bg-white/90 shadow-sm dark:border-slate-700/70 dark:bg-slate-950/70 sm:w-28">
                           {req.media_info?.poster_url || req.media_info?.poster ? (
                             <Image
                               src={req.media_info.poster_url || req.media_info.poster || ""}
                               alt={req.media_info.title}
                               fill
                               unoptimized
-                              sizes="56px"
-                              className="h-full w-full object-cover"
+                              sizes="112px"
+                              className="h-full w-full object-contain"
                             />
                           ) : (
                             req.media_info?.media_type === "movie" ? <Film className="h-6 w-6 text-muted-foreground/30" /> : <Tv className="h-6 w-6 text-muted-foreground/30" />
@@ -825,7 +839,7 @@ export default function MediaPage() {
                         </div>
                       </div>
                       
-                      <div className="flex items-center justify-between md:flex-col md:items-end gap-3 shrink-0">
+                      <div className="flex shrink-0 items-center justify-between gap-3 border-t border-border/50 pt-3">
                         <div className="flex items-center gap-2">
                            {getStatusBadge(req.status)}
                            <Button 
@@ -862,7 +876,7 @@ export default function MediaPage() {
         setMediaDetail(null);
         setInventoryCheck(null);
       }}>
-        <DialogContent className="max-w-3xl max-h-[90dvh] overflow-y-auto border-0 p-0 glass-acrylic rounded-[3rem] shadow-2xl">
+        <DialogContent className="max-h-[90dvh] max-w-5xl overflow-y-auto rounded-[2rem] border-0 p-0 glass-acrylic shadow-2xl">
           {isLoadingDetail ? (
             <div className="flex h-[400px] items-center justify-center">
               <div className="relative">
@@ -871,24 +885,26 @@ export default function MediaPage() {
               </div>
             </div>
           ) : !selectedMedia ? null : mediaDetail ? (
-            <div className="flex flex-col md:flex-row h-full max-h-[85vh]">
+            <div className="grid h-full max-h-[85vh] md:grid-cols-[minmax(240px,320px)_1fr]">
               {/* Left Side: Poster */}
-              <div className="w-full md:w-1/3 aspect-[2/3] md:aspect-auto relative group">
+              <div className="relative flex min-h-[360px] items-center justify-center bg-black/80 p-4 md:min-h-0">
                 {mediaDetail.poster ? (
-                  <Image
-                    src={mediaDetail.poster}
-                    alt={mediaDetail.title}
-                    fill
-                    unoptimized
-                    sizes="(max-width: 768px) 100vw, 33vw"
-                    className="h-full w-full object-cover"
-                  />
+                  <div className="relative aspect-[2/3] w-full max-w-[280px] overflow-hidden rounded-2xl shadow-2xl md:max-w-none">
+                    <Image
+                      src={mediaDetail.poster}
+                      alt={mediaDetail.title}
+                      fill
+                      unoptimized
+                      sizes="(max-width: 768px) 280px, 320px"
+                      className="h-full w-full object-contain"
+                    />
+                  </div>
                 ) : (
-                  <div className="flex h-full items-center justify-center bg-secondary">
+                  <div className="flex aspect-[2/3] w-full max-w-[280px] items-center justify-center rounded-2xl bg-secondary md:max-w-none">
                     <Film className="h-20 w-20 text-muted-foreground/20" />
                   </div>
                 )}
-                <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent" />
+                <div className="pointer-events-none absolute inset-x-0 bottom-0 h-44 bg-gradient-to-t from-black/80 to-transparent" />
                 <div className="absolute bottom-6 left-6 right-6">
                    <div className="flex items-center gap-2 mb-2">
                      <Badge className="bg-white/20 backdrop-blur-md border-white/20 text-white font-black text-[10px] tracking-widest px-2.5 py-1">
@@ -906,7 +922,7 @@ export default function MediaPage() {
               </div>
 
               {/* Right Side: Content */}
-              <div className="flex-1 p-8 overflow-y-auto custom-scrollbar bg-card/95 text-foreground">
+              <div className="overflow-y-auto bg-card/95 p-6 text-foreground custom-scrollbar sm:p-8">
                 <div className="space-y-6">
                   {/* Status & Genres */}
                   <div className="flex flex-wrap gap-2">
@@ -948,7 +964,7 @@ export default function MediaPage() {
                             {inventoryCheck.exists ? "库存状态：已入库" : "库存状态：未入库"}
                           </p>
                           <p className="text-[11px] font-medium text-muted-foreground">
-                            {inventoryCheck.exists ? "您可以直接在 Emby 中观看此内容" : "提交求片后，管理员将为您安排下载"}
+                            {inventoryCheck.exists ? "如遇字幕、片源或版本问题，请填写备注后提交反馈" : "提交求片后，管理员将为您安排下载"}
                           </p>
                         </div>
                       </div>
@@ -973,17 +989,18 @@ export default function MediaPage() {
                         </button>
                         {Array.from({ length: mediaDetail.seasons }, (_, i) => i + 1).map((s) => {
                           const isAvailable = inventoryCheck?.seasons_available?.includes(s);
+                          const canReportAvailableSeason = Boolean(isAvailable && requestNote.trim());
                           return (
                             <button
                               key={s}
-                              onClick={() => !isAvailable && setSelectedSeason(s)}
-                              disabled={isAvailable}
+                              onClick={() => (!isAvailable || canReportAvailableSeason) && setSelectedSeason(s)}
+                              disabled={Boolean(isAvailable && !canReportAvailableSeason)}
                               className={cn(
                                 "px-4 py-2 rounded-xl text-xs font-black transition-all border shadow-sm relative overflow-hidden group",
                                 selectedSeason === s 
                                   ? "bg-primary text-primary-foreground border-primary shadow-primary/20" 
                                   : isAvailable
-                                    ? "bg-emerald-50 border-emerald-100 text-emerald-600 opacity-60 cursor-not-allowed dark:bg-emerald-500/15 dark:border-emerald-500/30 dark:text-emerald-300"
+                                    ? cn("bg-emerald-50 border-emerald-100 text-emerald-600 dark:bg-emerald-500/15 dark:border-emerald-500/30 dark:text-emerald-300", canReportAvailableSeason ? "hover:bg-emerald-100" : "opacity-60 cursor-not-allowed")
                                     : "bg-background border-border text-muted-foreground hover:bg-accent"
                               )}
                             >
@@ -1000,7 +1017,7 @@ export default function MediaPage() {
                   <div className="space-y-3">
                     <p className="text-[10px] font-black uppercase tracking-[0.2em] text-muted-foreground">Instructions</p>
                     <Input
-                      placeholder="有什么特别的要求吗？（选填）"
+                      placeholder={inventoryCheck?.exists ? "请说明字幕、片源、清晰度或版本问题" : "有什么特别的要求吗？（选填）"}
                       value={requestNote}
                       onChange={(e) => setRequestNote(e.target.value)}
                       className="rounded-[1.25rem] border-white/60 bg-white/40 shadow-inner h-12 dark:border-slate-700/70 dark:bg-slate-950/70 dark:text-slate-100"
@@ -1014,7 +1031,7 @@ export default function MediaPage() {
                   </Button>
                   <Button
                     onClick={handleRequest}
-                    disabled={isRequesting || (inventoryCheck?.exists && !selectedSeason)}
+                    disabled={isRequesting || requestBlockedByInventory}
                     className="flex-[2] h-12 rounded-2xl font-black shadow-xl shadow-primary/20 active:scale-95 transition-all"
                   >
                     {isRequesting ? (
@@ -1022,7 +1039,7 @@ export default function MediaPage() {
                     ) : (
                       <Send className="mr-2 h-5 w-5" />
                     )}
-                    {inventoryCheck?.exists && !selectedSeason ? "内容已入库" : "立即求片"}
+                    {requestBlockedByInventory ? "填写问题备注后提交" : inventoryIssueReady ? "提交问题反馈" : "立即求片"}
                   </Button>
                 </div>
               </div>

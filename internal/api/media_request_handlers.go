@@ -103,6 +103,7 @@ func (a *App) handleCreateMediaRequest(w http.ResponseWriter, r *http.Request, _
 	for key, value := range payload {
 		mediaInfo[key] = value
 	}
+	note := truncateString(stringValue(payload, "note"), 500)
 	if !boolValue(payload, "skip_inventory_check", false) {
 		inventoryPayload := cloneMap(mediaInfo)
 		inventoryPayload["source"] = source
@@ -111,16 +112,22 @@ func (a *App) handleCreateMediaRequest(w http.ResponseWriter, r *http.Request, _
 		inventoryPayload["season"] = intValue(payload, "season", 0)
 		inventory := a.embyCheckInventory(r.Context(), inventoryPayload)
 		if boolish(inventory["exists"]) {
-			fail(w, http.StatusBadRequest, "media already exists: "+asString(inventory["message"]))
-			return
+			if strings.TrimSpace(note) == "" {
+				fail(w, http.StatusBadRequest, "media already exists: "+asString(inventory["message"]))
+				return
+			}
+			mediaInfo["inventory_issue"] = true
+			mediaInfo["inventory_exists"] = true
+			mediaInfo["inventory_message"] = inventory["message"]
+		} else {
+			mediaInfo["inventory_message"] = inventory["message"]
 		}
 		mediaInfo["inventory_checked"] = true
-		mediaInfo["inventory_message"] = inventory["message"]
 	}
 	if mediaID == 0 {
 		mediaID = int64(time.Now().UnixNano())
 	}
-	req, err := a.store.CreateMediaRequest(store.MediaRequest{UID: p.User.UID, TelegramID: p.User.TelegramID, Username: p.User.Username, Title: title, OriginalTitle: stringValue(payload, "original_title"), Source: source, MediaID: mediaID, MediaType: firstNonEmpty(stringValue(payload, "media_type"), stringValue(payload, "type"), "movie"), Season: intValue(payload, "season", 0), Year: stringValue(payload, "year"), Note: truncateString(stringValue(payload, "note"), 500), MediaInfo: mediaInfo})
+	req, err := a.store.CreateMediaRequest(store.MediaRequest{UID: p.User.UID, TelegramID: p.User.TelegramID, Username: p.User.Username, Title: title, OriginalTitle: stringValue(payload, "original_title"), Source: source, MediaID: mediaID, MediaType: firstNonEmpty(stringValue(payload, "media_type"), stringValue(payload, "type"), "movie"), Season: intValue(payload, "season", 0), Year: stringValue(payload, "year"), Note: note, MediaInfo: mediaInfo})
 	if statusFromError(w, err) {
 		return
 	}
@@ -128,6 +135,10 @@ func (a *App) handleCreateMediaRequest(w http.ResponseWriter, r *http.Request, _
 }
 
 func (a *App) handleMyMediaRequests(w http.ResponseWriter, r *http.Request, _ Params) {
+	if !a.cfg.MediaRequestEnabled {
+		fail(w, http.StatusForbidden, "media requests are disabled")
+		return
+	}
 	requests := a.store.ListMediaRequests(current(r).User.UID, false)
 	items := make([]map[string]any, 0, len(requests))
 	for _, req := range requests {
@@ -137,6 +148,10 @@ func (a *App) handleMyMediaRequests(w http.ResponseWriter, r *http.Request, _ Pa
 }
 
 func (a *App) handleAdminMediaRequests(w http.ResponseWriter, r *http.Request, _ Params) {
+	if !a.cfg.MediaRequestEnabled {
+		fail(w, http.StatusForbidden, "media requests are disabled")
+		return
+	}
 	statusFilter := strings.ToLower(firstNonEmpty(r.URL.Query().Get("status"), "pending"))
 	page := max(1, queryInt(r, "page", 1))
 	perPage := clamp(queryInt(r, "per_page", 20), 1, 100)

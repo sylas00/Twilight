@@ -994,7 +994,7 @@ class ApiClient {
   }
 
   async getConfigToml() {
-    return this.request<{ content: string; path: string }>("/system/admin/config/toml");
+    return this.request<{ content: string; path: string; raw_content?: string; completed?: boolean }>("/system/admin/config/toml");
   }
 
   async updateConfigToml(content: string) {
@@ -2218,6 +2218,11 @@ export interface MediaRequestData {
   source: string;
   media_id: number;
   media_type: string;
+  title?: string;
+  original_title?: string;
+  poster?: string;
+  poster_url?: string;
+  overview?: string;
   season?: number;
   note?: string;
   year?: number;  // 年份限制

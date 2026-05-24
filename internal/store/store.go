@@ -1207,9 +1207,11 @@ func (s *Store) DeleteAPIKey(uid, id int64) error {
 func (s *Store) CreateMediaRequest(r MediaRequest) (MediaRequest, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, existing := range s.state.MediaRequests {
-		if strings.EqualFold(existing.Source, r.Source) && existing.MediaID == r.MediaID && existing.Season == r.Season && isActiveMediaStatus(existing.Status) {
-			return existing, ErrConflict
+	if !mediaRequestInventoryIssue(r) {
+		for _, existing := range s.state.MediaRequests {
+			if strings.EqualFold(existing.Source, r.Source) && existing.MediaID == r.MediaID && existing.Season == r.Season && isActiveMediaStatus(existing.Status) {
+				return existing, ErrConflict
+			}
 		}
 	}
 	now := time.Now().Unix()
@@ -1225,6 +1227,24 @@ func (s *Store) CreateMediaRequest(r MediaRequest) (MediaRequest, error) {
 	r.UpdatedAt = now
 	s.state.MediaRequests[r.ID] = r
 	return r, s.saveLocked()
+}
+
+func mediaRequestInventoryIssue(r MediaRequest) bool {
+	if r.MediaInfo == nil {
+		return false
+	}
+	value, ok := r.MediaInfo["inventory_issue"]
+	if !ok {
+		return false
+	}
+	switch v := value.(type) {
+	case bool:
+		return v
+	case string:
+		return strings.EqualFold(strings.TrimSpace(v), "true") || strings.TrimSpace(v) == "1"
+	default:
+		return false
+	}
 }
 
 func (s *Store) ActiveMediaRequestCount(uid int64) int {

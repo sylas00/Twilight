@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import {
   Film,
@@ -41,9 +41,10 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { useConfirm } from "@/components/ui/confirm-dialog";
 import { useAsyncResource } from "@/hooks/use-async-resource";
-import { PageError, PageLoading } from "@/components/layout/page-state";
+import { PageError } from "@/components/layout/page-state";
 import { api, type MediaRequest } from "@/lib/api";
 import { formatDate } from "@/lib/utils";
+import { useSystemStore } from "@/store/system";
 
 /**
  * 返回该求片对应的外部站点链接。
@@ -80,6 +81,7 @@ function buildExternalUrl(req: MediaRequest): string | null {
 export default function AdminRequestsPage() {
   const { toast } = useToast();
   const { confirm } = useConfirm();
+  const { info: systemInfo, fetchInfo: fetchSystemInfo } = useSystemStore();
   const [requests, setRequests] = useState<MediaRequest[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -124,7 +126,17 @@ export default function AdminRequestsPage() {
     isLoading,
     error,
     execute: loadRequests,
-  } = useAsyncResource(loadRequestsResource, { immediate: true });
+  } = useAsyncResource(loadRequestsResource, { immediate: false });
+
+  useEffect(() => {
+    void fetchSystemInfo();
+  }, [fetchSystemInfo]);
+
+  useEffect(() => {
+    if (!systemInfo) return;
+    if (systemInfo?.features?.media_request === false) return;
+    void loadRequests();
+  }, [loadRequests, systemInfo]);
 
   const handleAction = async () => {
     if (!selectedRequest) return;
@@ -234,6 +246,18 @@ export default function AdminRequestsPage() {
   };
 
   const pages = Math.ceil(total / 20);
+
+  if (systemInfo?.features?.media_request === false) {
+    return (
+      <Card className="border-dashed">
+        <CardContent className="space-y-2 p-10 text-center">
+          <Film className="mx-auto h-10 w-10 text-muted-foreground" />
+          <p className="font-medium">求片功能未开启</p>
+          <p className="text-xs text-muted-foreground">开启求片功能后才会显示用户提交的求片审核列表。</p>
+        </CardContent>
+      </Card>
+    );
+  }
 
   if (error) {
     return <PageError message={error} onRetry={() => void loadRequests()} />;
